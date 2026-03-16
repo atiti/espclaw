@@ -1,0 +1,48 @@
+# Changelog
+
+## Unreleased
+
+- Fixed the mock Codex tool-loop transport so it detects tool-listing intents from the last user message instead of accidentally matching the system prompt, which restores normal multi-tool simulator runs and model-driven `tool.list` tests.
+- Fixed the host test suite to assert model-driven tool-list transcripts against stable content and to run the simulator API test on a dynamic port instead of relying on a fixed `18081` listener.
+- Added simulator UART support with `UART0` bridged to process `stdin`/`stdout`, plus Lua `espclaw.uart.read/write` bindings and host-side test helpers for UART input/output validation.
+- Added the initial ESPClaw firmware scaffold with modular board, provider, channel, workspace, OTA, and admin UI components.
+- Added workspace bootstrap and session JSONL persistence primitives for SD-backed runtime state.
+- Added admin API JSON renderers for overview and workspace file metadata responses.
+- Added initial OpenAI-compatible and Anthropic request builders for the remote-LLM runtime path.
+- Added a repo-local ESP-IDF v5.5.2 setup flow and activation script.
+- Added ESP-IDF runtime startup for NVS, Wi-Fi provisioning, SD workspace bootstrap, and Telegram polling.
+- Added ESP-IDF 5.5-compatible runtime fixes for Wi-Fi, SD mounting, and provisioning lifecycle handling, including SoftAP fallback when BLE provisioning is unavailable in sdkconfig.
+- Added a first Lua app runtime with SD-backed manifests, app scaffolding, boot triggers, and Telegram commands for listing, creating, and running apps.
+- Added Lua app lifecycle primitives for source read/update/remove plus admin API JSON renderers for app inventory and app detail payloads.
+- Added Telegram app removal support and expanded the embedded admin UI mockup to cover app editing.
+- Added live `esp_http_server` routes for admin status, workspace file metadata, and Lua app scaffold/detail/source/run/delete operations.
+- Added a host-side `espclaw_simulator` binary that serves the same admin UI and app-management API on macOS for hardware-free development.
+- Added shared admin operation helpers so Telegram scaffolding, firmware HTTP routes, and the simulator use the same query parsing and JSON result rendering.
+- Added a native Lua hardware bridge for GPIO, LEDC PWM, ADC, I2C, buzzer output, PID control helpers, and timing helpers.
+- Added host-simulated hardware state so Lua control apps can be tested on macOS without an ESP32 board attached.
+- Added manifest-level hardware permissions for `gpio.*`, `pwm.write`, `adc.read`, `i2c.*`, and `buzzer.play`.
+- Added higher-level native control primitives for Lua apps, including calibrated ADC reads, servo/ESC pulse helpers, RMT-backed PPM output, `TMP102` and `MPU6050` drivers, complementary attitude estimation, and rover/quad mixer helpers.
+- Added simulator-backed vehicle-control tests that exercise typed sensors, servo outputs, PPM framing, and mixer math through the Lua runtime.
+- Added persistent Lua VM support and a scheduled control-loop runtime so apps can keep controller state across fixed-period iterations.
+- Added firmware and simulator loop-management routes plus embedded admin UI controls for starting, stopping, and inspecting scheduled loops.
+- Added automated simulator API coverage for app CRUD, loop lifecycle, and clean simulator shutdown.
+- Added a shared iterative agent loop with multi-tool rounds, `previous_response_id` continuation, session persistence, and confirmation-gated mutating tool calls.
+- Added OpenAI Codex / ChatGPT-account auth storage plus simulator import from `~/.codex/auth.json`.
+- Added admin and simulator auth/chat endpoints plus UI panels for provider credentials, chat runs, and session transcript inspection.
+- Added host-side tests for auth storage, Codex CLI import, iterative tool-loop execution, and confirmation-required mutation handling.
+- Fixed the Codex-backed agent loop to send `store: false`, `stream: true`, and Codex-specific response headers, and to collapse SSE `response.completed` events back into the shared response parser for simulator and firmware runs.
+- Fixed the Codex-backed tool schema bridge to encode dotted ESPClaw tool ids into backend-safe function names and decode them back before local execution.
+- Fixed Codex follow-up rounds to retain `instructions` across `previous_response_id` continuations, which the ChatGPT OAuth backend requires for multi-step tool runs.
+- Changed Codex multi-step runs to resend assistant function calls and tool outputs as streamed input items instead of using `previous_response_id`, which the ChatGPT OAuth backend rejects.
+- Fixed the host simulator transport to drain streamed `curl` output fully, increased the agent HTTP buffer, and suppressed spurious `curl: (56) Failure writing output to destination` noise during simulator runs.
+- Added `tool.list`, `GET /api/tools`, and an admin UI Tools panel so tool introspection is available both to the model loop and the admin surface.
+- Increased the agent/admin text buffers so model-driven tool-listing replies can return the full catalog without truncation.
+- Changed firmware defaults to a 4MB / large single-app flash layout so the Lua-enabled firmware image fits.
+- Fixed `scripts/use-idf.sh` so it reuses the installed local ESP-IDF Python environment instead of assuming a single Python minor version path.
+- Added a user-facing onboarding document for provisioning, SD workspace, and Telegram behavior.
+- Added app runtime documentation describing the Lua bundle format and host bindings.
+- Added simulator documentation and README usage for the host admin/runtime loop.
+- Added hardware Lua documentation describing the new bindings, permissions, and simulator behavior.
+- Added vehicle-control documentation describing how the current hardware blocks support rover, balancing robot, and quadcopter applications.
+- Added host-buildable unit tests for the core runtime contracts so the architecture can be verified without an installed ESP-IDF toolchain.
+- Added architecture and admin UI documentation for contributors and end users.

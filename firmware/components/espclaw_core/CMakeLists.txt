@@ -1,0 +1,39 @@
+idf_component_register(
+  SRCS
+    "src/agent_loop.c"
+    "src/admin_ops.c"
+    "src/app_runtime.c"
+    "src/admin_api.c"
+    "src/admin_server.c"
+    "src/admin_ui.c"
+    "src/auth_store.c"
+    "src/board_profile.c"
+    "src/channel.c"
+    "src/control_loop.c"
+    "src/config_render.c"
+    "src/hardware.c"
+    "src/ota_state.c"
+    "src/provider.c"
+    "src/provider_request.c"
+    "src/runtime.c"
+    "src/session_store.c"
+    "src/telegram_protocol.c"
+    "src/tool_catalog.c"
+    "src/workspace.c"
+  INCLUDE_DIRS "include"
+  REQUIRES
+    driver
+    esp_adc
+    esp_event
+    esp_http_client
+    esp_http_server
+    esp_netif
+    esp_wifi
+    fatfs
+    json
+    lua
+    nvs_flash
+    sdmmc
+    spiffs
+    wifi_provisioning
+)

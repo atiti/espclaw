@@ -1,0 +1,55 @@
+menu "ESPClaw"
+
+choice ESPCLAW_BOARD_PROFILE
+    prompt "ESPClaw board profile"
+    default ESPCLAW_BOARD_PROFILE_ESP32S3
+
+config ESPCLAW_BOARD_PROFILE_ESP32S3
+    bool "ESP32-S3"
+
+config ESPCLAW_BOARD_PROFILE_ESP32CAM
+    bool "ESP32-CAM"
+endchoice
+
+config ESPCLAW_ENABLE_SD_BOOTSTRAP
+    bool "Enable SD mount and workspace bootstrap"
+    default y
+
+config ESPCLAW_SD_MOUNT_POINT
+    string "SD mount point"
+    default "/sdcard"
+
+config ESPCLAW_SD_SPI_MOSI
+    int "SDSPI MOSI pin"
+    default -1
+
+config ESPCLAW_SD_SPI_MISO
+    int "SDSPI MISO pin"
+    default -1
+
+config ESPCLAW_SD_SPI_SCLK
+    int "SDSPI SCLK pin"
+    default -1
+
+config ESPCLAW_SD_SPI_CS
+    int "SDSPI CS pin"
+    default -1
+
+config ESPCLAW_ENABLE_WIFI_PROVISIONING
+    bool "Enable Wi-Fi provisioning"
+    default y
+
+config ESPCLAW_ENABLE_TELEGRAM
+    bool "Enable Telegram polling"
+    default y
+
+config ESPCLAW_TELEGRAM_BOT_TOKEN
+    string "Telegram bot token"
+    default ""
+
+config ESPCLAW_TELEGRAM_POLL_INTERVAL_SECONDS
+    int "Telegram poll interval"
+    range 1 60
+    default 5
+
+endmenu

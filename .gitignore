@@ -1,0 +1,9 @@
+.deps/
+build/
+firmware/build/
+firmware/build-*/
+firmware/sdkconfig
+firmware/sdkconfig.old
+firmware/managed_components/
+.DS_Store
+.espclaw-sim-workspace/
