@@ -17,10 +17,13 @@
 #include "espclaw/control_loop.h"
 #include "espclaw/ota_state.h"
 #include "espclaw/runtime.h"
+#include "espclaw/system_monitor.h"
 #include "espclaw/task_policy.h"
+#include "espclaw/workspace.h"
 
 static const char *TAG = "espclaw_admin";
 static httpd_handle_t s_admin_server;
+static const size_t ESPCLAW_ADMIN_HTTPD_STACK_SIZE = 16384;
 
 #ifndef CONFIG_ESPCLAW_ADMIN_PORT
 #define CONFIG_ESPCLAW_ADMIN_PORT 8080
@@ -203,12 +206,272 @@ static esp_err_t tools_get_handler(httpd_req_t *req)
     return send_json(req, buffer);
 }
 
+static esp_err_t monitor_get_handler(httpd_req_t *req)
+{
+    char buffer[2048];
+    espclaw_system_monitor_snapshot_t snapshot;
+    const espclaw_runtime_status_t *status = espclaw_runtime_status();
+
+    if (status == NULL) {
+        espclaw_admin_render_result_json(false, "runtime status is unavailable", buffer, sizeof(buffer));
+        return send_json_status(req, buffer, 503, "Service Unavailable");
+    }
+    if (espclaw_system_monitor_snapshot(
+            &status->profile,
+            status->storage_total_bytes,
+            status->storage_used_bytes,
+            &snapshot) != 0) {
+        espclaw_admin_render_result_json(false, "failed to capture monitor snapshot", buffer, sizeof(buffer));
+        return send_json_status(req, buffer, 500, "Internal Server Error");
+    }
+
+    espclaw_render_system_monitor_json(&snapshot, buffer, sizeof(buffer));
+    return send_json(req, buffer);
+}
+
 static esp_err_t board_get_handler(httpd_req_t *req)
 {
     char buffer[4096];
 
     espclaw_render_board_json(espclaw_board_current(), buffer, sizeof(buffer));
     return send_json(req, buffer);
+}
+
+static esp_err_t board_presets_get_handler(httpd_req_t *req)
+{
+    char buffer[4096];
+    const espclaw_runtime_status_t *status = espclaw_runtime_status();
+
+    espclaw_render_board_presets_json(status != NULL ? &status->profile : NULL, buffer, sizeof(buffer));
+    return send_json(req, buffer);
+}
+
+static esp_err_t board_config_get_handler(httpd_req_t *req)
+{
+    char buffer[4096];
+    const espclaw_runtime_status_t *status = espclaw_runtime_status();
+
+    espclaw_render_board_config_json(
+        status != NULL ? status->workspace_root : NULL,
+        status != NULL ? &status->profile : NULL,
+        espclaw_board_current(),
+        buffer,
+        sizeof(buffer)
+    );
+    return send_json(req, buffer);
+}
+
+static esp_err_t board_config_put_handler(httpd_req_t *req)
+{
+    char body[4096];
+    char response[4096];
+    const espclaw_runtime_status_t *status = espclaw_runtime_status();
+
+    if (status == NULL || !status->storage_ready || status->workspace_root[0] == '\0') {
+        espclaw_admin_render_result_json(false, "workspace storage is not ready", response, sizeof(response));
+        return send_json_status(req, response, 503, "Service Unavailable");
+    }
+    if (read_request_body(req, body, sizeof(body)) != ESP_OK || body[0] == '\0') {
+        espclaw_admin_render_result_json(false, "missing board config body", response, sizeof(response));
+        return send_json_status(req, response, 400, "Bad Request");
+    }
+    if (espclaw_workspace_write_file(status->workspace_root, "config/board.json", body) != 0 ||
+        espclaw_board_configure_current(status->workspace_root, &status->profile) != 0) {
+        espclaw_admin_render_result_json(false, "failed to save board config", response, sizeof(response));
+        return send_json_status(req, response, 500, "Internal Server Error");
+    }
+
+    espclaw_render_board_config_json(
+        status->workspace_root,
+        &status->profile,
+        espclaw_board_current(),
+        response,
+        sizeof(response)
+    );
+    return send_json(req, response);
+}
+
+static esp_err_t board_apply_post_handler(httpd_req_t *req)
+{
+    char variant_id[ESPCLAW_BOARD_VARIANT_MAX + 1];
+    char response[4096];
+    const espclaw_runtime_status_t *status = espclaw_runtime_status();
+
+    if (status == NULL || !status->storage_ready || status->workspace_root[0] == '\0') {
+        espclaw_admin_render_result_json(false, "workspace storage is not ready", response, sizeof(response));
+        return send_json_status(req, response, 503, "Service Unavailable");
+    }
+    if (!load_query_value(req, "variant_id", variant_id, sizeof(variant_id))) {
+        espclaw_admin_render_result_json(false, "missing variant_id query parameter", response, sizeof(response));
+        return send_json_status(req, response, 400, "Bad Request");
+    }
+    if (espclaw_board_write_variant_config(status->workspace_root, variant_id) != 0 ||
+        espclaw_board_configure_current(status->workspace_root, &status->profile) != 0) {
+        espclaw_admin_render_result_json(false, "failed to apply board preset", response, sizeof(response));
+        return send_json_status(req, response, 500, "Internal Server Error");
+    }
+
+    espclaw_render_board_json(espclaw_board_current(), response, sizeof(response));
+    return send_json(req, response);
+}
+
+static size_t render_wifi_status_json(char *buffer, size_t buffer_size)
+{
+    const espclaw_runtime_status_t *status = espclaw_runtime_status();
+
+    if (buffer == NULL || buffer_size == 0) {
+        return 0;
+    }
+
+    return (size_t)snprintf(
+        buffer,
+        buffer_size,
+        "{\"ok\":true,\"wifi_ready\":%s,\"provisioning_active\":%s,\"storage_ready\":%s,\"provisioning_transport\":",
+        status != NULL && status->wifi_ready ? "true" : "false",
+        status != NULL && status->provisioning_active ? "true" : "false",
+        status != NULL && status->storage_ready ? "true" : "false"
+    );
+}
+
+static size_t render_wifi_status_prefix(char *buffer, size_t buffer_size)
+{
+    size_t used;
+    espclaw_provisioning_descriptor_t provisioning;
+    const espclaw_runtime_status_t *status = espclaw_runtime_status();
+
+    used = render_wifi_status_json(buffer, buffer_size);
+    espclaw_provisioning_descriptor_init(&provisioning);
+    if (espclaw_runtime_get_provisioning_descriptor(&provisioning) == ESP_OK) {
+        used = append_escaped_json(buffer, buffer_size, used, provisioning.transport);
+        append_text(buffer, buffer_size, ",\"ssid\":");
+        used = strlen(buffer);
+        used = append_escaped_json(
+            buffer,
+            buffer_size,
+            used,
+            status != NULL ? status->wifi_ssid : ""
+        );
+        append_text(buffer, buffer_size, ",\"onboarding_ssid\":");
+        used = strlen(buffer);
+        used = append_escaped_json(
+            buffer,
+            buffer_size,
+            used,
+            status != NULL ? status->onboarding_ssid : ""
+        );
+        append_text(buffer, buffer_size, ",\"admin_url\":");
+        used = strlen(buffer);
+        used = append_escaped_json(buffer, buffer_size, used, provisioning.admin_url);
+    } else {
+        used = append_escaped_json(buffer, buffer_size, used, "");
+        append_text(buffer, buffer_size, ",\"ssid\":\"\",\"onboarding_ssid\":\"\",\"admin_url\":\"\"");
+    }
+    return used;
+}
+
+static esp_err_t network_provisioning_get_handler(httpd_req_t *req)
+{
+    char buffer[1024];
+    espclaw_provisioning_descriptor_t descriptor;
+
+    espclaw_provisioning_descriptor_init(&descriptor);
+    if (espclaw_runtime_get_provisioning_descriptor(&descriptor) != ESP_OK) {
+        espclaw_admin_render_result_json(false, "failed to describe provisioning", buffer, sizeof(buffer));
+        return send_json_status(req, buffer, 500, "Internal Server Error");
+    }
+
+    espclaw_provisioning_render_json(&descriptor, buffer, sizeof(buffer));
+    return send_json(req, buffer);
+}
+
+static size_t render_wifi_scan_json(
+    const espclaw_wifi_network_t *networks,
+    size_t count,
+    char *buffer,
+    size_t buffer_size
+)
+{
+    size_t used = 0;
+    size_t index;
+
+    if (buffer == NULL || buffer_size == 0) {
+        return 0;
+    }
+
+    used += (size_t)snprintf(buffer, buffer_size, "{\"ok\":true,\"networks\":[");
+    for (index = 0; index < count && used + 64 < buffer_size; ++index) {
+        if (index > 0) {
+            used += (size_t)snprintf(buffer + used, buffer_size - used, ",");
+        }
+        used += (size_t)snprintf(buffer + used, buffer_size - used, "{\"ssid\":");
+        used = append_escaped_json(buffer, buffer_size, used, networks[index].ssid);
+        used += (size_t)snprintf(
+            buffer + used,
+            buffer_size - used,
+            ",\"rssi\":%d,\"channel\":%d,\"secure\":%s}",
+            networks[index].rssi,
+            networks[index].channel,
+            networks[index].secure ? "true" : "false"
+        );
+    }
+    used += (size_t)snprintf(buffer + used, buffer_size - used, "]}");
+    return used >= buffer_size ? buffer_size - 1 : used;
+}
+
+static esp_err_t network_status_get_handler(httpd_req_t *req)
+{
+    char buffer[256];
+    render_wifi_status_prefix(buffer, sizeof(buffer));
+    append_text(buffer, sizeof(buffer), "}");
+    return send_json(req, buffer);
+}
+
+static esp_err_t network_scan_get_handler(httpd_req_t *req)
+{
+    char buffer[4096];
+    espclaw_wifi_network_t networks[12];
+    size_t count = 0;
+
+    if (espclaw_runtime_wifi_scan(networks, sizeof(networks) / sizeof(networks[0]), &count) != ESP_OK) {
+        espclaw_admin_render_result_json(false, "failed to scan for Wi-Fi networks", buffer, sizeof(buffer));
+        return send_json_status(req, buffer, 500, "Internal Server Error");
+    }
+    render_wifi_scan_json(networks, count, buffer, sizeof(buffer));
+    return send_json(req, buffer);
+}
+
+static esp_err_t network_join_post_handler(httpd_req_t *req)
+{
+    char body[1024];
+    char ssid[64];
+    char password[128];
+    char message[256];
+    char response[512];
+    size_t used;
+
+    if (read_request_body(req, body, sizeof(body)) != ESP_OK) {
+        espclaw_admin_render_result_json(false, "failed to read join request", response, sizeof(response));
+        return send_json_status(req, response, 400, "Bad Request");
+    }
+    if (!espclaw_admin_json_string_value(body, "ssid", ssid, sizeof(ssid))) {
+        espclaw_admin_render_result_json(false, "missing ssid", response, sizeof(response));
+        return send_json_status(req, response, 400, "Bad Request");
+    }
+    if (!espclaw_admin_json_string_value(body, "password", password, sizeof(password))) {
+        password[0] = '\0';
+    }
+    if (espclaw_runtime_wifi_join(ssid, password, message, sizeof(message)) != ESP_OK) {
+        espclaw_admin_render_result_json(false, message[0] != '\0' ? message : "failed to join network", response, sizeof(response));
+        return send_json_status(req, response, 500, "Internal Server Error");
+    }
+
+    used = render_wifi_status_prefix(response, sizeof(response));
+    append_text(response, sizeof(response), ",\"message\":");
+    used = strlen(response);
+    used = append_escaped_json(response, sizeof(response), used, message);
+    (void)used;
+    append_text(response, sizeof(response), "}");
+    return send_json(req, response);
 }
 
 static void merge_auth_profile_from_body(espclaw_auth_profile_t *profile, const char *body)
@@ -599,11 +862,20 @@ esp_err_t espclaw_admin_server_start(void)
         {.uri = "/", .method = HTTP_GET, .handler = root_get_handler, .user_ctx = NULL},
         {.uri = "/api/status", .method = HTTP_GET, .handler = status_get_handler, .user_ctx = NULL},
         {.uri = "/api/board", .method = HTTP_GET, .handler = board_get_handler, .user_ctx = NULL},
+        {.uri = "/api/board/presets", .method = HTTP_GET, .handler = board_presets_get_handler, .user_ctx = NULL},
+        {.uri = "/api/board/config", .method = HTTP_GET, .handler = board_config_get_handler, .user_ctx = NULL},
+        {.uri = "/api/board/config", .method = HTTP_PUT, .handler = board_config_put_handler, .user_ctx = NULL},
+        {.uri = "/api/board/apply", .method = HTTP_POST, .handler = board_apply_post_handler, .user_ctx = NULL},
+        {.uri = "/api/network/status", .method = HTTP_GET, .handler = network_status_get_handler, .user_ctx = NULL},
+        {.uri = "/api/network/provisioning", .method = HTTP_GET, .handler = network_provisioning_get_handler, .user_ctx = NULL},
+        {.uri = "/api/network/scan", .method = HTTP_GET, .handler = network_scan_get_handler, .user_ctx = NULL},
+        {.uri = "/api/network/join", .method = HTTP_POST, .handler = network_join_post_handler, .user_ctx = NULL},
         {.uri = "/api/auth/status", .method = HTTP_GET, .handler = auth_status_get_handler, .user_ctx = NULL},
         {.uri = "/api/auth/codex", .method = HTTP_PUT, .handler = auth_put_handler, .user_ctx = NULL},
         {.uri = "/api/auth/codex", .method = HTTP_DELETE, .handler = auth_delete_handler, .user_ctx = NULL},
         {.uri = "/api/auth/import-codex-cli", .method = HTTP_POST, .handler = auth_import_codex_cli_post_handler, .user_ctx = NULL},
         {.uri = "/api/workspace/files", .method = HTTP_GET, .handler = workspace_get_handler, .user_ctx = NULL},
+        {.uri = "/api/monitor", .method = HTTP_GET, .handler = monitor_get_handler, .user_ctx = NULL},
         {.uri = "/api/tools", .method = HTTP_GET, .handler = tools_get_handler, .user_ctx = NULL},
         {.uri = "/api/apps", .method = HTTP_GET, .handler = apps_get_handler, .user_ctx = NULL},
         {.uri = "/api/apps", .method = HTTP_DELETE, .handler = apps_delete_handler, .user_ctx = NULL},
@@ -624,7 +896,10 @@ esp_err_t espclaw_admin_server_start(void)
     }
 
     config.server_port = CONFIG_ESPCLAW_ADMIN_PORT;
-    config.max_uri_handlers = 24;
+    config.stack_size = ESPCLAW_ADMIN_HTTPD_STACK_SIZE;
+    config.max_uri_handlers = 32;
+    config.max_open_sockets = 4;
+    config.lru_purge_enable = true;
     config.core_id = admin_core >= 0 ? admin_core : tskNO_AFFINITY;
     if (httpd_start(&s_admin_server, &config) != ESP_OK) {
         return ESP_FAIL;

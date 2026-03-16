@@ -28,6 +28,15 @@ Current built-in variants:
 
 The built-in descriptor is selected from the board profile, then overridden by `board.json`.
 
+The admin UI and simulator expose those built-ins through:
+
+- `GET /api/board/presets`
+- `POST /api/board/apply?variant_id=<id>`
+- `GET /api/board/config`
+- `PUT /api/board/config`
+
+That makes it practical to ship one firmware binary per board class and finish the exact wiring at deploy time instead of rebuilding per carrier board.
+
 ## JSON Format
 
 Example:
@@ -105,6 +114,18 @@ GET /api/board
 ```
 
 This returns the current variant, descriptor source, named pins, buses, ADC channels, and task-placement policy.
+
+The config editor route returns the raw workspace JSON plus provenance:
+
+```text
+GET /api/board/config
+```
+
+The preset listing route only returns variants valid for the current board profile:
+
+```text
+GET /api/board/presets
+```
 
 ## Multicore Policy
 

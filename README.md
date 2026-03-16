@@ -131,16 +131,24 @@ idf.py -B build-esp32c3 set-target esp32c3
 idf.py -B build-esp32c3 build
 ```
 
-The firmware now serves the admin UI directly from the device root path and exposes the app-management API on the same port:
+The firmware now serves the admin UI directly from the device root path and exposes board, network, app, auth, and chat APIs on the same port:
 
 - `GET /`
 - `GET /api/status`
 - `GET /api/board`
+- `GET /api/board/presets`
+- `GET /api/board/config`
+- `PUT /api/board/config`
+- `POST /api/board/apply?variant_id=<id>`
+- `GET /api/network/status`
+- `GET /api/network/scan`
+- `POST /api/network/join`
 - `GET /api/auth/status`
 - `PUT /api/auth/codex`
 - `DELETE /api/auth/codex`
 - `POST /api/auth/import-codex-cli`
 - `GET /api/workspace/files`
+- `GET /api/monitor`
 - `GET /api/tools`
 - `GET /api/apps`
 - `GET /api/apps/detail?app_id=<id>`
@@ -165,7 +173,36 @@ Configure runtime options with `idf.py menuconfig` under `ESPClaw`, including:
 - Telegram bot token
 - Telegram polling interval
 
-Provisioning transport is selected at runtime from the board profile, but BLE requires Bluetooth support in the active ESP-IDF sdkconfig. If BLE is not enabled, ESPClaw falls back to SoftAP provisioning and logs that downgrade during boot.
+Provisioning transport is selected at runtime from the board profile. The default `esp32c3` build now enables NimBLE BLE provisioning out of the box, while SoftAP onboarding remains the fallback path for BLE-disabled custom builds.
+
+For BLE-first boards such as the default `esp32c3` build:
+
+- the runtime advertises a BLE provisioning service named `ESPClaw-xxxxxx`
+- the default Proof-of-Possession is `espclaw-pass`
+- `GET /api/network/provisioning` exposes the BLE service name, PoP, QR payload, and the Espressif QR helper URL
+- the same helper URL is printed to the serial log during first-boot provisioning so boards can be onboarded without digging through mobile-app internals
+
+For zero-serial onboarding on `esp32cam` and BLE-disabled `esp32c3` / `esp32s3` builds:
+
+- the device brings up an onboarding AP named `ESPClaw-xxxxxx`
+- the admin UI is available immediately on `http://192.168.4.1/`
+- `GET /api/network/status` reports `onboarding_ssid`, `provisioning_transport`, and `admin_url`
+- `GET /api/network/provisioning` reports the active provisioning descriptor for either BLE or SoftAP onboarding
+- joining Wi-Fi through the admin UI or `POST /api/network/join` moves the device to STA mode and retires the onboarding AP after a successful connection
+
+## System Monitor
+
+ESPClaw exposes a lightweight runtime monitor through the admin UI and `GET /api/monitor`.
+
+It reports:
+
+- CPU core count and dual-core status
+- CPU frequency and estimated per-core load
+- flash chip size, active app partition size, and current app image size
+- workspace storage total and used bytes
+- RAM total, free, minimum-free, and largest-free-block values
+
+On simulator builds the values are synthetic but shape-compatible. On real firmware they come from ESP-IDF heap, flash, OTA, and idle-hook telemetry.
 
 ## Default Product Decisions
 
@@ -193,6 +230,12 @@ Built-in variants currently include:
 - `ai_thinker_esp32cam`
 - `generic_esp32c3`
 - `seeed_xiao_esp32c3`
+
+The admin UI can:
+
+- list built-in presets for the active profile
+- apply a preset directly into `/workspace/config/board.json`
+- edit and save the raw board descriptor JSON for custom wiring
 
 Example:
 

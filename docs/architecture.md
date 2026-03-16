@@ -192,7 +192,7 @@ The firmware now has an initial runtime path that performs:
 
 1. NVS initialization
 2. network stack initialization
-3. Wi-Fi provisioning manager startup
+3. BLE provisioning or ESPClaw-owned SoftAP onboarding startup
 4. Workspace mount/bootstrap from SD or LittleFS when available
 5. Telegram polling in a background FreeRTOS task
 6. Lua app boot-trigger execution from the mounted workspace
@@ -204,7 +204,7 @@ The Telegram runtime now has two layers:
 
 That gives the project a real end-to-end embedded message loop with multi-tool runs, while still keeping camera upload, richer provider refresh flows, and additional tool implementations as follow-on work.
 
-On fresh SoftAP-provisioned boards, the admin server is now deferred until provisioning completes so the provisioning manager and the ESPClaw admin HTTP server do not compete for the same socket budget during first boot.
+On SoftAP-managed boards, the admin server now owns the onboarding UX directly. The board exposes an `ESPClaw-xxxxxx` AP, serves the admin UI immediately on `http://192.168.4.1/`, and retires the onboarding AP after a successful station join.
 
 ## Planned Firmware Integration
 

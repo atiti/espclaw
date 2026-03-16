@@ -543,6 +543,82 @@ size_t espclaw_render_board_json(
     return used;
 }
 
+size_t espclaw_render_board_presets_json(
+    const espclaw_board_profile_t *profile,
+    char *buffer,
+    size_t buffer_size
+)
+{
+    size_t used = 0;
+    size_t index;
+    size_t count;
+
+    if (buffer == NULL || buffer_size == 0) {
+        return 0;
+    }
+
+    count = espclaw_board_preset_count(profile);
+    used = append_json_chunk(buffer, buffer_size, used, "{\"presets\":[");
+    for (index = 0; index < count; ++index) {
+        espclaw_board_descriptor_t descriptor;
+
+        if (espclaw_board_preset_at(profile, index, &descriptor) != 0) {
+            continue;
+        }
+        if (index > 0) {
+            used = append_json_chunk(buffer, buffer_size, used, ",");
+        }
+        used = append_json_chunk(buffer, buffer_size, used, "{\"variant\":");
+        used = append_json_escaped_string(buffer, buffer_size, used, descriptor.variant_id);
+        used = append_json_chunk(buffer, buffer_size, used, ",\"display_name\":");
+        used = append_json_escaped_string(buffer, buffer_size, used, descriptor.display_name);
+        used = append_json_chunk(buffer, buffer_size, used, ",\"profile_id\":%d", descriptor.profile_id);
+        used = append_json_chunk(buffer, buffer_size, used, "}");
+    }
+    used = append_json_chunk(buffer, buffer_size, used, "]}");
+    return used;
+}
+
+size_t espclaw_render_board_config_json(
+    const char *workspace_root,
+    const espclaw_board_profile_t *profile,
+    const espclaw_board_descriptor_t *board,
+    char *buffer,
+    size_t buffer_size
+)
+{
+    char raw_json[2048];
+    size_t used = 0;
+    bool from_workspace = false;
+
+    if (buffer == NULL || buffer_size == 0) {
+        return 0;
+    }
+
+    if (workspace_root != NULL &&
+        espclaw_workspace_read_file(workspace_root, "config/board.json", raw_json, sizeof(raw_json)) == 0) {
+        from_workspace = true;
+    } else {
+        espclaw_board_descriptor_t fallback;
+
+        if (board != NULL) {
+            espclaw_board_render_minimal_config_json(board, raw_json, sizeof(raw_json));
+        } else if (profile != NULL) {
+            espclaw_board_descriptor_default_for_profile(profile, &fallback);
+            espclaw_board_render_minimal_config_json(&fallback, raw_json, sizeof(raw_json));
+        } else {
+            snprintf(raw_json, sizeof(raw_json), "{\n  \"variant\": \"auto\"\n}\n");
+        }
+    }
+
+    used = append_json_chunk(buffer, buffer_size, used, "{\"ok\":true,\"source\":");
+    used = append_json_escaped_string(buffer, buffer_size, used, from_workspace ? "workspace" : "generated");
+    used = append_json_chunk(buffer, buffer_size, used, ",\"raw_json\":");
+    used = append_json_escaped_string(buffer, buffer_size, used, raw_json);
+    used = append_json_chunk(buffer, buffer_size, used, "}");
+    return used;
+}
+
 size_t espclaw_render_session_transcript_json(
     const char *workspace_root,
     const char *session_id,
@@ -568,5 +644,67 @@ size_t espclaw_render_session_transcript_json(
     used = append_json_chunk(buffer, buffer_size, used, ",\"transcript\":");
     used = append_json_escaped_string(buffer, buffer_size, used, source);
     used = append_json_chunk(buffer, buffer_size, used, "}");
+    return used;
+}
+
+size_t espclaw_render_system_monitor_json(
+    const espclaw_system_monitor_snapshot_t *snapshot,
+    char *buffer,
+    size_t buffer_size
+)
+{
+    size_t used = 0;
+    unsigned int index;
+    espclaw_system_monitor_snapshot_t empty;
+    const espclaw_system_monitor_snapshot_t *value = snapshot;
+
+    if (buffer == NULL || buffer_size == 0) {
+        return 0;
+    }
+    if (value == NULL) {
+        memset(&empty, 0, sizeof(empty));
+        value = &empty;
+    }
+
+    used = append_json_chunk(
+        buffer,
+        buffer_size,
+        used,
+        "{"
+        "\"available\":%s,"
+        "\"cpu_cores\":%u,"
+        "\"dual_core\":%s,"
+        "\"cpu_mhz\":%u,"
+        "\"flash_chip_size_bytes\":%u,"
+        "\"app_partition_size_bytes\":%u,"
+        "\"app_image_size_bytes\":%u,"
+        "\"workspace_total_bytes\":%u,"
+        "\"workspace_used_bytes\":%u,"
+        "\"ram_total_bytes\":%u,"
+        "\"ram_free_bytes\":%u,"
+        "\"ram_min_free_bytes\":%u,"
+        "\"ram_largest_free_block_bytes\":%u,"
+        "\"cpu_load_percent\":[",
+        value->available ? "true" : "false",
+        value->cpu_cores,
+        value->dual_core ? "true" : "false",
+        value->cpu_mhz,
+        (unsigned int)value->flash_chip_size_bytes,
+        (unsigned int)value->app_partition_size_bytes,
+        (unsigned int)value->app_image_size_bytes,
+        (unsigned int)value->workspace_total_bytes,
+        (unsigned int)value->workspace_used_bytes,
+        (unsigned int)value->ram_total_bytes,
+        (unsigned int)value->ram_free_bytes,
+        (unsigned int)value->ram_min_free_bytes,
+        (unsigned int)value->ram_largest_free_block_bytes
+    );
+    for (index = 0; index < value->cpu_cores && index < ESPCLAW_SYSTEM_MONITOR_MAX_CORES; ++index) {
+        if (index > 0U) {
+            used = append_json_chunk(buffer, buffer_size, used, ",");
+        }
+        used = append_json_chunk(buffer, buffer_size, used, "%u", value->cpu_load_percent[index]);
+    }
+    used = append_json_chunk(buffer, buffer_size, used, "]}");
     return used;
 }

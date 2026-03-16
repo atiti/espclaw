@@ -55,6 +55,12 @@ typedef struct {
     espclaw_board_adc_channel_t adc_channels[ESPCLAW_BOARD_ADC_COUNT_MAX];
 } espclaw_board_descriptor_t;
 
+size_t espclaw_board_preset_count(const espclaw_board_profile_t *profile);
+int espclaw_board_preset_at(
+    const espclaw_board_profile_t *profile,
+    size_t index,
+    espclaw_board_descriptor_t *descriptor
+);
 void espclaw_board_descriptor_default_for_profile(
     const espclaw_board_profile_t *profile,
     espclaw_board_descriptor_t *descriptor
@@ -73,5 +79,11 @@ int espclaw_board_resolve_pin_alias(const char *name, int *pin_out);
 int espclaw_board_find_i2c_bus(const char *name, espclaw_board_i2c_bus_t *bus_out);
 int espclaw_board_find_uart(const char *name, espclaw_board_uart_t *uart_out);
 int espclaw_board_find_adc_channel(const char *name, espclaw_board_adc_channel_t *channel_out);
+size_t espclaw_board_render_minimal_config_json(
+    const espclaw_board_descriptor_t *descriptor,
+    char *buffer,
+    size_t buffer_size
+);
+int espclaw_board_write_variant_config(const char *workspace_root, const char *variant_id);
 
 #endif

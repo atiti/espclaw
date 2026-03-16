@@ -2,9 +2,37 @@
 
 ## Purpose
 
-The admin UI is the primary local control surface for the device. It exists to make setup and maintenance possible without a serial console once the board is provisioned.
+The admin UI is the primary local control surface for the device. It exists to make setup and maintenance possible without a serial console, including first-boot onboarding on SoftAP-managed boards.
 
-## V1 Screens
+The current UI is chat-first rather than JSON-first:
+
+- the default surface is an operator chat window with a transcript view and message composer
+- setup work is grouped behind simpler modules for connectivity, device, apps, and advanced tools
+- raw JSON is removed from the normal operator path and replaced by cards, chips, checklists, and metric tiles
+- the custom `board.json` editor is still available, but only inside a collapsed advanced editor
+
+The dashboard also lazy-loads by workflow. Only status and the chat surface load immediately; setup, apps, monitor, tools, and loop data load when the user opens the relevant module or tab.
+
+## Operator Screens
+
+### Chat
+
+Shows:
+
+- the persisted transcript for the selected session
+- a ChatGPT-style compose box
+- the final model reply for the latest run
+
+Current routes:
+
+- `POST /api/chat/run?session_id=<id>`
+- `GET /api/chat/session?session_id=<id>`
+
+Current UI behavior:
+
+- `Send To Model` runs the iterative tool-using loop for the current session.
+- `Refresh` reloads the stored transcript.
+- the transcript is rendered as user / assistant / tool bubbles rather than raw JSONL.
 
 ### Overview
 
@@ -23,63 +51,72 @@ Current route:
 
 - `GET /api/status`
 
-### Network
+### Connectivity
+
+Combines network onboarding and provider auth into one operator flow.
+
+#### Network
 
 Allows:
 
 - viewing current Wi-Fi state
+- scanning nearby networks
 - updating Wi-Fi credentials
-- checking provisioning fallback mode
-
-### Provider Auth
-
-Allows:
-
-- selecting `openai_codex`, `openai_compat`, or `anthropic_messages`
-- editing base URL and model
-- saving access tokens, refresh tokens, and account ids through protected endpoints
-- importing Codex CLI credentials from `~/.codex/auth.json` in simulator mode
-
-Secret tokens are stored in NVS and should be written through dedicated protected endpoints rather than dumped into editable JSON.
+- seeing whether the device is still in onboarding mode
+- seeing the active provisioning transport
+- seeing the onboarding SSID and admin URL on SoftAP-backed boards
+- seeing BLE service name, PoP, QR payload, and the Espressif QR helper URL on BLE-backed boards
 
 Current routes:
 
-- `GET /api/auth/status`
-- `PUT /api/auth/codex`
-- `DELETE /api/auth/codex`
-- `POST /api/auth/import-codex-cli`
+- `GET /api/network/status`
+- `GET /api/network/provisioning`
+- `GET /api/network/scan`
+- `POST /api/network/join`
 
 Current UI behavior:
 
-- `Save Auth` writes the current provider credentials to the auth store.
-- `Import Codex CLI` imports ChatGPT/Codex credentials from the local Codex CLI auth file when running in the simulator.
-- `Clear Auth` removes the stored credentials.
-- The auth status panel intentionally shows metadata, not raw secrets.
+- `Scan Networks` queries nearby SSIDs and lets the user copy one into the SSID field.
+- `Join Wi-Fi` submits credentials through the runtime and leaves the device in SoftAP onboarding until station join succeeds.
+- the provisioning panel shows either the BLE onboarding descriptor or the SoftAP onboarding descriptor.
+- on SoftAP onboarding builds, the status panel reports the transient AP name and `http://192.168.4.1/` admin URL.
+- on BLE onboarding builds, the provisioning panel reports the service name, PoP, and helper URL that can be opened in Espressif's provisioning page.
 
-### Channels
+#### Provider Auth
 
-V1 exposes Telegram configuration:
+Allows:
 
-- bot token
-- polling interval
-- allowlist
-- media enablement
+- selecting the active model backend
+- editing model, base URL, and account id
+- saving or clearing tokens
+- importing Codex CLI credentials in simulator mode
 
-### Workspace
+Token textareas are tucked behind a `Token fields` details panel so they do not dominate the normal setup view.
 
-Allows editing the main user-facing control files:
+### Device
 
-- `AGENTS.md`
-- `IDENTITY.md`
-- `USER.md`
-- `HEARTBEAT.md`
-- `memory/MEMORY.md`
+Allows:
 
-The backend should also expose file metadata for these control files so the UI can indicate whether the workspace has been bootstrapped correctly on the active storage backend.
+- listing built-in board presets valid for the active board profile
+- applying a built-in preset into `/workspace/config/board.json`
+- editing the raw board descriptor JSON for custom carrier boards
+- seeing the resolved board descriptor and current task-placement policy
+- checking workspace bootstrap state
+- checking flash, RAM, CPU, and workspace usage through the system monitor
 
-Current route:
+Current routes:
 
-- `GET /api/workspace/files`
+- `GET /api/board`
+- `GET /api/board/presets`
+- `GET /api/board/config`
+- `PUT /api/board/config`
+- `POST /api/board/apply?variant_id=<id>`
+
+Current UI behavior:
+
+- `Refresh` reloads the resolved descriptor.
+- `Apply Preset` writes the chosen preset into the workspace and activates it immediately.
+- the main board view is structured, while the raw `board.json` editor sits behind `Custom board descriptor`.
 
 ### Tools
 
@@ -97,6 +134,25 @@ Current UI behavior:
 
 - `Refresh Tools` reloads the tool catalog JSON from the runtime.
 - the chat loop can use `tool.list` when the user asks about available capabilities.
+
+### System Monitor
+
+Allows:
+
+- viewing CPU core count and dual-core status
+- seeing CPU frequency and estimated per-core utilization
+- checking flash capacity and current firmware image size
+- checking workspace capacity and usage
+- checking RAM total/free/minimum-free/largest-block values
+
+Current route:
+
+- `GET /api/monitor`
+
+Current UI behavior:
+
+- `Refresh Monitor` reloads the monitor snapshot from the runtime.
+- the panel is meant as an operational health view for constrained boards, not a full profiler.
 
 ### Apps
 
@@ -148,24 +204,6 @@ Current UI behavior:
 - `Start Loop` launches a persistent Lua VM and begins calling `handle(trigger, payload)` on the requested schedule.
 - `Stop Loop` sets `stop_requested` and lets the worker exit cleanly after the current iteration.
 - `Refresh Loops` reloads the current loop inventory and status JSON.
-
-### Chat
-
-Allows:
-
-- running an iterative LLM session against the configured provider
-- inspecting the persisted session transcript for a chosen session id
-- testing the same multi-tool loop that Telegram uses for free-text messages
-
-Current routes:
-
-- `POST /api/chat/run?session_id=<id>`
-- `GET /api/chat/session?session_id=<id>`
-
-Current UI behavior:
-
-- `Run Chat` starts a single iterative run that may use multiple tool-call rounds before replying.
-- `Load Session` reads the stored JSONL transcript for the selected session id and renders it for inspection.
 
 ### Logs And Diagnostics
 

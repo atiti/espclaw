@@ -2,11 +2,20 @@
 
 ## Unreleased
 
+- Added `/api/monitor` and an admin UI system monitor panel for flash, workspace, RAM, CPU load, and dual-core visibility across simulator and firmware builds.
+- Changed the embedded admin dashboard to lazy-load most sections on first interaction instead of fetching every panel eagerly on first paint.
+- Replaced the JSON-heavy admin screen with a chat-first operator console, structured setup cards, rendered transcripts, metric tiles, and collapsible advanced editors.
 - Added a lightweight board-descriptor layer with built-in board variants, `/workspace/config/board.json` overrides, named bus/pin mappings, and a new `GET /api/board` admin surface so one firmware image can adapt to multiple development-board pinouts.
+- Added board preset listing/apply flows plus raw `board.json` editing routes so predefined board configs can be applied or uploaded from the admin UI and simulator without rebuilding firmware.
+- Added zero-serial SoftAP onboarding managed directly by ESPClaw, including `/api/network/status`, `/api/network/scan`, `/api/network/join`, onboarding SSID reporting, and an immediate admin UI at `http://192.168.4.1/` on no-BLE boards.
+- Enabled NimBLE BLE provisioning by default for the `esp32c3` target and added a regression test so C3 builds do not silently fall back to SoftAP because Bluetooth was compiled out.
+- Added a shared provisioning descriptor with `/api/network/provisioning`, BLE QR payload generation, Espressif helper URLs, admin UI provisioning details, and serial log output so BLE onboarding data is visible in firmware and simulator flows.
+- Increased the ESP-IDF admin HTTP task stack to handle large JSON responses from routes such as `/api/loops`, `/api/tools`, and chat/session endpoints without triggering stack protection faults on real ESP32-C3 hardware.
+- Fixed ESP-IDF system monitor integration by linking the `esp_app_format` component and using the correct CPU clock header for runtime metrics.
 - Added a task-policy module that applies multicore placement rules for admin HTTP, Telegram polling, and persistent control loops on dual-core ESP32 targets while leaving single-core targets unpinned.
 - Added Lua board helpers such as `espclaw.board.describe()` and alias-aware hardware bindings so apps can target named resources instead of hard-coded GPIO numbers.
 - Increased the ESP-IDF main task stack for the firmware runtime and reduced startup stack pressure in the board/app bootstrap path, which fixes real ESP32-C3 boot crashes during workspace and boot-app initialization.
-- Deferred admin-server startup until SoftAP provisioning completes on fresh boards, which avoids first-boot HTTP socket conflicts between the provisioning manager and the ESPClaw admin UI.
+- Replaced the old deferred-admin SoftAP provisioning path with an ESPClaw-owned onboarding AP on constrained boards, which avoids first-boot socket conflicts between the provisioning manager and the ESPClaw admin UI on real ESP32-C3 hardware.
 - Verified the flash-backed `esp32c3` path on real hardware using a Seeed XIAO ESP32-C3-class pin map and direct flashing over `/dev/cu.usbmodem1101`; the firmware now boots cleanly into provisioning with LittleFS-backed workspace storage.
 - Added a workspace storage backend layer with SD-card and LittleFS support, plus a new `esp32c3` board profile that defaults to an internal flash-backed `/workspace` filesystem for boards without microSD.
 - Added a custom partition layout with a dedicated `workspace` LittleFS partition so the same workspace/app/session layout can run on non-SD boards.

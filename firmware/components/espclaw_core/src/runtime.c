@@ -15,7 +15,6 @@
 #include "freertos/task.h"
 #include "nvs_flash.h"
 #include "wifi_provisioning/manager.h"
-#include "wifi_provisioning/scheme_softap.h"
 #if defined(CONFIG_BT_ENABLED) && CONFIG_BT_ENABLED
 #include "wifi_provisioning/scheme_ble.h"
 #define ESPCLAW_BLE_PROVISIONING_AVAILABLE 1
@@ -33,11 +32,13 @@
 #include "espclaw/board_profile.h"
 #include "espclaw/session_store.h"
 #include "espclaw/storage.h"
+#include "espclaw/system_monitor.h"
 #include "espclaw/task_policy.h"
 #include "espclaw/telegram_protocol.h"
 #include "espclaw/workspace.h"
 
 static const char *TAG = "espclaw_runtime";
+static const char *ESPCLAW_PROVISIONING_POP = "espclaw-pass";
 
 #ifndef CONFIG_ESPCLAW_TELEGRAM_BOT_TOKEN
 #define CONFIG_ESPCLAW_TELEGRAM_BOT_TOKEN ""
@@ -66,6 +67,65 @@ enum {
 static EventGroupHandle_t s_runtime_event_group;
 static espclaw_runtime_status_t s_runtime_status;
 static long s_telegram_offset;
+static bool s_softap_onboarding_active;
+static bool s_ble_provisioning_active;
+static bool s_sta_connect_enabled;
+
+static esp_err_t build_runtime_provisioning_descriptor(espclaw_provisioning_descriptor_t *descriptor)
+{
+    const char *transport = "";
+    const char *admin_url = "";
+    const char *pop = "";
+
+    if (descriptor == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (s_runtime_status.provisioning_active) {
+        if (s_ble_provisioning_active) {
+            transport = "ble";
+            pop = ESPCLAW_PROVISIONING_POP;
+        } else if (s_softap_onboarding_active) {
+            transport = "softap";
+            admin_url = "http://192.168.4.1/";
+        } else if (s_runtime_status.profile.provisioning != NULL) {
+            transport = s_runtime_status.profile.provisioning;
+        }
+    }
+
+    if (espclaw_provisioning_build_descriptor(
+            s_runtime_status.provisioning_active,
+            transport,
+            s_runtime_status.onboarding_ssid,
+            "",
+            pop,
+            admin_url,
+            descriptor) != 0) {
+        return ESP_FAIL;
+    }
+
+    return ESP_OK;
+}
+
+static void clear_onboarding_state(void)
+{
+    s_softap_onboarding_active = false;
+    s_ble_provisioning_active = false;
+    s_runtime_status.provisioning_active = false;
+    s_runtime_status.onboarding_ssid[0] = '\0';
+}
+
+static void refresh_wifi_ssid(void)
+{
+    wifi_config_t wifi_cfg = {0};
+
+    s_runtime_status.wifi_ssid[0] = '\0';
+    if (esp_wifi_get_config(WIFI_IF_STA, &wifi_cfg) != ESP_OK) {
+        return;
+    }
+
+    snprintf(s_runtime_status.wifi_ssid, sizeof(s_runtime_status.wifi_ssid), "%s", (const char *)wifi_cfg.sta.ssid);
+}
 
 static void provisioning_event_cb(void *user_data, wifi_prov_cb_event_t event, void *event_data)
 {
@@ -74,13 +134,15 @@ static void provisioning_event_cb(void *user_data, wifi_prov_cb_event_t event, v
 
     switch (event) {
     case WIFI_PROV_START:
+        s_ble_provisioning_active = true;
         s_runtime_status.provisioning_active = true;
         break;
     case WIFI_PROV_CRED_SUCCESS:
         ESP_LOGI(TAG, "Provisioning credentials accepted");
+        refresh_wifi_ssid();
         break;
     case WIFI_PROV_END:
-        s_runtime_status.provisioning_active = false;
+        clear_onboarding_state();
         wifi_prov_mgr_deinit();
         if (espclaw_admin_server_start() != ESP_OK) {
             ESP_LOGE(TAG, "Failed to start admin server after provisioning");
@@ -120,14 +182,26 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
     (void)event_data;
 
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
+        if (s_sta_connect_enabled) {
+            esp_wifi_connect();
+        }
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         s_runtime_status.wifi_ready = false;
         xEventGroupClearBits(s_runtime_event_group, ESPCLAW_WIFI_CONNECTED_BIT);
-        esp_wifi_connect();
+        if (s_sta_connect_enabled) {
+            esp_wifi_connect();
+        }
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        refresh_wifi_ssid();
         s_runtime_status.wifi_ready = true;
         xEventGroupSetBits(s_runtime_event_group, ESPCLAW_WIFI_CONNECTED_BIT);
+        if (s_softap_onboarding_active) {
+            ESP_LOGI(TAG, "Wi-Fi joined, disabling onboarding SoftAP");
+            clear_onboarding_state();
+            if (esp_wifi_set_mode(WIFI_MODE_STA) != ESP_OK) {
+                ESP_LOGW(TAG, "Failed to disable SoftAP after onboarding");
+            }
+        }
     }
 }
 
@@ -181,9 +255,51 @@ static esp_err_t init_wifi_stack(void)
     esp_netif_create_default_wifi_sta();
     esp_netif_create_default_wifi_ap();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+    ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_FLASH));
 
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL));
+    return ESP_OK;
+}
+
+static esp_err_t start_softap_onboarding(void)
+{
+    wifi_config_t sta_cfg = {0};
+    wifi_config_t ap_cfg = {0};
+    uint8_t mac[6] = {0};
+    char service_name[32];
+
+    if (esp_wifi_get_config(WIFI_IF_STA, &sta_cfg) == ESP_OK && sta_cfg.sta.ssid[0] != '\0') {
+        ESP_LOGI(TAG, "Wi-Fi already configured, starting station mode");
+        s_sta_connect_enabled = true;
+        ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+        ESP_ERROR_CHECK(esp_wifi_start());
+        refresh_wifi_ssid();
+        clear_onboarding_state();
+        return ESP_OK;
+    }
+
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    snprintf(service_name, sizeof(service_name), "ESPClaw-%02X%02X%02X", mac[3], mac[4], mac[5]);
+
+    snprintf((char *)ap_cfg.ap.ssid, sizeof(ap_cfg.ap.ssid), "%s", service_name);
+    ap_cfg.ap.ssid_len = (uint8_t)strlen((const char *)ap_cfg.ap.ssid);
+    ap_cfg.ap.channel = 1;
+    ap_cfg.ap.max_connection = 4;
+    ap_cfg.ap.authmode = WIFI_AUTH_OPEN;
+    ap_cfg.ap.ssid_hidden = 0;
+    ap_cfg.ap.pmf_cfg.required = false;
+
+    s_sta_connect_enabled = false;
+    s_softap_onboarding_active = true;
+    s_runtime_status.provisioning_active = true;
+    snprintf(s_runtime_status.onboarding_ssid, sizeof(s_runtime_status.onboarding_ssid), "%s", service_name);
+
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_cfg));
+    ESP_ERROR_CHECK(esp_wifi_start());
+    ESP_LOGI(TAG, "Starting onboarding SoftAP %s", service_name);
+    ESP_LOGI(TAG, "Admin UI available at http://192.168.4.1/");
     return ESP_OK;
 }
 
@@ -192,7 +308,6 @@ static esp_err_t start_wifi_provisioning(const espclaw_board_profile_t *profile)
 #if CONFIG_ESPCLAW_ENABLE_WIFI_PROVISIONING
     wifi_prov_mgr_config_t config = {0};
     bool provisioned = false;
-    char service_name[32];
     const bool wants_ble = profile != NULL && profile->supports_ble_provisioning;
     const bool use_ble = wants_ble && ESPCLAW_BLE_PROVISIONING_AVAILABLE;
 
@@ -202,12 +317,11 @@ static esp_err_t start_wifi_provisioning(const espclaw_board_profile_t *profile)
         config.scheme_event_handler = (wifi_prov_event_handler_t)WIFI_PROV_SCHEME_BLE_EVENT_HANDLER_FREE_BTDM;
 #endif
     } else {
-        config.scheme = wifi_prov_scheme_softap;
-        config.scheme_event_handler = (wifi_prov_event_handler_t)WIFI_PROV_EVENT_HANDLER_NONE;
         if (wants_ble) {
-            ESP_LOGW(TAG, "BLE provisioning requested by board profile but BT is disabled in sdkconfig, using SoftAP");
+            ESP_LOGW(TAG, "BLE provisioning requested by board profile but BT is disabled in sdkconfig, using ESPClaw SoftAP onboarding");
             s_runtime_status.profile.provisioning = "softap";
         }
+        return start_softap_onboarding();
     }
     config.app_event_handler.event_cb = provisioning_event_cb;
     config.app_event_handler.user_data = NULL;
@@ -217,13 +331,29 @@ static esp_err_t start_wifi_provisioning(const espclaw_board_profile_t *profile)
     ESP_ERROR_CHECK(wifi_prov_mgr_is_provisioned(&provisioned));
 
     if (!provisioned) {
+        char service_name[32];
+        espclaw_provisioning_descriptor_t descriptor;
         uint8_t mac[6] = {0};
         esp_read_mac(mac, ESP_MAC_WIFI_STA);
         snprintf(service_name, sizeof(service_name), "ESPClaw-%02X%02X%02X", mac[3], mac[4], mac[5]);
         ESP_LOGI(TAG, "Starting provisioning service %s", service_name);
+        snprintf(s_runtime_status.onboarding_ssid, sizeof(s_runtime_status.onboarding_ssid), "%s", service_name);
+        if (espclaw_provisioning_build_descriptor(
+                true,
+                "ble",
+                service_name,
+                "",
+                ESPCLAW_PROVISIONING_POP,
+                "",
+                &descriptor) == 0) {
+            ESP_LOGI(TAG, "BLE provisioning PoP: %s", descriptor.pop);
+            if (descriptor.qr_url[0] != '\0') {
+                ESP_LOGI(TAG, "BLE provisioning helper URL: %s", descriptor.qr_url);
+            }
+        }
         ESP_ERROR_CHECK(wifi_prov_mgr_start_provisioning(
             WIFI_PROV_SECURITY_1,
-            "espclaw-pass",
+            ESPCLAW_PROVISIONING_POP,
             service_name,
             NULL
         ));
@@ -232,14 +362,115 @@ static esp_err_t start_wifi_provisioning(const espclaw_board_profile_t *profile)
 
     ESP_LOGI(TAG, "Wi-Fi already provisioned, starting station mode");
     wifi_prov_mgr_deinit();
+    s_sta_connect_enabled = true;
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_start());
-    s_runtime_status.provisioning_active = false;
+    refresh_wifi_ssid();
+    clear_onboarding_state();
     return ESP_OK;
 #else
     (void)profile;
     return ESP_ERR_NOT_SUPPORTED;
 #endif
+}
+
+esp_err_t espclaw_runtime_wifi_scan(
+    espclaw_wifi_network_t *networks,
+    size_t max_networks,
+    size_t *count_out
+)
+{
+    uint16_t ap_count = 0;
+    uint16_t desired = 0;
+    wifi_scan_config_t scan_config = {0};
+    wifi_ap_record_t records[16];
+    uint16_t record_count = sizeof(records) / sizeof(records[0]);
+    uint16_t index;
+
+    if (count_out == NULL || networks == NULL || max_networks == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    *count_out = 0;
+    if (esp_wifi_scan_start(&scan_config, true) != ESP_OK) {
+        return ESP_FAIL;
+    }
+    if (esp_wifi_scan_get_ap_num(&ap_count) != ESP_OK) {
+        return ESP_FAIL;
+    }
+
+    desired = ap_count < record_count ? ap_count : record_count;
+    if (desired == 0) {
+        return ESP_OK;
+    }
+    if (esp_wifi_scan_get_ap_records(&desired, records) != ESP_OK) {
+        return ESP_FAIL;
+    }
+
+    for (index = 0; index < desired && index < max_networks; ++index) {
+        snprintf(networks[index].ssid, sizeof(networks[index].ssid), "%s", (const char *)records[index].ssid);
+        networks[index].rssi = records[index].rssi;
+        networks[index].channel = records[index].primary;
+        networks[index].secure = records[index].authmode != WIFI_AUTH_OPEN;
+        (*count_out)++;
+    }
+
+    return ESP_OK;
+}
+
+esp_err_t espclaw_runtime_wifi_join(
+    const char *ssid,
+    const char *password,
+    char *message,
+    size_t message_size
+)
+{
+    wifi_config_t wifi_cfg = {0};
+
+    if (message != NULL && message_size > 0) {
+        message[0] = '\0';
+    }
+    if (ssid == NULL || ssid[0] == '\0') {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    snprintf((char *)wifi_cfg.sta.ssid, sizeof(wifi_cfg.sta.ssid), "%s", ssid);
+    snprintf((char *)wifi_cfg.sta.password, sizeof(wifi_cfg.sta.password), "%s", password != NULL ? password : "");
+    wifi_cfg.sta.threshold.authmode = WIFI_AUTH_OPEN;
+    wifi_cfg.sta.pmf_cfg.capable = true;
+    wifi_cfg.sta.pmf_cfg.required = false;
+
+    if (s_runtime_status.provisioning_active) {
+        if (s_ble_provisioning_active) {
+            if (wifi_prov_mgr_configure_sta(&wifi_cfg) != ESP_OK) {
+                if (message != NULL && message_size > 0) {
+                    snprintf(message, message_size, "failed to submit Wi-Fi credentials");
+                }
+                return ESP_FAIL;
+            }
+            if (message != NULL && message_size > 0) {
+                snprintf(message, message_size, "submitted credentials for %s", ssid);
+            }
+            snprintf(s_runtime_status.wifi_ssid, sizeof(s_runtime_status.wifi_ssid), "%s", ssid);
+            return ESP_OK;
+        }
+    }
+
+    s_sta_connect_enabled = true;
+    if (esp_wifi_set_mode(s_softap_onboarding_active ? WIFI_MODE_APSTA : WIFI_MODE_STA) != ESP_OK ||
+        esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg) != ESP_OK ||
+        esp_wifi_connect() != ESP_OK) {
+        if (message != NULL && message_size > 0) {
+            snprintf(message, message_size, "failed to connect to %s", ssid);
+        }
+        return ESP_FAIL;
+    }
+
+    if (message != NULL && message_size > 0) {
+        snprintf(message, message_size, "connecting to %s", ssid);
+    }
+    snprintf(s_runtime_status.wifi_ssid, sizeof(s_runtime_status.wifi_ssid), "%s", ssid);
+    return ESP_OK;
 }
 
 static esp_err_t telegram_send_message(const char *token, const char *chat_id, const char *text)
@@ -596,9 +827,15 @@ static esp_err_t maybe_start_telegram(void)
 esp_err_t espclaw_runtime_start(espclaw_board_profile_id_t profile_id, espclaw_runtime_status_t *status)
 {
     memset(&s_runtime_status, 0, sizeof(s_runtime_status));
+    s_softap_onboarding_active = false;
+    s_ble_provisioning_active = false;
+    s_sta_connect_enabled = false;
     s_runtime_status.profile = espclaw_board_profile_for(profile_id);
     espclaw_task_policy_select(&s_runtime_status.profile);
     espclaw_board_configure_current(NULL, &s_runtime_status.profile);
+    if (espclaw_system_monitor_init(&s_runtime_status.profile) != 0) {
+        return ESP_FAIL;
+    }
 
     if (s_runtime_event_group == NULL) {
         s_runtime_event_group = xEventGroupCreate();
@@ -635,4 +872,9 @@ esp_err_t espclaw_runtime_start(espclaw_board_profile_id_t profile_id, espclaw_r
 const espclaw_runtime_status_t *espclaw_runtime_status(void)
 {
     return &s_runtime_status;
+}
+
+esp_err_t espclaw_runtime_get_provisioning_descriptor(espclaw_provisioning_descriptor_t *descriptor)
+{
+    return build_runtime_provisioning_descriptor(descriptor);
 }

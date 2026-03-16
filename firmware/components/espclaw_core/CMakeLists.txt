@@ -14,19 +14,24 @@ idf_component_register(
     "src/config_render.c"
     "src/hardware.c"
     "src/ota_state.c"
+    "src/provisioning.c"
     "src/provider.c"
     "src/provider_request.c"
     "src/runtime.c"
     "src/session_store.c"
     "src/storage.c"
+    "src/system_monitor.c"
     "src/task_policy.c"
     "src/telegram_protocol.c"
     "src/tool_catalog.c"
     "src/workspace.c"
   INCLUDE_DIRS "include"
   REQUIRES
+    app_update
+    bootloader_support
     driver
     esp_adc
+    esp_app_format
     esp_event
     esp_http_client
     esp_http_server
@@ -38,5 +43,6 @@ idf_component_register(
     lua
     nvs_flash
     sdmmc
+    spi_flash
     wifi_provisioning
 )

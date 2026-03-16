@@ -8,6 +8,7 @@
 #include "espclaw/board_config.h"
 #include "espclaw/board_profile.h"
 #include "espclaw/ota_state.h"
+#include "espclaw/system_monitor.h"
 
 size_t espclaw_render_admin_status_json(
     const espclaw_board_profile_t *profile,
@@ -50,9 +51,26 @@ size_t espclaw_render_board_json(
     char *buffer,
     size_t buffer_size
 );
+size_t espclaw_render_board_presets_json(
+    const espclaw_board_profile_t *profile,
+    char *buffer,
+    size_t buffer_size
+);
+size_t espclaw_render_board_config_json(
+    const char *workspace_root,
+    const espclaw_board_profile_t *profile,
+    const espclaw_board_descriptor_t *board,
+    char *buffer,
+    size_t buffer_size
+);
 size_t espclaw_render_session_transcript_json(
     const char *workspace_root,
     const char *session_id,
+    char *buffer,
+    size_t buffer_size
+);
+size_t espclaw_render_system_monitor_json(
+    const espclaw_system_monitor_snapshot_t *snapshot,
     char *buffer,
     size_t buffer_size
 );

@@ -158,6 +158,39 @@ static const espclaw_builtin_board_t *builtin_board_for_profile(espclaw_board_pr
     }
 }
 
+static size_t builtin_board_count_for_profile(espclaw_board_profile_id_t profile_id)
+{
+    size_t index;
+    size_t count = 0;
+
+    for (index = 0; index < sizeof(BUILTIN_BOARDS) / sizeof(BUILTIN_BOARDS[0]); ++index) {
+        if (BUILTIN_BOARDS[index].profile_id == profile_id) {
+            count++;
+        }
+    }
+    return count;
+}
+
+static const espclaw_builtin_board_t *builtin_board_at_profile_index(
+    espclaw_board_profile_id_t profile_id,
+    size_t index
+)
+{
+    size_t builtin_index;
+    size_t seen = 0;
+
+    for (builtin_index = 0; builtin_index < sizeof(BUILTIN_BOARDS) / sizeof(BUILTIN_BOARDS[0]); ++builtin_index) {
+        if (BUILTIN_BOARDS[builtin_index].profile_id != profile_id) {
+            continue;
+        }
+        if (seen == index) {
+            return &BUILTIN_BOARDS[builtin_index];
+        }
+        seen++;
+    }
+    return NULL;
+}
+
 static void fill_from_builtin(const espclaw_builtin_board_t *builtin, espclaw_board_descriptor_t *descriptor)
 {
     size_t index;
@@ -548,6 +581,35 @@ static void apply_adc_overrides_from_json(const char *json, espclaw_board_descri
     }
 }
 
+size_t espclaw_board_preset_count(const espclaw_board_profile_t *profile)
+{
+    if (profile == NULL) {
+        return 0;
+    }
+    return builtin_board_count_for_profile(profile->profile_id);
+}
+
+int espclaw_board_preset_at(
+    const espclaw_board_profile_t *profile,
+    size_t index,
+    espclaw_board_descriptor_t *descriptor
+)
+{
+    const espclaw_builtin_board_t *builtin;
+
+    if (profile == NULL || descriptor == NULL) {
+        return -1;
+    }
+
+    builtin = builtin_board_at_profile_index(profile->profile_id, index);
+    if (builtin == NULL) {
+        return -1;
+    }
+
+    fill_from_builtin(builtin, descriptor);
+    return 0;
+}
+
 void espclaw_board_descriptor_default_for_profile(
     const espclaw_board_profile_t *profile,
     espclaw_board_descriptor_t *descriptor
@@ -689,4 +751,42 @@ int espclaw_board_find_adc_channel(const char *name, espclaw_board_adc_channel_t
         }
     }
     return -1;
+}
+
+size_t espclaw_board_render_minimal_config_json(
+    const espclaw_board_descriptor_t *descriptor,
+    char *buffer,
+    size_t buffer_size
+)
+{
+    if (buffer == NULL || buffer_size == 0) {
+        return 0;
+    }
+
+    return (size_t)snprintf(
+        buffer,
+        buffer_size,
+        "{\n"
+        "  \"variant\": \"%s\"\n"
+        "}\n",
+        descriptor != NULL && descriptor->variant_id[0] != '\0' ? descriptor->variant_id : "auto"
+    );
+}
+
+int espclaw_board_write_variant_config(const char *workspace_root, const char *variant_id)
+{
+    char json[128];
+    const espclaw_builtin_board_t *builtin;
+
+    if (workspace_root == NULL || variant_id == NULL || variant_id[0] == '\0') {
+        return -1;
+    }
+
+    builtin = builtin_board_for_variant(variant_id);
+    if (builtin == NULL) {
+        return -1;
+    }
+
+    snprintf(json, sizeof(json), "{\n  \"variant\": \"%s\"\n}\n", builtin->variant_id);
+    return espclaw_workspace_write_file(workspace_root, "config/board.json", json);
 }

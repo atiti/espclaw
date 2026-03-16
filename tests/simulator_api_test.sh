@@ -45,9 +45,67 @@ BOARD_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/board")"
 [[ "$BOARD_JSON" == *'"variant":"generic_esp32c3"'* ]]
 [[ "$BOARD_JSON" == *'"cpu_cores":1'* ]]
 
+BOARD_PRESETS_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/board/presets")"
+[[ "$BOARD_PRESETS_JSON" == *'"variant":"generic_esp32c3"'* ]]
+[[ "$BOARD_PRESETS_JSON" == *'"variant":"seeed_xiao_esp32c3"'* ]]
+
+BOARD_CONFIG_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/board/config")"
+[[ "$BOARD_CONFIG_JSON" == *'"source":"workspace"'* ]]
+[[ "$BOARD_CONFIG_JSON" == *'"raw_json":"{'* ]]
+[[ "$BOARD_CONFIG_JSON" == *'auto'* ]]
+
+APPLY_BOARD_JSON="$(curl -sf -X POST "http://127.0.0.1:$PORT/api/board/apply?variant_id=seeed_xiao_esp32c3")"
+[[ "$APPLY_BOARD_JSON" == *'"variant":"seeed_xiao_esp32c3"'* ]]
+[[ "$APPLY_BOARD_JSON" == *'"source":"workspace"'* ]]
+
+BOARD_CONFIG_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/board/config")"
+[[ "$BOARD_CONFIG_JSON" == *'seeed_xiao_esp32c3'* ]]
+
+SAVE_BOARD_JSON="$(curl -sf -X PUT "http://127.0.0.1:$PORT/api/board/config" \
+  -H 'Content-Type: application/json' \
+  --data '{\n  "variant": "seeed_xiao_esp32c3",\n  "pins": {"buzzer": 9}\n}')"
+[[ "$SAVE_BOARD_JSON" == *'"source":"workspace"'* ]]
+
+BOARD_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/board")"
+[[ "$BOARD_JSON" == *'"variant":"seeed_xiao_esp32c3"'* ]]
+[[ "$BOARD_JSON" == *'"name":"buzzer","pin":9'* ]]
+
+NETWORK_STATUS_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/network/status")"
+[[ "$NETWORK_STATUS_JSON" == *'"wifi_ready":false'* ]]
+[[ "$NETWORK_STATUS_JSON" == *'"provisioning_active":true'* ]]
+[[ "$NETWORK_STATUS_JSON" == *'"provisioning_transport":"ble"'* ]]
+[[ "$NETWORK_STATUS_JSON" == *'"onboarding_ssid":"ESPClaw-Sim"'* ]]
+[[ "$NETWORK_STATUS_JSON" == *'"admin_url":""'* ]]
+
+NETWORK_PROVISIONING_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/network/provisioning")"
+[[ "$NETWORK_PROVISIONING_JSON" == *'"active":true'* ]]
+[[ "$NETWORK_PROVISIONING_JSON" == *'"transport":"ble"'* ]]
+[[ "$NETWORK_PROVISIONING_JSON" == *'"service_name":"ESPClaw-Sim"'* ]]
+[[ "$NETWORK_PROVISIONING_JSON" == *'"pop":"espclaw-pass"'* ]]
+[[ "$NETWORK_PROVISIONING_JSON" == *'"transport":"ble"'* ]]
+[[ "$NETWORK_PROVISIONING_JSON" == *'esp-jumpstart/qrcode.html?data='* ]]
+
+NETWORK_SCAN_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/network/scan")"
+[[ "$NETWORK_SCAN_JSON" == *'"ssid":"ESPClawLab"'* ]]
+[[ "$NETWORK_SCAN_JSON" == *'"ssid":"Attila-5G"'* ]]
+
+NETWORK_JOIN_JSON="$(curl -sf -X POST "http://127.0.0.1:$PORT/api/network/join" \
+  -H 'Content-Type: application/json' \
+  --data '{"ssid":"Attila-5G","password":"secret123"}')"
+[[ "$NETWORK_JOIN_JSON" == *'"wifi_ready":true'* ]]
+[[ "$NETWORK_JOIN_JSON" == *'"ssid":"Attila-5G"'* ]]
+[[ "$NETWORK_JOIN_JSON" == *'"onboarding_ssid":""'* ]]
+[[ "$NETWORK_JOIN_JSON" == *'"message":"simulator connected"'* ]]
+
 WORKSPACE_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/workspace/files")"
 [[ "$WORKSPACE_JSON" == *"HEARTBEAT.md"* ]]
 [[ "$WORKSPACE_JSON" == *"config/board.json"* ]]
+
+MONITOR_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/monitor")"
+[[ "$MONITOR_JSON" == *'"available":true'* ]]
+[[ "$MONITOR_JSON" == *'"cpu_cores":1'* ]]
+[[ "$MONITOR_JSON" == *'"dual_core":false'* ]]
+[[ "$MONITOR_JSON" == *'"workspace_total_bytes":'* ]]
 
 TOOLS_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/tools")"
 [[ "$TOOLS_JSON" == *'"name":"tool.list"'* ]]

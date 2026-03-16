@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/statvfs.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -20,11 +21,13 @@
 #include "espclaw/board_profile.h"
 #include "espclaw/control_loop.h"
 #include "espclaw/ota_state.h"
+#include "espclaw/provisioning.h"
+#include "espclaw/system_monitor.h"
 #include "espclaw/task_policy.h"
 #include "espclaw/workspace.h"
 
 #define ESPCLAW_SIM_REQUEST_MAX 65536
-#define ESPCLAW_SIM_RESPONSE_MAX 8192
+#define ESPCLAW_SIM_RESPONSE_MAX 16384
 
 typedef struct {
     espclaw_board_profile_t profile;
@@ -32,7 +35,59 @@ typedef struct {
     int port;
 } espclaw_simulator_config_t;
 
+typedef struct {
+    char ssid[33];
+    int rssi;
+    int channel;
+    bool secure;
+} espclaw_sim_wifi_network_t;
+
 static volatile sig_atomic_t s_should_stop = 0;
+static bool s_sim_wifi_ready = false;
+static bool s_sim_wifi_provisioning_active = true;
+static char s_sim_wifi_ssid[33];
+static char s_sim_onboarding_ssid[33];
+static const espclaw_sim_wifi_network_t s_sim_wifi_networks[] = {
+    {.ssid = "ESPClawLab", .rssi = -38, .channel = 1, .secure = true},
+    {.ssid = "Attila-5G", .rssi = -52, .channel = 36, .secure = true},
+    {.ssid = "FieldRouter", .rssi = -67, .channel = 11, .secure = false},
+};
+
+static size_t append_escaped_json(char *buffer, size_t buffer_size, size_t used, const char *value);
+
+static void describe_sim_provisioning(
+    const espclaw_simulator_config_t *config,
+    espclaw_provisioning_descriptor_t *descriptor
+)
+{
+    const char *transport = "softap";
+    const char *pop = "";
+    const char *admin_url = "";
+
+    if (config != NULL && strcmp(config->profile.provisioning, "ble") == 0) {
+        transport = "ble";
+        pop = "espclaw-pass";
+    } else if (s_sim_wifi_provisioning_active) {
+        admin_url = "http://192.168.4.1/";
+    }
+
+    if (!s_sim_wifi_provisioning_active) {
+        transport = "";
+    }
+    if (strcmp(transport, "softap") == 0 && s_sim_wifi_provisioning_active) {
+        admin_url = "http://192.168.4.1/";
+    }
+
+    espclaw_provisioning_build_descriptor(
+        s_sim_wifi_provisioning_active,
+        transport,
+        s_sim_onboarding_ssid,
+        "",
+        pop,
+        admin_url,
+        descriptor
+    );
+}
 
 static void handle_signal(int signum)
 {
@@ -149,6 +204,73 @@ static void split_target(char *target, char **path_out, char **query_out)
         *query = '\0';
         *query_out = query + 1;
     }
+}
+
+static size_t render_sim_wifi_status_json(
+    const espclaw_simulator_config_t *config,
+    char *buffer,
+    size_t buffer_size,
+    const char *message
+)
+{
+    size_t used;
+    espclaw_provisioning_descriptor_t descriptor;
+
+    if (buffer == NULL || buffer_size == 0) {
+        return 0;
+    }
+    espclaw_provisioning_descriptor_init(&descriptor);
+    describe_sim_provisioning(config, &descriptor);
+
+    used = (size_t)snprintf(
+        buffer,
+        buffer_size,
+        "{\"ok\":true,\"wifi_ready\":%s,\"provisioning_active\":%s,\"provisioning_transport\":",
+        s_sim_wifi_ready ? "true" : "false",
+        s_sim_wifi_provisioning_active ? "true" : "false"
+    );
+    used = append_escaped_json(buffer, buffer_size, used, descriptor.transport);
+    used += (size_t)snprintf(buffer + used, buffer_size - used, ",\"ssid\":");
+    used = append_escaped_json(buffer, buffer_size, used, s_sim_wifi_ssid);
+    used += (size_t)snprintf(buffer + used, buffer_size - used, ",\"onboarding_ssid\":");
+    used = append_escaped_json(buffer, buffer_size, used, s_sim_onboarding_ssid);
+    used += (size_t)snprintf(buffer + used, buffer_size - used, ",\"admin_url\":");
+    used = append_escaped_json(buffer, buffer_size, used, descriptor.admin_url);
+    if (message != NULL && message[0] != '\0') {
+        used += (size_t)snprintf(buffer + used, buffer_size - used, ",\"message\":");
+        used = append_escaped_json(buffer, buffer_size, used, message);
+    }
+    used += (size_t)snprintf(buffer + used, buffer_size - used, "}");
+    return used >= buffer_size ? buffer_size - 1 : used;
+}
+
+static size_t render_sim_wifi_scan_json(char *buffer, size_t buffer_size)
+{
+    size_t used = 0;
+    size_t index;
+
+    if (buffer == NULL || buffer_size == 0) {
+        return 0;
+    }
+
+    used = (size_t)snprintf(buffer, buffer_size, "{\"ok\":true,\"networks\":[");
+    for (index = 0; index < sizeof(s_sim_wifi_networks) / sizeof(s_sim_wifi_networks[0]); ++index) {
+        if (index > 0) {
+            used += (size_t)snprintf(buffer + used, buffer_size - used, ",");
+        }
+        used += (size_t)snprintf(buffer + used, buffer_size - used, "{\"ssid\":");
+        used = append_escaped_json(buffer, buffer_size, used, s_sim_wifi_networks[index].ssid);
+        used += (size_t)snprintf(
+            buffer + used,
+            buffer_size - used,
+            ",\"rssi\":%d,\"channel\":%d,\"secure\":%s}",
+            s_sim_wifi_networks[index].rssi,
+            s_sim_wifi_networks[index].channel,
+            s_sim_wifi_networks[index].secure ? "true" : "false"
+        );
+    }
+    used += (size_t)snprintf(buffer + used, buffer_size - used, "]}");
+    return used >= buffer_size ? buffer_size - 1 : used;
 }
 
 static uint32_t query_u32_or_default(const char *query, const char *key, uint32_t fallback)
@@ -281,6 +403,101 @@ static void handle_api_request(
         return;
     }
 
+    if (strcmp(method, "GET") == 0 && strcmp(path, "/api/board/presets") == 0) {
+        espclaw_render_board_presets_json(&config->profile, response, sizeof(response));
+        send_http_response(client_fd, 200, "OK", "application/json", response);
+        return;
+    }
+
+    if (strcmp(method, "GET") == 0 && strcmp(path, "/api/board/config") == 0) {
+        espclaw_render_board_config_json(
+            config->workspace_root,
+            &config->profile,
+            espclaw_board_current(),
+            response,
+            sizeof(response)
+        );
+        send_http_response(client_fd, 200, "OK", "application/json", response);
+        return;
+    }
+
+    if (strcmp(method, "PUT") == 0 && strcmp(path, "/api/board/config") == 0) {
+        if (espclaw_workspace_write_file(config->workspace_root, "config/board.json", body != NULL ? body : "") != 0 ||
+            espclaw_board_configure_current(config->workspace_root, &config->profile) != 0) {
+            espclaw_admin_render_result_json(false, "failed to save board config", response, sizeof(response));
+            send_http_response(client_fd, 500, "Internal Server Error", "application/json", response);
+            return;
+        }
+        espclaw_render_board_config_json(
+            config->workspace_root,
+            &config->profile,
+            espclaw_board_current(),
+            response,
+            sizeof(response)
+        );
+        send_http_response(client_fd, 200, "OK", "application/json", response);
+        return;
+    }
+
+    if (strcmp(method, "POST") == 0 && strcmp(path, "/api/board/apply") == 0) {
+        char variant_id[ESPCLAW_BOARD_VARIANT_MAX + 1];
+
+        if (!espclaw_admin_query_value(query, "variant_id", variant_id, sizeof(variant_id))) {
+            espclaw_admin_render_result_json(false, "missing variant_id query parameter", response, sizeof(response));
+            send_http_response(client_fd, 400, "Bad Request", "application/json", response);
+            return;
+        }
+        if (espclaw_board_write_variant_config(config->workspace_root, variant_id) != 0 ||
+            espclaw_board_configure_current(config->workspace_root, &config->profile) != 0) {
+            espclaw_admin_render_result_json(false, "failed to apply board preset", response, sizeof(response));
+            send_http_response(client_fd, 500, "Internal Server Error", "application/json", response);
+            return;
+        }
+        espclaw_render_board_json(espclaw_board_current(), response, sizeof(response));
+        send_http_response(client_fd, 200, "OK", "application/json", response);
+        return;
+    }
+
+    if (strcmp(method, "GET") == 0 && strcmp(path, "/api/network/status") == 0) {
+        render_sim_wifi_status_json(config, response, sizeof(response), NULL);
+        send_http_response(client_fd, 200, "OK", "application/json", response);
+        return;
+    }
+
+    if (strcmp(method, "GET") == 0 && strcmp(path, "/api/network/provisioning") == 0) {
+        espclaw_provisioning_descriptor_t descriptor;
+
+        espclaw_provisioning_descriptor_init(&descriptor);
+        describe_sim_provisioning(config, &descriptor);
+        espclaw_provisioning_render_json(&descriptor, response, sizeof(response));
+        send_http_response(client_fd, 200, "OK", "application/json", response);
+        return;
+    }
+
+    if (strcmp(method, "GET") == 0 && strcmp(path, "/api/network/scan") == 0) {
+        render_sim_wifi_scan_json(response, sizeof(response));
+        send_http_response(client_fd, 200, "OK", "application/json", response);
+        return;
+    }
+
+    if (strcmp(method, "POST") == 0 && strcmp(path, "/api/network/join") == 0) {
+        char ssid[64];
+
+        if (!espclaw_admin_json_string_value(body != NULL ? body : "", "ssid", ssid, sizeof(ssid))) {
+            espclaw_admin_render_result_json(false, "missing ssid", response, sizeof(response));
+            send_http_response(client_fd, 400, "Bad Request", "application/json", response);
+            return;
+        }
+
+        snprintf(s_sim_wifi_ssid, sizeof(s_sim_wifi_ssid), "%s", ssid);
+        s_sim_wifi_ready = true;
+        s_sim_wifi_provisioning_active = false;
+        s_sim_onboarding_ssid[0] = '\0';
+        render_sim_wifi_status_json(config, response, sizeof(response), "simulator connected");
+        send_http_response(client_fd, 200, "OK", "application/json", response);
+        return;
+    }
+
     if (strcmp(method, "GET") == 0 && strcmp(path, "/api/auth/status") == 0) {
         espclaw_auth_profile_t profile;
 
@@ -340,6 +557,23 @@ static void handle_api_request(
 
     if (strcmp(method, "GET") == 0 && strcmp(path, "/api/workspace/files") == 0) {
         espclaw_render_workspace_files_json(config->workspace_root, response, sizeof(response));
+        send_http_response(client_fd, 200, "OK", "application/json", response);
+        return;
+    }
+
+    if (strcmp(method, "GET") == 0 && strcmp(path, "/api/monitor") == 0) {
+        espclaw_system_monitor_snapshot_t snapshot;
+        struct statvfs fs_stats;
+        size_t total_bytes = 0;
+        size_t used_bytes = 0;
+
+        memset(&snapshot, 0, sizeof(snapshot));
+        if (statvfs(config->workspace_root, &fs_stats) == 0) {
+            total_bytes = (size_t)fs_stats.f_blocks * (size_t)fs_stats.f_frsize;
+            used_bytes = total_bytes - ((size_t)fs_stats.f_bavail * (size_t)fs_stats.f_frsize);
+        }
+        espclaw_system_monitor_snapshot(&config->profile, total_bytes, used_bytes, &snapshot);
+        espclaw_render_system_monitor_json(&snapshot, response, sizeof(response));
         send_http_response(client_fd, 200, "OK", "application/json", response);
         return;
     }
@@ -591,6 +825,10 @@ static int run_self_test(const espclaw_simulator_config_t *config)
     espclaw_auth_store_init(config->workspace_root);
     espclaw_task_policy_select(&config->profile);
     espclaw_board_configure_current(config->workspace_root, &config->profile);
+    s_sim_wifi_ready = false;
+    s_sim_wifi_provisioning_active = true;
+    s_sim_wifi_ssid[0] = '\0';
+    snprintf(s_sim_onboarding_ssid, sizeof(s_sim_onboarding_ssid), "ESPClaw-Sim");
 
     if (espclaw_admin_scaffold_default_app(config->workspace_root, "sim_demo") != 0) {
         fprintf(stderr, "failed to scaffold simulator demo app\n");
@@ -629,6 +867,10 @@ int main(int argc, char **argv)
     int index;
 
     snprintf(config.workspace_root, sizeof(config.workspace_root), ".espclaw-sim-workspace");
+    s_sim_wifi_ready = false;
+    s_sim_wifi_provisioning_active = true;
+    s_sim_wifi_ssid[0] = '\0';
+    snprintf(s_sim_onboarding_ssid, sizeof(s_sim_onboarding_ssid), "ESPClaw-Sim");
 
     for (index = 1; index < argc; ++index) {
         if (strcmp(argv[index], "--workspace") == 0 && index + 1 < argc) {

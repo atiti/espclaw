@@ -37,10 +37,12 @@ add_library(
   firmware/components/espclaw_core/src/config_render.c
   firmware/components/espclaw_core/src/hardware.c
   firmware/components/espclaw_core/src/ota_state.c
+  firmware/components/espclaw_core/src/provisioning.c
   firmware/components/espclaw_core/src/provider.c
   firmware/components/espclaw_core/src/provider_request.c
   firmware/components/espclaw_core/src/session_store.c
   firmware/components/espclaw_core/src/storage.c
+  firmware/components/espclaw_core/src/system_monitor.c
   firmware/components/espclaw_core/src/task_policy.c
   firmware/components/espclaw_core/src/telegram_protocol.c
   firmware/components/espclaw_core/src/tool_catalog.c
@@ -63,6 +65,12 @@ target_link_libraries(espclaw_core PUBLIC Threads::Threads)
 add_executable(
   espclaw_tests
   tests/test_main.c
+)
+
+target_compile_definitions(
+  espclaw_tests
+  PRIVATE
+    ESPCLAW_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
 )
 
 target_link_libraries(espclaw_tests PRIVATE espclaw_core)

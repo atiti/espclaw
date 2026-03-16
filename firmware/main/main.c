@@ -31,9 +31,7 @@ void app_main(void)
         ESP_LOGE(TAG, "Failed to start runtime");
         return;
     }
-    if (runtime_status.provisioning_active) {
-        ESP_LOGI(TAG, "Deferring admin server startup until provisioning completes");
-    } else if (espclaw_admin_server_start() != ESP_OK) {
+    if (espclaw_admin_server_start() != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start admin server");
     }
 

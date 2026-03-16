@@ -19,6 +19,7 @@
 #include "espclaw/control_loop.h"
 #include "espclaw/hardware.h"
 #include "espclaw/ota_state.h"
+#include "espclaw/provisioning.h"
 #include "espclaw/provider.h"
 #include "espclaw/provider_request.h"
 #include "espclaw/session_store.h"
@@ -27,6 +28,10 @@
 #include "espclaw/telegram_protocol.h"
 #include "espclaw/tool_catalog.h"
 #include "espclaw/workspace.h"
+
+#ifndef ESPCLAW_SOURCE_DIR
+#define ESPCLAW_SOURCE_DIR "."
+#endif
 
 static void assert_true(bool condition, const char *message)
 {
@@ -54,6 +59,18 @@ static void write_text_file(const char *path, const char *content)
 
     assert_true(file != NULL, "fopen for test fixture failed");
     assert_true(fputs(content, file) >= 0, "fputs for test fixture failed");
+    fclose(file);
+}
+
+static void read_text_file(const char *path, char *buffer, size_t buffer_size)
+{
+    FILE *file = fopen(path, "r");
+    size_t read_len;
+
+    assert_true(file != NULL, "fopen for read fixture failed");
+    read_len = fread(buffer, 1, buffer_size - 1, file);
+    assert_true(!ferror(file), "fread for read fixture failed");
+    buffer[read_len] = '\0';
     fclose(file);
 }
 
@@ -186,6 +203,17 @@ static void test_board_profiles(void)
     assert_true(!c3.has_camera, "esp32c3 has no camera");
 }
 
+static void test_esp32c3_sdkconfig_defaults_enable_ble(void)
+{
+    char path[512];
+    char defaults[1024];
+
+    snprintf(path, sizeof(path), "%s/firmware/sdkconfig.defaults.esp32c3", ESPCLAW_SOURCE_DIR);
+    read_text_file(path, defaults, sizeof(defaults));
+    assert_string_contains(defaults, "CONFIG_BT_ENABLED=y", "esp32c3 defaults enable bluetooth");
+    assert_string_contains(defaults, "CONFIG_BT_NIMBLE_ENABLED=y", "esp32c3 defaults enable nimble");
+}
+
 static void test_board_descriptor_and_task_policy(void)
 {
     char temp_dir[128];
@@ -198,6 +226,10 @@ static void test_board_descriptor_and_task_policy(void)
     espclaw_board_adc_channel_t adc;
     espclaw_task_policy_t policy;
     int pin = -1;
+    char presets_json[1024];
+    char board_config_json[2048];
+    char minimal_json[256];
+    espclaw_board_descriptor_t preset;
 
     make_temp_dir(temp_dir, sizeof(temp_dir));
     assert_true(espclaw_workspace_bootstrap(temp_dir) == 0, "workspace bootstrap for board descriptor");
@@ -244,6 +276,17 @@ static void test_board_descriptor_and_task_policy(void)
     assert_true(espclaw_render_board_json(current, board_json, sizeof(board_json)) > 0, "board json rendered");
     assert_string_contains(board_json, "\"variant\":\"seeed_xiao_esp32c3\"", "board json variant rendered");
     assert_string_contains(board_json, "\"control_loop_core\":1", "board json includes task policy");
+
+    assert_true(espclaw_board_preset_count(&c3) >= 2, "c3 preset count available");
+    assert_true(espclaw_board_preset_at(&c3, 1, &preset) == 0, "c3 preset lookup succeeded");
+    assert_true(strcmp(preset.variant_id, "seeed_xiao_esp32c3") == 0, "preset variant matches builtin");
+    assert_true(espclaw_board_render_minimal_config_json(&preset, minimal_json, sizeof(minimal_json)) > 0, "minimal board json rendered");
+    assert_string_contains(minimal_json, "\"variant\": \"seeed_xiao_esp32c3\"", "minimal board config variant");
+    assert_true(espclaw_render_board_presets_json(&c3, presets_json, sizeof(presets_json)) > 0, "board presets json rendered");
+    assert_string_contains(presets_json, "\"variant\":\"seeed_xiao_esp32c3\"", "board preset listed");
+    assert_true(espclaw_render_board_config_json(temp_dir, &c3, current, board_config_json, sizeof(board_config_json)) > 0, "board config json rendered");
+    assert_string_contains(board_config_json, "\"source\":\"workspace\"", "board config source rendered");
+    assert_string_contains(board_config_json, "\\\"variant\\\": \\\"seeed_xiao_esp32c3\\\"", "board config raw json rendered");
 }
 
 static void test_workspace_manifest(void)
@@ -311,6 +354,79 @@ static void test_storage_backend_description(void)
     assert_true(strcmp(espclaw_storage_describe_workspace_root("/workspace"), "littlefs") == 0, "littlefs path detected");
     assert_true(strcmp(espclaw_storage_describe_workspace_root("/sdcard/workspace"), "sdcard") == 0, "sdcard path detected");
     assert_true(strcmp(espclaw_storage_describe_workspace_root("/tmp/espclaw"), "host") == 0, "host path detected");
+}
+
+static void test_system_monitor_snapshot_and_json(void)
+{
+    espclaw_board_profile_t c3 = espclaw_board_profile_for(ESPCLAW_BOARD_PROFILE_ESP32C3);
+    espclaw_system_monitor_snapshot_t snapshot;
+    char json[1024];
+
+    assert_true(espclaw_system_monitor_init(&c3) == 0, "system monitor init");
+    assert_true(
+        espclaw_system_monitor_snapshot(&c3, 1472U * 1024U, 128U * 1024U, &snapshot) == 0,
+        "system monitor snapshot"
+    );
+    assert_true(snapshot.available, "system monitor available");
+    assert_true(snapshot.cpu_cores == 1U, "system monitor tracks cpu core count");
+    assert_true(!snapshot.dual_core, "c3 monitor reports single core");
+    assert_true(snapshot.workspace_total_bytes == 1472U * 1024U, "monitor workspace total");
+    assert_true(snapshot.workspace_used_bytes == 128U * 1024U, "monitor workspace used");
+    assert_true(
+        espclaw_render_system_monitor_json(&snapshot, json, sizeof(json)) > 0,
+        "system monitor json rendered"
+    );
+    assert_string_contains(json, "\"cpu_cores\":1", "system monitor json core count");
+    assert_string_contains(json, "\"workspace_used_bytes\":131072", "system monitor json workspace used");
+    assert_string_contains(json, "\"cpu_load_percent\":[0]", "system monitor json cpu load");
+}
+
+static void test_provisioning_descriptor(void)
+{
+    espclaw_provisioning_descriptor_t descriptor;
+    char json[1024];
+
+    assert_true(
+        espclaw_provisioning_build_descriptor(
+            true,
+            "ble",
+            "ESPClaw-123456",
+            "",
+            "espclaw-pass",
+            "",
+            &descriptor
+        ) == 0,
+        "ble provisioning descriptor built"
+    );
+    assert_true(descriptor.active, "ble provisioning active");
+    assert_true(strcmp(descriptor.transport, "ble") == 0, "ble transport recorded");
+    assert_string_contains(descriptor.qr_payload, "\"transport\":\"ble\"", "ble qr payload transport");
+    assert_string_contains(descriptor.qr_payload, "\"name\":\"ESPClaw-123456\"", "ble qr payload service name");
+    assert_string_contains(descriptor.qr_url, "https://espressif.github.io/esp-jumpstart/qrcode.html?data=", "ble qr helper url");
+    assert_string_contains(descriptor.qr_url, "%7B%22ver%22%3A%22v1%22", "ble qr helper url encoded payload");
+
+    assert_true(
+        espclaw_provisioning_render_json(&descriptor, json, sizeof(json)) > 0,
+        "provisioning json rendered"
+    );
+    assert_string_contains(json, "\"transport\":\"ble\"", "provisioning json transport");
+    assert_string_contains(json, "\"pop\":\"espclaw-pass\"", "provisioning json pop");
+
+    assert_true(
+        espclaw_provisioning_build_descriptor(
+            true,
+            "softap",
+            "ESPClaw-SoftAP",
+            "",
+            "",
+            "http://192.168.4.1/",
+            &descriptor
+        ) == 0,
+        "softap provisioning descriptor built"
+    );
+    assert_true(strcmp(descriptor.transport, "softap") == 0, "softap transport recorded");
+    assert_true(descriptor.qr_payload[0] == '\0', "softap qr payload omitted");
+    assert_true(strcmp(descriptor.admin_url, "http://192.168.4.1/") == 0, "softap admin url recorded");
 }
 
 static void test_workspace_bootstrap_and_read(void)
@@ -384,16 +500,32 @@ static void test_admin_ui_asset(void)
 
     assert_true(espclaw_admin_ui_length() > 128, "admin ui is non-trivial");
     assert_string_contains(html, "<h1>ESPClaw Admin</h1>", "admin ui heading");
-    assert_string_contains(html, "<h2>Workspace</h2>", "workspace section present");
-    assert_string_contains(html, "<h2>Tools</h2>", "tools section present");
-    assert_string_contains(html, "<h2>Apps</h2>", "apps section present");
-    assert_string_contains(html, "Create App", "app mutation action present");
+    assert_string_contains(html, "<h2>Operator Chat</h2>", "chat-first heading present");
+    assert_string_contains(html, "Quick Setup", "quick setup card present");
+    assert_string_contains(html, "data-screen-target='chat'", "chat tab present");
+    assert_string_contains(html, "data-screen-target='setup'", "setup tab present");
+    assert_string_contains(html, "data-load-section='device'", "device module present");
+    assert_string_contains(html, "data-load-section='apps'", "apps module present");
+    assert_string_contains(html, "Custom board descriptor", "board json editor moved behind advanced details");
+    assert_string_contains(html, "Send To Model", "chat send action present");
+    assert_string_contains(html, "Create", "app create action present");
     assert_string_contains(html, "/api/apps/scaffold", "app api wired into ui");
     assert_string_contains(html, "body: $('app-source').value", "save source posts editor contents");
     assert_string_contains(html, "body: $('app-payload').value", "run app posts payload input");
     assert_string_contains(html, "/api/auth/codex", "auth api wired into ui");
+    assert_string_contains(html, "/api/board/presets", "board presets api wired into ui");
+    assert_string_contains(html, "/api/board/config", "board config api wired into ui");
+    assert_string_contains(html, "/api/network/scan", "network scan api wired into ui");
+    assert_string_contains(html, "/api/network/join", "network join api wired into ui");
+    assert_string_contains(html, "/api/network/provisioning", "network provisioning api wired into ui");
+    assert_string_contains(html, "provisioning-info", "provisioning panel present");
+    assert_string_contains(html, "/api/monitor", "monitor api wired into ui");
     assert_string_contains(html, "/api/tools", "tools api wired into ui");
     assert_string_contains(html, "/api/chat/run", "chat api wired into ui");
+    assert_string_contains(html, "setScreen('chat');", "chat screen opens by default");
+    assert_string_contains(html, "details[data-load-section]", "details-driven lazy loading present");
+    assert_true(strstr(html, "Loading board...") == NULL, "old raw loading placeholder removed");
+    assert_true(strstr(html, "Loading provisioning...") == NULL, "old provisioning placeholder removed");
     assert_string_contains(html, "Upload Firmware", "ota control present");
 }
 
@@ -443,6 +575,8 @@ static void test_admin_api_json(void)
     char apps_json[2048];
     char tools_json[12288];
     char app_detail_json[4096];
+    char board_presets_json[1024];
+    char board_config_json[2048];
     char auth_json[1024];
     char transcript_json[2048];
     espclaw_board_profile_t profile = espclaw_board_profile_for(ESPCLAW_BOARD_PROFILE_ESP32S3);
@@ -511,6 +645,17 @@ static void test_admin_api_json(void)
     assert_string_contains(app_detail_json, "\"source_available\":true", "app source availability");
     assert_string_contains(app_detail_json, "\"source\":\"function handle(trigger, payload)\\n", "app source included");
     assert_string_contains(app_detail_json, "quoted:", "app source content preserved");
+
+    assert_true(
+        espclaw_render_board_presets_json(&profile, board_presets_json, sizeof(board_presets_json)) > 0,
+        "board presets json rendered for admin api"
+    );
+    assert_string_contains(board_presets_json, "\"variant\":\"generic_esp32s3\"", "s3 preset rendered");
+    assert_true(
+        espclaw_render_board_config_json(temp_dir, &profile, espclaw_board_current(), board_config_json, sizeof(board_config_json)) > 0,
+        "board config json rendered for admin api"
+    );
+    assert_string_contains(board_config_json, "\"raw_json\":", "board config raw json included");
 
     espclaw_auth_profile_default(&auth_profile);
     auth_profile.configured = true;
@@ -1147,6 +1292,7 @@ static void test_agent_loop(void)
 
 int main(void)
 {
+    test_esp32c3_sdkconfig_defaults_enable_ble();
     test_board_profiles();
     test_board_descriptor_and_task_policy();
     test_workspace_manifest();
@@ -1154,6 +1300,8 @@ int main(void)
     test_tool_catalog();
     test_default_config_render();
     test_storage_backend_description();
+    test_system_monitor_snapshot_and_json();
+    test_provisioning_descriptor();
     test_workspace_bootstrap_and_read();
     test_session_store();
     test_ota_state_machine();

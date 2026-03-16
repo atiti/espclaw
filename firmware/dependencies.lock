@@ -27,5 +27,5 @@ direct_dependencies:
 - georgik/lua
 - joltwallet/littlefs
 manifest_hash: 28002fad403f6dc18884bad581d209b99086fb42e13d7f74138d55a2c5ffda8c
-target: esp32s3
+target: esp32c3
 version: 2.0.0

@@ -2,15 +2,43 @@
 
 ## Provisioning
 
-On first boot, ESPClaw starts the ESP-IDF provisioning manager.
+On first boot, ESPClaw picks the onboarding transport from the active board profile.
 
 - `esp32s3` profile prefers BLE provisioning
-- `esp32cam` profile uses SoftAP provisioning
+- `esp32cam` profile uses ESPClaw-owned SoftAP onboarding
 - `esp32c3` profile prefers BLE provisioning and defaults to internal flash storage
-- if BLE is not enabled in the active ESP-IDF sdkconfig, the `esp32s3` profile falls back to SoftAP automatically
-- when SoftAP provisioning is active, the ESPClaw admin UI is deferred until provisioning completes so it does not collide with the provisioning HTTP service on first boot
+- the default `esp32c3` firmware build enables NimBLE, so BLE onboarding works without extra `menuconfig` steps
+- if BLE is not enabled in the active ESP-IDF sdkconfig, `esp32s3` and `esp32c3` fall back to ESPClaw-owned SoftAP onboarding automatically
 
-If credentials are already provisioned in NVS, ESPClaw skips provisioning mode and starts station mode directly.
+If credentials are already stored in Wi-Fi flash/NVS state, ESPClaw skips onboarding and starts station mode directly.
+
+## BLE Flow
+
+BLE onboarding is the primary zero-config path for the default `esp32s3` and `esp32c3` profiles when Bluetooth is enabled in the firmware build.
+
+Behavior:
+
+- the device advertises a BLE provisioning service named `ESPClaw-xxxxxx`
+- the default Proof-of-Possession is `espclaw-pass`
+- `GET /api/network/provisioning` reports the service name, transport, PoP, QR payload, and the Espressif QR helper URL
+- the firmware logs the same helper URL to the serial console during provisioning startup
+
+The QR payload format matches Espressif's standard provisioning helper, so the admin UI, simulator, or a serial log can all hand the same onboarding data to a phone or desktop provisioning flow.
+
+## Zero-Config SoftAP Flow
+
+SoftAP onboarding is the default zero-serial path for `esp32cam` and the fallback path for BLE-disabled `esp32s3` / `esp32c3` builds.
+
+Behavior:
+
+- the device starts an AP named `ESPClaw-xxxxxx`
+- the admin UI is immediately available on `http://192.168.4.1/`
+- `GET /api/network/status` reports the `onboarding_ssid`, `provisioning_transport`, and `admin_url`
+- `GET /api/network/provisioning` reports the active onboarding descriptor even on SoftAP boards
+- the Network panel can scan nearby SSIDs and submit credentials without leaving the admin UI
+- after the board gets a station IP, ESPClaw disables the onboarding AP and continues in STA mode
+
+This avoids the socket contention that appears when trying to run the generic ESP-IDF SoftAP provisioning HTTP server and the ESPClaw admin server side by side on small boards such as the `esp32c3`.
 
 ## Workspace Storage
 
@@ -33,6 +61,12 @@ The `config/` directory now includes:
 
 - `device.json` for runtime/provider settings
 - `board.json` for board variants, named pins, and bus mappings
+
+The board file can now be populated in three ways:
+
+- leave the default `variant: "auto"` behavior
+- apply a built-in preset from the admin UI
+- upload or edit raw JSON directly through the board config API
 
 ## Telegram
 
