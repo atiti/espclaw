@@ -40,8 +40,14 @@ STATUS_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/status")"
 [[ "$STATUS_JSON" == *'"board_profile":"esp32c3"'* ]]
 [[ "$STATUS_JSON" == *'"storage_backend":"littlefs"'* ]]
 
+BOARD_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/board")"
+[[ "$BOARD_JSON" == *'"configured":true'* ]]
+[[ "$BOARD_JSON" == *'"variant":"generic_esp32c3"'* ]]
+[[ "$BOARD_JSON" == *'"cpu_cores":1'* ]]
+
 WORKSPACE_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/workspace/files")"
 [[ "$WORKSPACE_JSON" == *"HEARTBEAT.md"* ]]
+[[ "$WORKSPACE_JSON" == *"config/board.json"* ]]
 
 TOOLS_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/tools")"
 [[ "$TOOLS_JSON" == *'"name":"tool.list"'* ]]

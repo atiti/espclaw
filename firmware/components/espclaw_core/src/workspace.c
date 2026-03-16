@@ -36,6 +36,39 @@ static const espclaw_workspace_file_t WORKSPACE_FILES[] = {
         "# Memory\n\n"
         "Long-term user and system memory belongs here.\n",
     },
+    {
+        "config/board.json",
+        "{\n"
+        "  \"variant\": \"auto\",\n"
+        "  \"pins\": {\n"
+        "    \"buzzer\": -1,\n"
+        "    \"power_ctl\": -1,\n"
+        "    \"battery_adc_pin\": -1\n"
+        "  },\n"
+        "  \"i2c\": {\n"
+        "    \"default\": {\n"
+        "      \"port\": 0,\n"
+        "      \"sda\": -1,\n"
+        "      \"scl\": -1,\n"
+        "      \"frequency_hz\": 400000\n"
+        "    }\n"
+        "  },\n"
+        "  \"uart\": {\n"
+        "    \"console\": {\n"
+        "      \"port\": 0,\n"
+        "      \"tx\": -1,\n"
+        "      \"rx\": -1,\n"
+        "      \"baud_rate\": 115200\n"
+        "    }\n"
+        "  },\n"
+        "  \"adc\": {\n"
+        "    \"battery\": {\n"
+        "      \"unit\": 1,\n"
+        "      \"channel\": -1\n"
+        "    }\n"
+        "  }\n"
+        "}\n",
+    },
 };
 
 size_t espclaw_workspace_file_count(void)

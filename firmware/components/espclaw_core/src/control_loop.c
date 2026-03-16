@@ -15,6 +15,7 @@
 
 #include "espclaw/app_runtime.h"
 #include "espclaw/hardware.h"
+#include "espclaw/task_policy.h"
 
 typedef struct {
     espclaw_control_loop_status_t status;
@@ -353,7 +354,16 @@ int espclaw_control_loop_start(
     loop_unlock(slot);
 
 #ifdef ESP_PLATFORM
-    if (xTaskCreate(control_loop_task, "espclaw_loop", 8192, slot, 5, &slot->task) != pdPASS) {
+    int core = espclaw_task_policy_core_for(ESPCLAW_TASK_KIND_CONTROL_LOOP);
+
+    if (xTaskCreatePinnedToCore(
+            control_loop_task,
+            "espclaw_loop",
+            8192,
+            slot,
+            5,
+            &slot->task,
+            core >= 0 ? core : tskNO_AFFINITY) != pdPASS) {
         loop_lock(slot);
         slot->status.active = false;
         loop_unlock(slot);

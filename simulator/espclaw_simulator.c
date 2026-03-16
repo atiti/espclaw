@@ -16,9 +16,11 @@
 #include "espclaw/admin_ui.h"
 #include "espclaw/app_runtime.h"
 #include "espclaw/auth_store.h"
+#include "espclaw/board_config.h"
 #include "espclaw/board_profile.h"
 #include "espclaw/control_loop.h"
 #include "espclaw/ota_state.h"
+#include "espclaw/task_policy.h"
 #include "espclaw/workspace.h"
 
 #define ESPCLAW_SIM_REQUEST_MAX 65536
@@ -269,6 +271,12 @@ static void handle_api_request(
             response,
             sizeof(response)
         );
+        send_http_response(client_fd, 200, "OK", "application/json", response);
+        return;
+    }
+
+    if (strcmp(method, "GET") == 0 && strcmp(path, "/api/board") == 0) {
+        espclaw_render_board_json(espclaw_board_current(), response, sizeof(response));
         send_http_response(client_fd, 200, "OK", "application/json", response);
         return;
     }
@@ -581,6 +589,8 @@ static int run_self_test(const espclaw_simulator_config_t *config)
         return 1;
     }
     espclaw_auth_store_init(config->workspace_root);
+    espclaw_task_policy_select(&config->profile);
+    espclaw_board_configure_current(config->workspace_root, &config->profile);
 
     if (espclaw_admin_scaffold_default_app(config->workspace_root, "sim_demo") != 0) {
         fprintf(stderr, "failed to scaffold simulator demo app\n");
@@ -652,6 +662,8 @@ int main(int argc, char **argv)
         return 1;
     }
     espclaw_auth_store_init(config.workspace_root);
+    espclaw_task_policy_select(&config.profile);
+    espclaw_board_configure_current(config.workspace_root, &config.profile);
 
     {
         char boot_log[512];

@@ -71,6 +71,7 @@ ESPClaw standardizes the workspace layout regardless of whether it lives on SD o
 ├── media/
 ├── apps/
 └── config/
+    ├── board.json
     └── device.json
 ```
 
@@ -134,6 +135,7 @@ The firmware now serves the admin UI directly from the device root path and expo
 
 - `GET /`
 - `GET /api/status`
+- `GET /api/board`
 - `GET /api/auth/status`
 - `PUT /api/auth/codex`
 - `DELETE /api/auth/codex`
@@ -176,6 +178,68 @@ Provisioning transport is selected at runtime from the board profile, but BLE re
 - Default secret storage: NVS
 - Default workspace storage: board-profile dependent (`sdcard` on S3/CAM, `littlefs` on C3)
 - Default dynamic app runtime: Lua
+
+## Board Configuration
+
+ESPClaw now separates board class from board wiring.
+
+- board profiles still define platform constraints such as camera support, storage backend, provisioning transport, and core count
+- `config/board.json` defines the active board variant, named pin aliases, and default buses
+- Lua apps can resolve named hardware resources through `espclaw.board.*` instead of hard-coding raw GPIO numbers
+
+Built-in variants currently include:
+
+- `generic_esp32s3`
+- `ai_thinker_esp32cam`
+- `generic_esp32c3`
+- `seeed_xiao_esp32c3`
+
+Example:
+
+```json
+{
+  "variant": "seeed_xiao_esp32c3",
+  "pins": {
+    "servo_main": 4,
+    "ppm_out": 5
+  },
+  "i2c": {
+    "default": {
+      "port": 0,
+      "sda": 6,
+      "scl": 7,
+      "frequency_hz": 400000
+    }
+  },
+  "uart": {
+    "console": {
+      "port": 0,
+      "tx": 21,
+      "rx": 20,
+      "baud_rate": 115200
+    }
+  },
+  "adc": {
+    "battery": {
+      "unit": 1,
+      "channel": 3
+    }
+  }
+}
+```
+
+See `docs/board-config.md` for the full format and Lua usage.
+
+## Task Placement
+
+On single-core targets like `esp32c3`, ESPClaw runs without affinity.
+On dual-core targets like `esp32s3`, it now applies a simple task policy:
+
+- admin HTTP server on core `0`
+- Telegram polling on core `0`
+- persistent control loops on core `1`
+
+That keeps UI and network work separate from tight loop execution without hard-coding per-board task logic all over the runtime.
 
 ## Dynamic Apps
 

@@ -9,6 +9,7 @@
 #include "espclaw/app_runtime.h"
 #include "espclaw/auth_store.h"
 #include "espclaw/session_store.h"
+#include "espclaw/task_policy.h"
 #include "espclaw/tool_catalog.h"
 #include "espclaw/workspace.h"
 
@@ -437,6 +438,108 @@ size_t espclaw_render_auth_profile_json(
     used = append_json_chunk(buffer, buffer_size, used, ",\"has_refresh_token\":%s", profile->refresh_token[0] != '\0' ? "true" : "false");
     used = append_json_chunk(buffer, buffer_size, used, ",\"expires_at\":%ld", profile->expires_at);
     used = append_json_chunk(buffer, buffer_size, used, "}");
+    return used;
+}
+
+size_t espclaw_render_board_json(
+    const espclaw_board_descriptor_t *board,
+    char *buffer,
+    size_t buffer_size
+)
+{
+    espclaw_task_policy_t policy = espclaw_task_policy_current();
+    size_t used = 0;
+    size_t index;
+
+    if (buffer == NULL || buffer_size == 0) {
+        return 0;
+    }
+    if (board == NULL) {
+        return (size_t)snprintf(buffer, buffer_size, "{\"configured\":false}");
+    }
+
+    used = append_json_chunk(buffer, buffer_size, used, "{\"configured\":true,\"variant\":");
+    used = append_json_escaped_string(buffer, buffer_size, used, board->variant_id);
+    used = append_json_chunk(buffer, buffer_size, used, ",\"display_name\":");
+    used = append_json_escaped_string(buffer, buffer_size, used, board->display_name);
+    used = append_json_chunk(buffer, buffer_size, used, ",\"source\":");
+    used = append_json_escaped_string(buffer, buffer_size, used, board->source);
+    used = append_json_chunk(
+        buffer,
+        buffer_size,
+        used,
+        ",\"task_policy\":{\"cpu_cores\":%d,\"admin_core\":%d,\"telegram_core\":%d,\"control_loop_core\":%d}",
+        policy.cpu_cores,
+        policy.admin_core,
+        policy.telegram_core,
+        policy.control_loop_core
+    );
+
+    used = append_json_chunk(buffer, buffer_size, used, ",\"pins\":[");
+    for (index = 0; index < board->pin_count; ++index) {
+        if (index > 0) {
+            used = append_json_chunk(buffer, buffer_size, used, ",");
+        }
+        used = append_json_chunk(buffer, buffer_size, used, "{\"name\":");
+        used = append_json_escaped_string(buffer, buffer_size, used, board->pins[index].name);
+        used = append_json_chunk(buffer, buffer_size, used, ",\"pin\":%d}", board->pins[index].pin);
+    }
+
+    used = append_json_chunk(buffer, buffer_size, used, "],\"i2c\":[");
+    for (index = 0; index < board->i2c_bus_count; ++index) {
+        if (index > 0) {
+            used = append_json_chunk(buffer, buffer_size, used, ",");
+        }
+        used = append_json_chunk(buffer, buffer_size, used, "{\"name\":");
+        used = append_json_escaped_string(buffer, buffer_size, used, board->i2c_buses[index].name);
+        used = append_json_chunk(
+            buffer,
+            buffer_size,
+            used,
+            ",\"port\":%d,\"sda\":%d,\"scl\":%d,\"frequency_hz\":%d}",
+            board->i2c_buses[index].port,
+            board->i2c_buses[index].sda_pin,
+            board->i2c_buses[index].scl_pin,
+            board->i2c_buses[index].frequency_hz
+        );
+    }
+
+    used = append_json_chunk(buffer, buffer_size, used, "],\"uart\":[");
+    for (index = 0; index < board->uart_count; ++index) {
+        if (index > 0) {
+            used = append_json_chunk(buffer, buffer_size, used, ",");
+        }
+        used = append_json_chunk(buffer, buffer_size, used, "{\"name\":");
+        used = append_json_escaped_string(buffer, buffer_size, used, board->uarts[index].name);
+        used = append_json_chunk(
+            buffer,
+            buffer_size,
+            used,
+            ",\"port\":%d,\"tx\":%d,\"rx\":%d,\"baud_rate\":%d}",
+            board->uarts[index].port,
+            board->uarts[index].tx_pin,
+            board->uarts[index].rx_pin,
+            board->uarts[index].baud_rate
+        );
+    }
+
+    used = append_json_chunk(buffer, buffer_size, used, "],\"adc\":[");
+    for (index = 0; index < board->adc_count; ++index) {
+        if (index > 0) {
+            used = append_json_chunk(buffer, buffer_size, used, ",");
+        }
+        used = append_json_chunk(buffer, buffer_size, used, "{\"name\":");
+        used = append_json_escaped_string(buffer, buffer_size, used, board->adc_channels[index].name);
+        used = append_json_chunk(
+            buffer,
+            buffer_size,
+            used,
+            ",\"unit\":%d,\"channel\":%d}",
+            board->adc_channels[index].unit,
+            board->adc_channels[index].channel
+        );
+    }
+    used = append_json_chunk(buffer, buffer_size, used, "]}");
     return used;
 }
 

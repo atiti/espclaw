@@ -10,6 +10,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include "espclaw/board_config.h"
 #include "espclaw/hardware.h"
 #include "espclaw/tool_catalog.h"
 #include "espclaw/workspace.h"
@@ -706,19 +707,13 @@ int espclaw_app_collect_ids(
     }
 
     while ((entry = readdir(dir)) != NULL) {
-        espclaw_app_manifest_t manifest;
-
         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
             continue;
         }
         if (!espclaw_app_id_is_valid(entry->d_name)) {
             continue;
         }
-        if (espclaw_app_load_manifest(workspace_root, entry->d_name, &manifest) != 0) {
-            continue;
-        }
-
-        memcpy(ids[count], manifest.app_id, sizeof(manifest.app_id));
+        memcpy(ids[count], entry->d_name, sizeof(ids[count]));
         count++;
         if (count >= max_ids) {
             break;
@@ -799,6 +794,31 @@ static int lua_push_permission_error(lua_State *state, const char *permission)
     lua_pushnil(state);
     lua_pushfstring(state, "permission denied for %s", permission);
     return 2;
+}
+
+static int lua_resolve_pin_argument(lua_State *state, int index, int *pin_out)
+{
+    const char *alias = NULL;
+    int pin = -1;
+
+    if (pin_out == NULL) {
+        return -1;
+    }
+
+    if (lua_isnumber(state, index)) {
+        *pin_out = (int)lua_tointeger(state, index);
+        return 0;
+    }
+    if (!lua_isstring(state, index)) {
+        return -1;
+    }
+
+    alias = lua_tostring(state, index);
+    if (alias == NULL || espclaw_board_resolve_pin_alias(alias, &pin) != 0) {
+        return -1;
+    }
+    *pin_out = pin;
+    return 0;
 }
 
 static void lua_push_byte_table(lua_State *state, const uint8_t *bytes, size_t length)
@@ -997,14 +1017,118 @@ static int lua_espclaw_list_apps(lua_State *state)
     return 1;
 }
 
+static int lua_espclaw_board_variant(lua_State *state)
+{
+    const espclaw_board_descriptor_t *board = espclaw_board_current();
+
+    if (board == NULL) {
+        lua_pushnil(state);
+        return 1;
+    }
+
+    lua_newtable(state);
+    lua_pushstring(state, board->variant_id);
+    lua_setfield(state, -2, "variant");
+    lua_pushstring(state, board->display_name);
+    lua_setfield(state, -2, "display_name");
+    lua_pushstring(state, board->source);
+    lua_setfield(state, -2, "source");
+    return 1;
+}
+
+static int lua_espclaw_board_pin(lua_State *state)
+{
+    const char *name = luaL_checkstring(state, 1);
+    int pin = -1;
+
+    if (espclaw_board_resolve_pin_alias(name, &pin) != 0) {
+        lua_pushnil(state);
+        lua_pushfstring(state, "unknown board pin alias %s", name);
+        return 2;
+    }
+
+    lua_pushinteger(state, (lua_Integer)pin);
+    return 1;
+}
+
+static int lua_espclaw_board_i2c(lua_State *state)
+{
+    const char *name = luaL_optstring(state, 1, "default");
+    espclaw_board_i2c_bus_t bus;
+
+    if (espclaw_board_find_i2c_bus(name, &bus) != 0) {
+        lua_pushnil(state);
+        lua_pushfstring(state, "unknown board i2c bus %s", name);
+        return 2;
+    }
+
+    lua_newtable(state);
+    lua_pushinteger(state, (lua_Integer)bus.port);
+    lua_setfield(state, -2, "port");
+    lua_pushinteger(state, (lua_Integer)bus.sda_pin);
+    lua_setfield(state, -2, "sda");
+    lua_pushinteger(state, (lua_Integer)bus.scl_pin);
+    lua_setfield(state, -2, "scl");
+    lua_pushinteger(state, (lua_Integer)bus.frequency_hz);
+    lua_setfield(state, -2, "frequency_hz");
+    return 1;
+}
+
+static int lua_espclaw_board_uart(lua_State *state)
+{
+    const char *name = luaL_optstring(state, 1, "console");
+    espclaw_board_uart_t uart;
+
+    if (espclaw_board_find_uart(name, &uart) != 0) {
+        lua_pushnil(state);
+        lua_pushfstring(state, "unknown board uart %s", name);
+        return 2;
+    }
+
+    lua_newtable(state);
+    lua_pushinteger(state, (lua_Integer)uart.port);
+    lua_setfield(state, -2, "port");
+    lua_pushinteger(state, (lua_Integer)uart.tx_pin);
+    lua_setfield(state, -2, "tx");
+    lua_pushinteger(state, (lua_Integer)uart.rx_pin);
+    lua_setfield(state, -2, "rx");
+    lua_pushinteger(state, (lua_Integer)uart.baud_rate);
+    lua_setfield(state, -2, "baud_rate");
+    return 1;
+}
+
+static int lua_espclaw_board_adc(lua_State *state)
+{
+    const char *name = luaL_checkstring(state, 1);
+    espclaw_board_adc_channel_t channel;
+
+    if (espclaw_board_find_adc_channel(name, &channel) != 0) {
+        lua_pushnil(state);
+        lua_pushfstring(state, "unknown board adc channel %s", name);
+        return 2;
+    }
+
+    lua_newtable(state);
+    lua_pushinteger(state, (lua_Integer)channel.unit);
+    lua_setfield(state, -2, "unit");
+    lua_pushinteger(state, (lua_Integer)channel.channel);
+    lua_setfield(state, -2, "channel");
+    return 1;
+}
+
 static int lua_espclaw_gpio_read(lua_State *state)
 {
     espclaw_lua_context_t *context = lua_get_context(state);
-    int pin = (int)luaL_checkinteger(state, 1);
+    int pin = -1;
     int level = 0;
 
     if (context == NULL || !espclaw_app_has_permission(context->manifest, "gpio.read")) {
         return lua_push_permission_error(state, "gpio.read");
+    }
+    if (lua_resolve_pin_argument(state, 1, &pin) != 0) {
+        lua_pushnil(state);
+        lua_pushstring(state, "invalid gpio pin or alias");
+        return 2;
     }
     if (espclaw_hw_gpio_read(pin, &level) != 0) {
         lua_pushnil(state);
@@ -1019,11 +1143,16 @@ static int lua_espclaw_gpio_read(lua_State *state)
 static int lua_espclaw_gpio_write(lua_State *state)
 {
     espclaw_lua_context_t *context = lua_get_context(state);
-    int pin = (int)luaL_checkinteger(state, 1);
+    int pin = -1;
     int level = lua_toboolean(state, 2) ? 1 : 0;
 
     if (context == NULL || !espclaw_app_has_permission(context->manifest, "gpio.write")) {
         return lua_push_permission_error(state, "gpio.write");
+    }
+    if (lua_resolve_pin_argument(state, 1, &pin) != 0) {
+        lua_pushnil(state);
+        lua_pushstring(state, "invalid gpio pin or alias");
+        return 2;
     }
     if (espclaw_hw_gpio_write(pin, level) != 0) {
         lua_pushnil(state);
@@ -1039,12 +1168,17 @@ static int lua_espclaw_pwm_setup(lua_State *state)
 {
     espclaw_lua_context_t *context = lua_get_context(state);
     int channel = (int)luaL_checkinteger(state, 1);
-    int pin = (int)luaL_checkinteger(state, 2);
+    int pin = -1;
     int frequency_hz = (int)luaL_checkinteger(state, 3);
     int resolution_bits = (int)luaL_optinteger(state, 4, 10);
 
     if (context == NULL || !espclaw_app_has_permission(context->manifest, "pwm.write")) {
         return lua_push_permission_error(state, "pwm.write");
+    }
+    if (lua_resolve_pin_argument(state, 2, &pin) != 0) {
+        lua_pushnil(state);
+        lua_pushstring(state, "invalid pwm pin or alias");
+        return 2;
     }
     if (espclaw_hw_pwm_setup(channel, pin, frequency_hz, resolution_bits) != 0) {
         lua_pushnil(state);
@@ -1147,12 +1281,17 @@ static int lua_espclaw_servo_attach(lua_State *state)
 {
     espclaw_lua_context_t *context = lua_get_context(state);
     int channel = (int)luaL_checkinteger(state, 1);
-    int pin = (int)luaL_checkinteger(state, 2);
+    int pin = -1;
     int frequency_hz = (int)luaL_optinteger(state, 3, 50);
     int resolution_bits = (int)luaL_optinteger(state, 4, 15);
 
     if (context == NULL || !espclaw_app_has_permission(context->manifest, "pwm.write")) {
         return lua_push_permission_error(state, "pwm.write");
+    }
+    if (lua_resolve_pin_argument(state, 2, &pin) != 0) {
+        lua_pushnil(state);
+        lua_pushstring(state, "invalid servo pin or alias");
+        return 2;
     }
     if (espclaw_hw_pwm_setup(channel, pin, frequency_hz, resolution_bits) != 0) {
         lua_pushnil(state);
@@ -1202,13 +1341,18 @@ static int lua_espclaw_buzzer_tone(lua_State *state)
 {
     espclaw_lua_context_t *context = lua_get_context(state);
     int channel = (int)luaL_checkinteger(state, 1);
-    int pin = (int)luaL_checkinteger(state, 2);
+    int pin = -1;
     int frequency_hz = (int)luaL_checkinteger(state, 3);
     int duration_ms = (int)luaL_checkinteger(state, 4);
     int duty_percent = (int)luaL_optinteger(state, 5, 50);
 
     if (context == NULL || !espclaw_app_has_permission(context->manifest, "buzzer.play")) {
         return lua_push_permission_error(state, "buzzer.play");
+    }
+    if (lua_resolve_pin_argument(state, 2, &pin) != 0) {
+        lua_pushnil(state);
+        lua_pushstring(state, "invalid buzzer pin or alias");
+        return 2;
     }
     if (espclaw_hw_buzzer_tone(channel, pin, frequency_hz, duration_ms, duty_percent) != 0) {
         lua_pushnil(state);
@@ -1260,6 +1404,31 @@ static int lua_espclaw_adc_read_mv(lua_State *state)
     return 1;
 }
 
+static int lua_espclaw_adc_read_named_mv(lua_State *state)
+{
+    espclaw_lua_context_t *context = lua_get_context(state);
+    const char *name = luaL_checkstring(state, 1);
+    espclaw_board_adc_channel_t channel;
+    int millivolts = 0;
+
+    if (context == NULL || !espclaw_app_has_permission(context->manifest, "adc.read")) {
+        return lua_push_permission_error(state, "adc.read");
+    }
+    if (espclaw_board_find_adc_channel(name, &channel) != 0) {
+        lua_pushnil(state);
+        lua_pushstring(state, "unknown board adc channel");
+        return 2;
+    }
+    if (espclaw_hw_adc_read_mv(channel.unit, channel.channel, &millivolts) != 0) {
+        lua_pushnil(state);
+        lua_pushstring(state, "adc millivolt read failed");
+        return 2;
+    }
+
+    lua_pushinteger(state, (lua_Integer)millivolts);
+    return 1;
+}
+
 static int lua_espclaw_i2c_begin(lua_State *state)
 {
     espclaw_lua_context_t *context = lua_get_context(state);
@@ -1277,6 +1446,35 @@ static int lua_espclaw_i2c_begin(lua_State *state)
         return lua_push_permission_error(state, "i2c.read/i2c.write/imu.read/temperature.read");
     }
     if (espclaw_hw_i2c_begin(port, sda_pin, scl_pin, frequency_hz) != 0) {
+        lua_pushnil(state);
+        lua_pushstring(state, "i2c begin failed");
+        return 2;
+    }
+
+    lua_pushboolean(state, 1);
+    return 1;
+}
+
+static int lua_espclaw_i2c_begin_board(lua_State *state)
+{
+    espclaw_lua_context_t *context = lua_get_context(state);
+    const char *name = luaL_optstring(state, 1, "default");
+    espclaw_board_i2c_bus_t bus;
+    bool allowed = context != NULL &&
+                   (espclaw_app_has_permission(context->manifest, "i2c.read") ||
+                    espclaw_app_has_permission(context->manifest, "i2c.write") ||
+                    espclaw_app_has_permission(context->manifest, "imu.read") ||
+                    espclaw_app_has_permission(context->manifest, "temperature.read"));
+
+    if (!allowed) {
+        return lua_push_permission_error(state, "i2c.read/i2c.write/imu.read/temperature.read");
+    }
+    if (espclaw_board_find_i2c_bus(name, &bus) != 0) {
+        lua_pushnil(state);
+        lua_pushstring(state, "unknown board i2c bus");
+        return 2;
+    }
+    if (espclaw_hw_i2c_begin(bus.port, bus.sda_pin, bus.scl_pin, bus.frequency_hz) != 0) {
         lua_pushnil(state);
         lua_pushstring(state, "i2c begin failed");
         return 2;
@@ -1362,12 +1560,17 @@ static int lua_espclaw_ppm_begin(lua_State *state)
 {
     espclaw_lua_context_t *context = lua_get_context(state);
     int channel = (int)luaL_checkinteger(state, 1);
-    int pin = (int)luaL_checkinteger(state, 2);
+    int pin = -1;
     int frame_us = (int)luaL_optinteger(state, 3, 22500);
     int pulse_us = (int)luaL_optinteger(state, 4, 300);
 
     if (context == NULL || !espclaw_app_has_permission(context->manifest, "ppm.write")) {
         return lua_push_permission_error(state, "ppm.write");
+    }
+    if (lua_resolve_pin_argument(state, 2, &pin) != 0) {
+        lua_pushnil(state);
+        lua_pushstring(state, "invalid ppm pin or alias");
+        return 2;
     }
     if (espclaw_hw_ppm_begin(channel, pin, frame_us, pulse_us) != 0) {
         lua_pushnil(state);
@@ -1723,6 +1926,19 @@ static void register_lua_bindings(lua_State *state, espclaw_lua_context_t *conte
     register_lua_context_fn(state, context, lua_espclaw_list_apps, "list_apps");
 
     lua_newtable(state);
+    lua_pushcfunction(state, lua_espclaw_board_variant);
+    lua_setfield(state, -2, "describe");
+    lua_pushcfunction(state, lua_espclaw_board_pin);
+    lua_setfield(state, -2, "pin");
+    lua_pushcfunction(state, lua_espclaw_board_i2c);
+    lua_setfield(state, -2, "i2c");
+    lua_pushcfunction(state, lua_espclaw_board_uart);
+    lua_setfield(state, -2, "uart");
+    lua_pushcfunction(state, lua_espclaw_board_adc);
+    lua_setfield(state, -2, "adc");
+    register_lua_table(state, "board");
+
+    lua_newtable(state);
     register_lua_context_fn(state, context, lua_espclaw_gpio_read, "read");
     register_lua_context_fn(state, context, lua_espclaw_gpio_write, "write");
     register_lua_table(state, "gpio");
@@ -1744,10 +1960,12 @@ static void register_lua_bindings(lua_State *state, espclaw_lua_context_t *conte
     lua_newtable(state);
     register_lua_context_fn(state, context, lua_espclaw_adc_read_raw, "read_raw");
     register_lua_context_fn(state, context, lua_espclaw_adc_read_mv, "read_mv");
+    register_lua_context_fn(state, context, lua_espclaw_adc_read_named_mv, "read_named_mv");
     register_lua_table(state, "adc");
 
     lua_newtable(state);
     register_lua_context_fn(state, context, lua_espclaw_i2c_begin, "begin");
+    register_lua_context_fn(state, context, lua_espclaw_i2c_begin_board, "begin_board");
     register_lua_context_fn(state, context, lua_espclaw_i2c_scan, "scan");
     register_lua_context_fn(state, context, lua_espclaw_i2c_read_reg, "read_reg");
     register_lua_context_fn(state, context, lua_espclaw_i2c_write_reg, "write_reg");

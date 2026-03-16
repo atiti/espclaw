@@ -21,12 +21,27 @@ Board profiles capture platform-level constraints and defaults:
 - OTA slot count
 - soft concurrency budget
 - default capture sizing
+- CPU core count and task-affinity policy
 
 The current profiles are:
 
 - `esp32s3`: primary feature profile
 - `esp32cam`: constrained compatibility profile
 - `esp32c3`: flash-backed no-SD profile
+
+### Board Descriptors
+
+Board descriptors are the lightweight device-tree-style layer that sits on top of board profiles.
+
+They define:
+
+- the active board variant id
+- named pin aliases
+- named I2C buses
+- named UARTs
+- named ADC channels
+
+The resolved descriptor is loaded from `/workspace/config/board.json` when present, otherwise from the built-in descriptor for the board profile. That keeps the firmware image reusable across similar boards without pushing raw pin numbers into every Lua app or tool implementation.
 
 ### Workspace Store
 
@@ -158,6 +173,19 @@ Control loops sit between the app runtime and the hardware bridge. Each running 
 
 On the host simulator they run in detached pthreads. On firmware they run in FreeRTOS tasks. The loop worker reuses the same Lua globals across iterations, which is important for PID integrators, filter state, and device-local controller calibration.
 
+### Task Placement
+
+ESPClaw now centralizes task placement in a small task-policy module instead of scattering `xTaskCreatePinnedToCore()` decisions across unrelated code.
+
+Current policy:
+
+- single-core boards: no affinity
+- dual-core boards: admin HTTP on core `0`
+- dual-core boards: Telegram polling on core `0`
+- dual-core boards: persistent control loops on core `1`
+
+This is intentionally simple, but it gives the runtime a stable place to evolve smarter scheduling as more background services are added.
+
 ## Current Firmware Bring-Up
 
 The firmware now has an initial runtime path that performs:
@@ -175,6 +203,8 @@ The Telegram runtime now has two layers:
 - iterative LLM execution for free-text chat messages, using the same run loop as the admin API
 
 That gives the project a real end-to-end embedded message loop with multi-tool runs, while still keeping camera upload, richer provider refresh flows, and additional tool implementations as follow-on work.
+
+On fresh SoftAP-provisioned boards, the admin server is now deferred until provisioning completes so the provisioning manager and the ESPClaw admin HTTP server do not compete for the same socket budget during first boot.
 
 ## Planned Firmware Integration
 

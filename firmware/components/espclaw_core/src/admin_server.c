@@ -13,9 +13,11 @@
 #include "espclaw/admin_ui.h"
 #include "espclaw/app_runtime.h"
 #include "espclaw/auth_store.h"
+#include "espclaw/board_config.h"
 #include "espclaw/control_loop.h"
 #include "espclaw/ota_state.h"
 #include "espclaw/runtime.h"
+#include "espclaw/task_policy.h"
 
 static const char *TAG = "espclaw_admin";
 static httpd_handle_t s_admin_server;
@@ -198,6 +200,14 @@ static esp_err_t tools_get_handler(httpd_req_t *req)
     char buffer[12288];
 
     espclaw_render_tools_json(buffer, sizeof(buffer));
+    return send_json(req, buffer);
+}
+
+static esp_err_t board_get_handler(httpd_req_t *req)
+{
+    char buffer[4096];
+
+    espclaw_render_board_json(espclaw_board_current(), buffer, sizeof(buffer));
     return send_json(req, buffer);
 }
 
@@ -584,9 +594,11 @@ static esp_err_t loop_stop_post_handler(httpd_req_t *req)
 esp_err_t espclaw_admin_server_start(void)
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    int admin_core = espclaw_task_policy_core_for(ESPCLAW_TASK_KIND_ADMIN);
     httpd_uri_t routes[] = {
         {.uri = "/", .method = HTTP_GET, .handler = root_get_handler, .user_ctx = NULL},
         {.uri = "/api/status", .method = HTTP_GET, .handler = status_get_handler, .user_ctx = NULL},
+        {.uri = "/api/board", .method = HTTP_GET, .handler = board_get_handler, .user_ctx = NULL},
         {.uri = "/api/auth/status", .method = HTTP_GET, .handler = auth_status_get_handler, .user_ctx = NULL},
         {.uri = "/api/auth/codex", .method = HTTP_PUT, .handler = auth_put_handler, .user_ctx = NULL},
         {.uri = "/api/auth/codex", .method = HTTP_DELETE, .handler = auth_delete_handler, .user_ctx = NULL},
@@ -613,6 +625,7 @@ esp_err_t espclaw_admin_server_start(void)
 
     config.server_port = CONFIG_ESPCLAW_ADMIN_PORT;
     config.max_uri_handlers = 24;
+    config.core_id = admin_core >= 0 ? admin_core : tskNO_AFFINITY;
     if (httpd_start(&s_admin_server, &config) != ESP_OK) {
         return ESP_FAIL;
     }

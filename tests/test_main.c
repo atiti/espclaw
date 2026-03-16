@@ -12,6 +12,7 @@
 #include "espclaw/agent_loop.h"
 #include "espclaw/app_runtime.h"
 #include "espclaw/auth_store.h"
+#include "espclaw/board_config.h"
 #include "espclaw/board_profile.h"
 #include "espclaw/channel.h"
 #include "espclaw/config_render.h"
@@ -22,6 +23,7 @@
 #include "espclaw/provider_request.h"
 #include "espclaw/session_store.h"
 #include "espclaw/storage.h"
+#include "espclaw/task_policy.h"
 #include "espclaw/telegram_protocol.h"
 #include "espclaw/tool_catalog.h"
 #include "espclaw/workspace.h"
@@ -171,6 +173,7 @@ static void test_board_profiles(void)
     assert_true(strcmp(s3.id, "esp32s3") == 0, "esp32s3 profile id");
     assert_true(strcmp(s3.provisioning, "ble") == 0, "esp32s3 uses BLE provisioning");
     assert_true(s3.default_storage_backend == ESPCLAW_STORAGE_BACKEND_SD_CARD, "esp32s3 defaults to sd storage");
+    assert_true(s3.cpu_cores == 2, "esp32s3 is dual core");
     assert_true(s3.supports_concurrent_capture, "esp32s3 supports concurrent capture");
     assert_true(strcmp(cam.id, "esp32cam") == 0, "esp32cam profile id");
     assert_true(strcmp(cam.provisioning, "softap") == 0, "esp32cam uses SoftAP provisioning");
@@ -179,16 +182,80 @@ static void test_board_profiles(void)
     assert_true(strcmp(c3.id, "esp32c3") == 0, "esp32c3 profile id");
     assert_true(strcmp(c3.provisioning, "ble") == 0, "esp32c3 uses BLE provisioning");
     assert_true(c3.default_storage_backend == ESPCLAW_STORAGE_BACKEND_LITTLEFS, "esp32c3 defaults to littlefs");
+    assert_true(c3.cpu_cores == 1, "esp32c3 is single core");
     assert_true(!c3.has_camera, "esp32c3 has no camera");
+}
+
+static void test_board_descriptor_and_task_policy(void)
+{
+    char temp_dir[128];
+    char board_json[4096];
+    espclaw_board_profile_t c3 = espclaw_board_profile_for(ESPCLAW_BOARD_PROFILE_ESP32C3);
+    espclaw_board_profile_t s3 = espclaw_board_profile_for(ESPCLAW_BOARD_PROFILE_ESP32S3);
+    const espclaw_board_descriptor_t *current = NULL;
+    espclaw_board_i2c_bus_t i2c_bus;
+    espclaw_board_uart_t uart;
+    espclaw_board_adc_channel_t adc;
+    espclaw_task_policy_t policy;
+    int pin = -1;
+
+    make_temp_dir(temp_dir, sizeof(temp_dir));
+    assert_true(espclaw_workspace_bootstrap(temp_dir) == 0, "workspace bootstrap for board descriptor");
+    assert_true(
+        espclaw_workspace_write_file(
+            temp_dir,
+            "config/board.json",
+            "{\n"
+            "  \"variant\": \"seeed_xiao_esp32c3\",\n"
+            "  \"pins\": {\"buzzer\": 15},\n"
+            "  \"i2c\": {\"default\": {\"port\": 0, \"sda\": 6, \"scl\": 7, \"frequency_hz\": 100000}},\n"
+            "  \"uart\": {\"console\": {\"port\": 0, \"tx\": 21, \"rx\": 20, \"baud_rate\": 57600}},\n"
+            "  \"adc\": {\"battery\": {\"unit\": 1, \"channel\": 3}}\n"
+            "}\n"
+        ) == 0,
+        "board descriptor override written"
+    );
+
+    assert_true(espclaw_board_configure_current(temp_dir, &c3) == 0, "board descriptor configured");
+    current = espclaw_board_current();
+    assert_true(current != NULL, "current board descriptor available");
+    assert_true(strcmp(current->variant_id, "seeed_xiao_esp32c3") == 0, "board variant loaded from workspace");
+    assert_true(strcmp(current->source, "workspace") == 0, "board source indicates workspace");
+    assert_true(espclaw_board_resolve_pin_alias("buzzer", &pin) == 0, "buzzer alias resolved");
+    assert_true(pin == 15, "board pin override applied");
+    assert_true(espclaw_board_find_i2c_bus("default", &i2c_bus) == 0, "board i2c bus resolved");
+    assert_true(i2c_bus.frequency_hz == 100000, "board i2c override applied");
+    assert_true(espclaw_board_find_uart("console", &uart) == 0, "board uart resolved");
+    assert_true(uart.baud_rate == 57600, "board uart override applied");
+    assert_true(espclaw_board_find_adc_channel("battery", &adc) == 0, "board adc channel resolved");
+    assert_true(adc.unit == 1 && adc.channel == 3, "board adc override applied");
+
+    espclaw_task_policy_select(&c3);
+    policy = espclaw_task_policy_current();
+    assert_true(policy.cpu_cores == 1, "single-core policy tracks cpu count");
+    assert_true(policy.control_loop_core == -1, "single-core policy leaves control loop unpinned");
+
+    espclaw_task_policy_select(&s3);
+    policy = espclaw_task_policy_current();
+    assert_true(policy.cpu_cores == 2, "dual-core policy tracks cpu count");
+    assert_true(policy.telegram_core == 0, "dual-core telegram task pinned to core 0");
+    assert_true(policy.control_loop_core == 1, "dual-core control loop pinned to core 1");
+
+    assert_true(espclaw_render_board_json(current, board_json, sizeof(board_json)) > 0, "board json rendered");
+    assert_string_contains(board_json, "\"variant\":\"seeed_xiao_esp32c3\"", "board json variant rendered");
+    assert_string_contains(board_json, "\"control_loop_core\":1", "board json includes task policy");
 }
 
 static void test_workspace_manifest(void)
 {
     const espclaw_workspace_file_t *memory_file = espclaw_find_workspace_file("memory/MEMORY.md");
+    const espclaw_workspace_file_t *board_file = espclaw_find_workspace_file("config/board.json");
 
-    assert_true(espclaw_workspace_file_count() == 5, "workspace bootstrap file count");
+    assert_true(espclaw_workspace_file_count() == 6, "workspace bootstrap file count");
     assert_true(memory_file != NULL, "memory file exists");
+    assert_true(board_file != NULL, "board config file exists");
     assert_string_contains(memory_file->default_content, "Long-term", "memory template content");
+    assert_string_contains(board_file->default_content, "\"variant\": \"auto\"", "board config template content");
     assert_true(espclaw_workspace_is_control_file("HEARTBEAT.md"), "heartbeat is control file");
     assert_true(!espclaw_workspace_is_control_file("sessions/demo.jsonl"), "session file is not control file");
 }
@@ -684,12 +751,31 @@ static void test_app_runtime_hardware_bindings(void)
 {
     char temp_dir[128];
     char output[256];
+    espclaw_board_profile_t c3 = espclaw_board_profile_for(ESPCLAW_BOARD_PROFILE_ESP32C3);
     uint8_t uart_output[64];
     uint8_t i2c_registers[] = {0x12, 0x34};
     espclaw_hw_pwm_state_t pwm_state;
     size_t uart_output_length = 0;
 
     make_temp_dir(temp_dir, sizeof(temp_dir));
+    assert_true(espclaw_workspace_bootstrap(temp_dir) == 0, "workspace bootstrap for vehicle app");
+    assert_true(
+        espclaw_workspace_write_file(
+            temp_dir,
+            "config/board.json",
+            "{\n"
+            "  \"variant\": \"seeed_xiao_esp32c3\",\n"
+            "  \"pins\": {\"buzzer\": 5, \"servo_main\": 13, \"ppm_out\": 14},\n"
+            "  \"i2c\": {\"default\": {\"port\": 0, \"sda\": 21, \"scl\": 22, \"frequency_hz\": 400000}},\n"
+            "  \"adc\": {\"battery\": {\"unit\": 1, \"channel\": 3}}\n"
+            "}\n"
+        ) == 0,
+        "vehicle app board config written"
+    );
+    assert_true(
+        espclaw_board_configure_current(temp_dir, &c3) == 0,
+        "vehicle app board config loaded"
+    );
     assert_true(
         espclaw_app_scaffold_lua(
             temp_dir,
@@ -794,6 +880,7 @@ static void test_app_runtime_vehicle_bindings(void)
 {
     char temp_dir[128];
     char output[512];
+    espclaw_board_profile_t c3 = espclaw_board_profile_for(ESPCLAW_BOARD_PROFILE_ESP32C3);
     uint8_t tmp102_registers[] = {0x19, 0x10};
     uint8_t mpu6050_registers[] = {
         0x10, 0x00,
@@ -808,6 +895,21 @@ static void test_app_runtime_vehicle_bindings(void)
     espclaw_hw_ppm_state_t ppm_state;
 
     make_temp_dir(temp_dir, sizeof(temp_dir));
+    assert_true(espclaw_workspace_bootstrap(temp_dir) == 0, "workspace bootstrap for vehicle app");
+    assert_true(
+        espclaw_workspace_write_file(
+            temp_dir,
+            "config/board.json",
+            "{\n"
+            "  \"variant\": \"seeed_xiao_esp32c3\",\n"
+            "  \"pins\": {\"servo_main\": 13, \"ppm_out\": 14},\n"
+            "  \"i2c\": {\"default\": {\"port\": 0, \"sda\": 21, \"scl\": 22, \"frequency_hz\": 400000}},\n"
+            "  \"adc\": {\"battery\": {\"unit\": 1, \"channel\": 3}}\n"
+            "}\n"
+        ) == 0,
+        "vehicle app board config written"
+    );
+    assert_true(espclaw_board_configure_current(temp_dir, &c3) == 0, "vehicle app board configured");
     assert_true(
         espclaw_app_scaffold_lua(
             temp_dir,
@@ -823,17 +925,21 @@ static void test_app_runtime_vehicle_bindings(void)
             temp_dir,
             "vehicle_app",
             "function handle(trigger, payload)\n"
-            "  assert(espclaw.i2c.begin(0, 21, 22, 400000))\n"
+            "  local board = espclaw.board.describe()\n"
+            "  local battery = espclaw.board.adc('battery')\n"
+            "  assert(board.variant == 'seeed_xiao_esp32c3')\n"
+            "  assert(espclaw.i2c.begin_board('default'))\n"
             "  assert(espclaw.imu.mpu6050_begin(0, 0x68))\n"
             "  local sample = espclaw.imu.mpu6050_read(0, 0x68)\n"
             "  local roll, pitch = espclaw.imu.complementary_roll_pitch(sample, 0, 0, 0.98, 0.01)\n"
             "  local temp = espclaw.temperature.tmp102_c(0, 0x48)\n"
-            "  local battery_mv = espclaw.adc.read_mv(1, 3)\n"
+            "  local battery_mv = espclaw.adc.read_named_mv('battery')\n"
             "  local drive = espclaw.control.mix_differential(0.6, -0.2, -1, 1)\n"
             "  local quad = espclaw.control.mix_quad_x(0.5, 0.1, -0.05, 0.02, 0, 1)\n"
-            "  assert(espclaw.servo.attach(1, 13))\n"
+            "  assert(battery.unit == 1 and battery.channel == 3)\n"
+            "  assert(espclaw.servo.attach(1, 'servo_main'))\n"
             "  local pulse = espclaw.servo.write_norm(1, drive.left, 1000, 2000)\n"
-            "  assert(espclaw.ppm.begin(0, 14, 22500, 300))\n"
+            "  assert(espclaw.ppm.begin(0, 'ppm_out', 22500, 300))\n"
             "  assert(espclaw.ppm.write(0, {1000, 1500, 1500, 2000}))\n"
             "  local pwm = espclaw.pwm.state(1)\n"
             "  local ppm = espclaw.ppm.state(0)\n"
@@ -1042,6 +1148,7 @@ static void test_agent_loop(void)
 int main(void)
 {
     test_board_profiles();
+    test_board_descriptor_and_task_policy();
     test_workspace_manifest();
     test_provider_and_channel_registry();
     test_tool_catalog();

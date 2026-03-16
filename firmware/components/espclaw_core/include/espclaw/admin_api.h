@@ -5,6 +5,7 @@
 #include <stddef.h>
 
 #include "espclaw/auth_store.h"
+#include "espclaw/board_config.h"
 #include "espclaw/board_profile.h"
 #include "espclaw/ota_state.h"
 
@@ -41,6 +42,11 @@ size_t espclaw_render_app_detail_json(
 );
 size_t espclaw_render_auth_profile_json(
     const espclaw_auth_profile_t *profile,
+    char *buffer,
+    size_t buffer_size
+);
+size_t espclaw_render_board_json(
+    const espclaw_board_descriptor_t *board,
     char *buffer,
     size_t buffer_size
 );

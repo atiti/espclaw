@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Added a lightweight board-descriptor layer with built-in board variants, `/workspace/config/board.json` overrides, named bus/pin mappings, and a new `GET /api/board` admin surface so one firmware image can adapt to multiple development-board pinouts.
+- Added a task-policy module that applies multicore placement rules for admin HTTP, Telegram polling, and persistent control loops on dual-core ESP32 targets while leaving single-core targets unpinned.
+- Added Lua board helpers such as `espclaw.board.describe()` and alias-aware hardware bindings so apps can target named resources instead of hard-coded GPIO numbers.
+- Increased the ESP-IDF main task stack for the firmware runtime and reduced startup stack pressure in the board/app bootstrap path, which fixes real ESP32-C3 boot crashes during workspace and boot-app initialization.
+- Deferred admin-server startup until SoftAP provisioning completes on fresh boards, which avoids first-boot HTTP socket conflicts between the provisioning manager and the ESPClaw admin UI.
+- Verified the flash-backed `esp32c3` path on real hardware using a Seeed XIAO ESP32-C3-class pin map and direct flashing over `/dev/cu.usbmodem1101`; the firmware now boots cleanly into provisioning with LittleFS-backed workspace storage.
 - Added a workspace storage backend layer with SD-card and LittleFS support, plus a new `esp32c3` board profile that defaults to an internal flash-backed `/workspace` filesystem for boards without microSD.
 - Added a custom partition layout with a dedicated `workspace` LittleFS partition so the same workspace/app/session layout can run on non-SD boards.
 - Fixed the mock Codex tool-loop transport so it detects tool-listing intents from the last user message instead of accidentally matching the system prompt, which restores normal multi-tool simulator runs and model-driven `tool.list` tests.

@@ -21,6 +21,7 @@ typedef struct {
     const char *display_name;
     const char *provisioning;
     espclaw_storage_backend_t default_storage_backend;
+    int cpu_cores;
     bool has_camera;
     bool has_psram;
     bool supports_ble_provisioning;

@@ -24,13 +24,16 @@
 #endif
 
 #include "espclaw/admin_api.h"
+#include "espclaw/admin_server.h"
 #include "espclaw/agent_loop.h"
 #include "espclaw/admin_ops.h"
 #include "espclaw/app_runtime.h"
 #include "espclaw/auth_store.h"
+#include "espclaw/board_config.h"
 #include "espclaw/board_profile.h"
 #include "espclaw/session_store.h"
 #include "espclaw/storage.h"
+#include "espclaw/task_policy.h"
 #include "espclaw/telegram_protocol.h"
 #include "espclaw/workspace.h"
 
@@ -79,6 +82,9 @@ static void provisioning_event_cb(void *user_data, wifi_prov_cb_event_t event, v
     case WIFI_PROV_END:
         s_runtime_status.provisioning_active = false;
         wifi_prov_mgr_deinit();
+        if (espclaw_admin_server_start() != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to start admin server after provisioning");
+        }
         break;
     default:
         break;
@@ -564,12 +570,21 @@ static void telegram_polling_task(void *arg)
 static esp_err_t maybe_start_telegram(void)
 {
 #if CONFIG_ESPCLAW_ENABLE_TELEGRAM
+    int core = espclaw_task_policy_core_for(ESPCLAW_TASK_KIND_TELEGRAM);
+
     if (strlen(CONFIG_ESPCLAW_TELEGRAM_BOT_TOKEN) == 0) {
         ESP_LOGI(TAG, "Telegram polling disabled: empty bot token");
         return ESP_OK;
     }
 
-    if (xTaskCreate(telegram_polling_task, "espclaw_tg", 8192, (void *)CONFIG_ESPCLAW_TELEGRAM_BOT_TOKEN, 5, NULL) != pdPASS) {
+    if (xTaskCreatePinnedToCore(
+            telegram_polling_task,
+            "espclaw_tg",
+            8192,
+            (void *)CONFIG_ESPCLAW_TELEGRAM_BOT_TOKEN,
+            5,
+            NULL,
+            core >= 0 ? core : tskNO_AFFINITY) != pdPASS) {
         return ESP_FAIL;
     }
     return ESP_OK;
@@ -582,6 +597,8 @@ esp_err_t espclaw_runtime_start(espclaw_board_profile_id_t profile_id, espclaw_r
 {
     memset(&s_runtime_status, 0, sizeof(s_runtime_status));
     s_runtime_status.profile = espclaw_board_profile_for(profile_id);
+    espclaw_task_policy_select(&s_runtime_status.profile);
+    espclaw_board_configure_current(NULL, &s_runtime_status.profile);
 
     if (s_runtime_event_group == NULL) {
         s_runtime_event_group = xEventGroupCreate();
@@ -598,6 +615,7 @@ esp_err_t espclaw_runtime_start(espclaw_board_profile_id_t profile_id, espclaw_r
     } else {
         char boot_log[512];
 
+        espclaw_board_configure_current(s_runtime_status.workspace_root, &s_runtime_status.profile);
         espclaw_auth_store_init(s_runtime_status.workspace_root);
         if (espclaw_app_run_boot_apps(s_runtime_status.workspace_root, boot_log, sizeof(boot_log)) == 0 &&
             boot_log[0] != '\0') {

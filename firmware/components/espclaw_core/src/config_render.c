@@ -20,7 +20,9 @@ size_t espclaw_render_default_config(
         "{\n"
         "  \"device\": {\n"
         "    \"name\": \"espclaw\",\n"
-        "    \"board_profile\": \"%s\"\n"
+        "    \"board_profile\": \"%s\",\n"
+        "    \"board_variant\": \"auto\",\n"
+        "    \"cpu_cores\": %u\n"
         "  },\n"
         "  \"storage\": {\n"
         "    \"backend\": \"%s\",\n"
@@ -71,6 +73,7 @@ size_t espclaw_render_default_config(
         "  }\n"
         "}\n",
         profile->id,
+        (unsigned)profile->cpu_cores,
         espclaw_storage_backend_name(profile->default_storage_backend),
         profile->provisioning,
         profile->has_camera ? "true" : "false",

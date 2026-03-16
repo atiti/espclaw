@@ -8,6 +8,7 @@ On first boot, ESPClaw starts the ESP-IDF provisioning manager.
 - `esp32cam` profile uses SoftAP provisioning
 - `esp32c3` profile prefers BLE provisioning and defaults to internal flash storage
 - if BLE is not enabled in the active ESP-IDF sdkconfig, the `esp32s3` profile falls back to SoftAP automatically
+- when SoftAP provisioning is active, the ESPClaw admin UI is deferred until provisioning completes so it does not collide with the provisioning HTTP service on first boot
 
 If credentials are already provisioned in NVS, ESPClaw skips provisioning mode and starts station mode directly.
 
@@ -27,6 +28,11 @@ When workspace mounting succeeds, ESPClaw bootstraps:
 - `memory/MEMORY.md`
 
 It also creates the `sessions/`, `media/`, `config/`, and `apps/` directories under the workspace root.
+
+The `config/` directory now includes:
+
+- `device.json` for runtime/provider settings
+- `board.json` for board variants, named pins, and bus mappings
 
 ## Telegram
 
