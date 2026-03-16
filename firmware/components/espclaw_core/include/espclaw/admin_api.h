@@ -10,6 +10,7 @@
 
 size_t espclaw_render_admin_status_json(
     const espclaw_board_profile_t *profile,
+    espclaw_storage_backend_t storage_backend,
     const char *provider_id,
     const char *channel_id,
     bool workspace_ready,

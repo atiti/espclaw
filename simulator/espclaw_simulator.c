@@ -42,7 +42,7 @@ static void print_usage(const char *argv0)
 {
     fprintf(
         stderr,
-        "Usage: %s [--workspace PATH] [--port PORT] [--profile esp32s3|esp32cam] [--self-test]\n",
+        "Usage: %s [--workspace PATH] [--port PORT] [--profile esp32s3|esp32cam|esp32c3] [--self-test]\n",
         argv0
     );
 }
@@ -261,6 +261,7 @@ static void handle_api_request(
         espclaw_auth_store_load(&profile);
         espclaw_render_admin_status_json(
             &config->profile,
+            config->profile.default_storage_backend,
             profile.provider_id,
             "telegram",
             true,
@@ -593,6 +594,7 @@ static int run_self_test(const espclaw_simulator_config_t *config)
 
     espclaw_render_admin_status_json(
         &config->profile,
+        config->profile.default_storage_backend,
         "openai_compat",
         "telegram",
         true,
@@ -628,6 +630,8 @@ int main(int argc, char **argv)
 
             if (strcmp(profile, "esp32cam") == 0) {
                 config.profile = espclaw_board_profile_for(ESPCLAW_BOARD_PROFILE_ESP32CAM);
+            } else if (strcmp(profile, "esp32c3") == 0) {
+                config.profile = espclaw_board_profile_for(ESPCLAW_BOARD_PROFILE_ESP32C3);
             } else {
                 config.profile = espclaw_board_profile_for(ESPCLAW_BOARD_PROFILE_ESP32S3);
             }

@@ -23,6 +23,7 @@ size_t espclaw_render_default_config(
         "    \"board_profile\": \"%s\"\n"
         "  },\n"
         "  \"storage\": {\n"
+        "    \"backend\": \"%s\",\n"
         "    \"workspace_root\": \"/workspace\",\n"
         "    \"secret_store\": \"nvs\"\n"
         "  },\n"
@@ -55,13 +56,13 @@ size_t espclaw_render_default_config(
         "    \"enabled\": [\"fs.read\", \"fs.write\", \"wifi.scan\", \"camera.capture\", \"ota.apply\"]\n"
         "  },\n"
         "  \"camera\": {\n"
-        "    \"enabled\": true,\n"
+        "    \"enabled\": %s,\n"
         "    \"default_width\": %u,\n"
         "    \"default_height\": %u,\n"
         "    \"format\": \"jpeg\"\n"
         "  },\n"
         "  \"ota\": {\n"
-        "    \"mode\": \"dual_slot\",\n"
+        "    \"mode\": \"single_slot\",\n"
         "    \"auto_check\": false\n"
         "  },\n"
         "  \"security\": {\n"
@@ -70,7 +71,9 @@ size_t espclaw_render_default_config(
         "  }\n"
         "}\n",
         profile->id,
+        espclaw_storage_backend_name(profile->default_storage_backend),
         profile->provisioning,
+        profile->has_camera ? "true" : "false",
         (unsigned)profile->default_capture_width,
         (unsigned)profile->default_capture_height
     );

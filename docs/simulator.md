@@ -29,7 +29,7 @@ Supported flags:
 
 - `--workspace PATH`
 - `--port PORT`
-- `--profile esp32s3|esp32cam`
+- `--profile esp32s3|esp32cam|esp32c3`
 - `--self-test`
 
 `--self-test` bootstraps a temporary workspace, scaffolds a demo app, runs it, and exits with a non-zero status on failure. That path is also used by the host test suite.

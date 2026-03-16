@@ -9,11 +9,14 @@
 
 typedef struct {
     espclaw_board_profile_t profile;
+    espclaw_storage_backend_t storage_backend;
     bool storage_ready;
     bool wifi_ready;
     bool provisioning_active;
     bool telegram_ready;
     char workspace_root[128];
+    size_t storage_total_bytes;
+    size_t storage_used_bytes;
 } espclaw_runtime_status_t;
 
 esp_err_t espclaw_runtime_start(espclaw_board_profile_id_t profile_id, espclaw_runtime_status_t *status);

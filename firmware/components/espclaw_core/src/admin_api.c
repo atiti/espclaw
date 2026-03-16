@@ -147,6 +147,7 @@ static const char *tool_safety_label(espclaw_tool_safety_t safety)
 
 size_t espclaw_render_admin_status_json(
     const espclaw_board_profile_t *profile,
+    espclaw_storage_backend_t storage_backend,
     const char *provider_id,
     const char *channel_id,
     bool workspace_ready,
@@ -159,6 +160,7 @@ size_t espclaw_render_admin_status_json(
     const char *channel = channel_id != NULL ? channel_id : "";
     const char *profile_id = "";
     const char *provisioning = "";
+    const char *storage = espclaw_storage_backend_name(storage_backend);
     const char *ota_status = "unknown";
     bool rollback_allowed = false;
     unsigned int target_slot = 0;
@@ -184,6 +186,7 @@ size_t espclaw_render_admin_status_json(
         "{"
         "\"board_profile\":\"%s\","
         "\"provisioning\":\"%s\","
+        "\"storage_backend\":\"%s\","
         "\"workspace_ready\":%s,"
         "\"provider\":\"%s\","
         "\"channel\":\"%s\","
@@ -195,6 +198,7 @@ size_t espclaw_render_admin_status_json(
         "}",
         profile_id,
         provisioning,
+        storage,
         workspace_ready ? "true" : "false",
         provider,
         channel,

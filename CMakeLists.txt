@@ -39,6 +39,7 @@ add_library(
   firmware/components/espclaw_core/src/provider.c
   firmware/components/espclaw_core/src/provider_request.c
   firmware/components/espclaw_core/src/session_store.c
+  firmware/components/espclaw_core/src/storage.c
   firmware/components/espclaw_core/src/telegram_protocol.c
   firmware/components/espclaw_core/src/tool_catalog.c
   firmware/components/espclaw_core/src/workspace.c

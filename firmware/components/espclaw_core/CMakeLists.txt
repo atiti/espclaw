@@ -17,6 +17,7 @@ idf_component_register(
     "src/provider_request.c"
     "src/runtime.c"
     "src/session_store.c"
+    "src/storage.c"
     "src/telegram_protocol.c"
     "src/tool_catalog.c"
     "src/workspace.c"
@@ -31,9 +32,9 @@ idf_component_register(
     esp_wifi
     fatfs
     json
+    littlefs
     lua
     nvs_flash
     sdmmc
-    spiffs
     wifi_provisioning
 )

@@ -3,23 +3,17 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "driver/spi_common.h"
-#include "driver/spi_master.h"
-#include "driver/sdmmc_host.h"
-#include "driver/sdspi_host.h"
 #include "esp_event.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_netif.h"
-#include "esp_vfs_fat.h"
 #include "esp_wifi.h"
 #include "esp_wifi_default.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/task.h"
 #include "nvs_flash.h"
-#include "sdmmc_cmd.h"
 #include "wifi_provisioning/manager.h"
 #include "wifi_provisioning/scheme_softap.h"
 #if defined(CONFIG_BT_ENABLED) && CONFIG_BT_ENABLED
@@ -36,30 +30,11 @@
 #include "espclaw/auth_store.h"
 #include "espclaw/board_profile.h"
 #include "espclaw/session_store.h"
+#include "espclaw/storage.h"
 #include "espclaw/telegram_protocol.h"
 #include "espclaw/workspace.h"
 
 static const char *TAG = "espclaw_runtime";
-
-#ifndef CONFIG_ESPCLAW_SD_MOUNT_POINT
-#define CONFIG_ESPCLAW_SD_MOUNT_POINT "/sdcard"
-#endif
-
-#ifndef CONFIG_ESPCLAW_SD_SPI_MOSI
-#define CONFIG_ESPCLAW_SD_SPI_MOSI -1
-#endif
-
-#ifndef CONFIG_ESPCLAW_SD_SPI_MISO
-#define CONFIG_ESPCLAW_SD_SPI_MISO -1
-#endif
-
-#ifndef CONFIG_ESPCLAW_SD_SPI_SCLK
-#define CONFIG_ESPCLAW_SD_SPI_SCLK -1
-#endif
-
-#ifndef CONFIG_ESPCLAW_SD_SPI_CS
-#define CONFIG_ESPCLAW_SD_SPI_CS -1
-#endif
 
 #ifndef CONFIG_ESPCLAW_TELEGRAM_BOT_TOKEN
 #define CONFIG_ESPCLAW_TELEGRAM_BOT_TOKEN ""
@@ -162,81 +137,32 @@ static esp_err_t init_nvs_flash_store(void)
 
 static esp_err_t mount_workspace_storage(const espclaw_board_profile_t *profile)
 {
-    char workspace_root[sizeof(s_runtime_status.workspace_root)];
+    espclaw_storage_mount_t mount;
 
     if (profile == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
 
-#if CONFIG_ESPCLAW_ENABLE_SD_BOOTSTRAP
-    if (profile->profile_id == ESPCLAW_BOARD_PROFILE_ESP32CAM) {
-        sdmmc_host_t host = SDMMC_HOST_DEFAULT();
-        sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
-        esp_vfs_fat_sdmmc_mount_config_t mount_config = {
-            .format_if_mount_failed = false,
-            .max_files = 8,
-            .allocation_unit_size = 16 * 1024,
-        };
-        sdmmc_card_t *card = NULL;
-
-        slot_config.width = 1;
-        host.max_freq_khz = SDMMC_FREQ_DEFAULT;
-        if (esp_vfs_fat_sdmmc_mount(CONFIG_ESPCLAW_SD_MOUNT_POINT, &host, &slot_config, &mount_config, &card) != ESP_OK) {
-            ESP_LOGW(TAG, "SDMMC mount failed, workspace bootstrap disabled");
-            return ESP_FAIL;
-        }
-    } else if (CONFIG_ESPCLAW_SD_SPI_MOSI >= 0 &&
-               CONFIG_ESPCLAW_SD_SPI_MISO >= 0 &&
-               CONFIG_ESPCLAW_SD_SPI_SCLK >= 0 &&
-               CONFIG_ESPCLAW_SD_SPI_CS >= 0) {
-        spi_bus_config_t bus_cfg = {
-            .mosi_io_num = CONFIG_ESPCLAW_SD_SPI_MOSI,
-            .miso_io_num = CONFIG_ESPCLAW_SD_SPI_MISO,
-            .sclk_io_num = CONFIG_ESPCLAW_SD_SPI_SCLK,
-            .quadwp_io_num = -1,
-            .quadhd_io_num = -1,
-            .max_transfer_sz = 16 * 1024,
-        };
-        sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
-        sdmmc_host_t host = SDSPI_HOST_DEFAULT();
-        esp_vfs_fat_sdmmc_mount_config_t mount_config = {
-            .format_if_mount_failed = false,
-            .max_files = 8,
-            .allocation_unit_size = 16 * 1024,
-        };
-        sdmmc_card_t *card = NULL;
-        esp_err_t err;
-
-        host.slot = SPI2_HOST;
-        slot_config.gpio_cs = CONFIG_ESPCLAW_SD_SPI_CS;
-        slot_config.host_id = host.slot;
-        err = spi_bus_initialize(host.slot, &bus_cfg, SPI_DMA_CH_AUTO);
-        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-            ESP_LOGW(TAG, "SDSPI bus init failed, workspace bootstrap disabled");
-            return ESP_FAIL;
-        }
-        if (esp_vfs_fat_sdspi_mount(CONFIG_ESPCLAW_SD_MOUNT_POINT, &host, &slot_config, &mount_config, &card) != ESP_OK) {
-            spi_bus_free(host.slot);
-            ESP_LOGW(TAG, "SDSPI mount failed, workspace bootstrap disabled");
-            return ESP_FAIL;
-        }
-    } else {
-        ESP_LOGW(TAG, "No SD pin configuration set for non-ESP32CAM board profile");
-        return ESP_FAIL;
-    }
-#else
-    return ESP_ERR_NOT_SUPPORTED;
-#endif
-
-    snprintf(workspace_root, sizeof(workspace_root), "%s/workspace", CONFIG_ESPCLAW_SD_MOUNT_POINT);
-    if (espclaw_workspace_bootstrap(workspace_root) != 0) {
-        ESP_LOGE(TAG, "Failed to bootstrap workspace at %s", workspace_root);
+    if (espclaw_storage_mount_workspace(profile, &mount) != ESP_OK) {
+        ESP_LOGW(
+            TAG,
+            "Workspace mount failed for backend %s",
+            espclaw_storage_backend_name(espclaw_storage_backend_for_profile(profile))
+        );
         return ESP_FAIL;
     }
 
-    snprintf(s_runtime_status.workspace_root, sizeof(s_runtime_status.workspace_root), "%s", workspace_root);
+    s_runtime_status.storage_backend = mount.backend;
+    s_runtime_status.storage_total_bytes = mount.total_bytes;
+    s_runtime_status.storage_used_bytes = mount.used_bytes;
+    snprintf(s_runtime_status.workspace_root, sizeof(s_runtime_status.workspace_root), "%s", mount.workspace_root);
     s_runtime_status.storage_ready = true;
-    ESP_LOGI(TAG, "Workspace ready at %s", s_runtime_status.workspace_root);
+    ESP_LOGI(
+        TAG,
+        "Workspace ready backend=%s root=%s",
+        espclaw_storage_backend_name(s_runtime_status.storage_backend),
+        s_runtime_status.workspace_root
+    );
     return ESP_OK;
 }
 
@@ -355,6 +281,7 @@ static void build_status_reply(char *buffer, size_t buffer_size)
 
     espclaw_render_admin_status_json(
         &s_runtime_status.profile,
+        s_runtime_status.storage_backend,
         profile.provider_id,
         "telegram",
         s_runtime_status.storage_ready,
@@ -667,7 +594,7 @@ esp_err_t espclaw_runtime_start(espclaw_board_profile_id_t profile_id, espclaw_r
     ESP_ERROR_CHECK(init_wifi_stack());
 
     if (mount_workspace_storage(&s_runtime_status.profile) != ESP_OK) {
-        ESP_LOGW(TAG, "Continuing without SD-backed workspace");
+        ESP_LOGW(TAG, "Continuing without workspace storage");
     } else {
         char boot_log[512];
 

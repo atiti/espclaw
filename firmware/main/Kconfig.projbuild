@@ -9,6 +9,23 @@ config ESPCLAW_BOARD_PROFILE_ESP32S3
 
 config ESPCLAW_BOARD_PROFILE_ESP32CAM
     bool "ESP32-CAM"
+
+config ESPCLAW_BOARD_PROFILE_ESP32C3
+    bool "ESP32-C3"
+endchoice
+
+choice ESPCLAW_STORAGE_BACKEND
+    prompt "ESPClaw workspace storage backend"
+    default ESPCLAW_STORAGE_BACKEND_AUTO
+
+config ESPCLAW_STORAGE_BACKEND_AUTO
+    bool "Auto (use board profile default)"
+
+config ESPCLAW_STORAGE_BACKEND_SD
+    bool "SD card"
+
+config ESPCLAW_STORAGE_BACKEND_LITTLEFS
+    bool "LittleFS on internal flash"
 endchoice
 
 config ESPCLAW_ENABLE_SD_BOOTSTRAP
@@ -34,6 +51,14 @@ config ESPCLAW_SD_SPI_SCLK
 config ESPCLAW_SD_SPI_CS
     int "SDSPI CS pin"
     default -1
+
+config ESPCLAW_FLASH_MOUNT_POINT
+    string "Flash workspace mount point"
+    default "/workspace"
+
+config ESPCLAW_FLASH_PARTITION_LABEL
+    string "Flash workspace partition label"
+    default "workspace"
 
 config ESPCLAW_ENABLE_WIFI_PROVISIONING
     bool "Enable Wi-Fi provisioning"

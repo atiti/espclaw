@@ -2,7 +2,7 @@
 
 ## Overview
 
-ESPClaw apps are SD-backed Lua bundles that the firmware can discover and execute at runtime.
+ESPClaw apps are workspace-backed Lua bundles that the firmware can discover and execute at runtime.
 
 Apps are intended to be:
 
@@ -101,7 +101,7 @@ Current triggers:
 - `telegram`
 - `manual`
 
-Apps declaring `boot` are executed automatically after the SD workspace is mounted.
+Apps declaring `boot` are executed automatically after the workspace is mounted.
 
 The runtime now also supports persistent scheduled execution where the same Lua VM instance is reused across iterations. That allows apps to keep controller state such as integrators, filters, or calibration globals in memory instead of reconstructing them on every trigger.
 
@@ -114,7 +114,7 @@ Current Telegram commands:
 - `/app <app_id> [payload]`
 - `/rmapp <app_id>`
 
-`/newapp` writes a scaffolded manifest and `main.lua` to the SD workspace. This is the first path toward apps being created by ESPClaw itself.
+`/newapp` writes a scaffolded manifest and `main.lua` to the workspace. This is the first path toward apps being created by ESPClaw itself.
 
 ## App Management Primitives
 
@@ -126,7 +126,7 @@ The runtime now exposes the basic lifecycle operations needed by the admin surfa
 - render installed app metadata as compact JSON
 - render app detail JSON including manifest fields and entrypoint source
 
-This keeps app editing on SD rather than inside firmware partitions and avoids treating dynamic apps as native binaries.
+This keeps app editing in the mounted workspace rather than inside the firmware image and avoids treating dynamic apps as native binaries.
 
 ## HTTP Admin Surface
 

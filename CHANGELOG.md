@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Added a workspace storage backend layer with SD-card and LittleFS support, plus a new `esp32c3` board profile that defaults to an internal flash-backed `/workspace` filesystem for boards without microSD.
+- Added a custom partition layout with a dedicated `workspace` LittleFS partition so the same workspace/app/session layout can run on non-SD boards.
 - Fixed the mock Codex tool-loop transport so it detects tool-listing intents from the last user message instead of accidentally matching the system prompt, which restores normal multi-tool simulator runs and model-driven `tool.list` tests.
 - Fixed the host test suite to assert model-driven tool-list transcripts against stable content and to run the simulator API test on a dynamic port instead of relying on a fixed `18081` listener.
 - Added simulator UART support with `UART0` bridged to process `stdin`/`stdout`, plus Lua `espclaw.uart.read/write` bindings and host-side test helpers for UART input/output validation.

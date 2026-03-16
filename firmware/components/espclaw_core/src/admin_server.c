@@ -169,6 +169,7 @@ static esp_err_t status_get_handler(httpd_req_t *req)
 
     espclaw_render_admin_status_json(
         status != NULL ? &status->profile : NULL,
+        status != NULL ? status->storage_backend : ESPCLAW_STORAGE_BACKEND_SD_CARD,
         profile.provider_id,
         "telegram",
         status != NULL && status->storage_ready,

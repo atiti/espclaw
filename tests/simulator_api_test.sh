@@ -25,7 +25,7 @@ cleanup() {
 
 trap cleanup EXIT
 
-"$SIM_BIN" --workspace "$WORKSPACE" --port "$PORT" --profile esp32s3 >"$SIM_LOG" 2>&1 &
+"$SIM_BIN" --workspace "$WORKSPACE" --port "$PORT" --profile esp32c3 >"$SIM_LOG" 2>&1 &
 SIM_PID="$!"
 
 for _ in {1..50}; do
@@ -37,6 +37,8 @@ done
 
 STATUS_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/status")"
 [[ "$STATUS_JSON" == *"telegram"* ]]
+[[ "$STATUS_JSON" == *'"board_profile":"esp32c3"'* ]]
+[[ "$STATUS_JSON" == *'"storage_backend":"littlefs"'* ]]
 
 WORKSPACE_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/workspace/files")"
 [[ "$WORKSPACE_JSON" == *"HEARTBEAT.md"* ]]

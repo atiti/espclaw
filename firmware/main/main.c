@@ -4,6 +4,7 @@
 #include "espclaw/config_render.h"
 #include "espclaw/ota_state.h"
 #include "espclaw/runtime.h"
+#include "espclaw/storage.h"
 #include "esp_log.h"
 
 static const char *TAG = "espclaw";
@@ -17,6 +18,8 @@ void app_main(void)
     espclaw_board_profile_id_t profile_id =
 #if CONFIG_ESPCLAW_BOARD_PROFILE_ESP32CAM
         ESPCLAW_BOARD_PROFILE_ESP32CAM;
+#elif CONFIG_ESPCLAW_BOARD_PROFILE_ESP32C3
+        ESPCLAW_BOARD_PROFILE_ESP32C3;
 #else
         ESPCLAW_BOARD_PROFILE_ESP32S3;
 #endif
@@ -31,6 +34,7 @@ void app_main(void)
     size_t written = espclaw_render_default_config(&runtime_status.profile, config_buffer, sizeof(config_buffer));
     size_t status_written = espclaw_render_admin_status_json(
         &runtime_status.profile,
+        runtime_status.storage_backend,
         "openai_compat",
         "telegram",
         runtime_status.storage_ready,
@@ -41,9 +45,10 @@ void app_main(void)
 
     ESP_LOGI(
         TAG,
-        "Booting ESPClaw profile=%s provisioning=%s storage=%d wifi=%d telegram=%d",
+        "Booting ESPClaw profile=%s provisioning=%s storage_backend=%s storage=%d wifi=%d telegram=%d",
         runtime_status.profile.id,
         runtime_status.profile.provisioning,
+        espclaw_storage_backend_name(runtime_status.storage_backend),
         runtime_status.storage_ready,
         runtime_status.wifi_ready,
         runtime_status.telegram_ready

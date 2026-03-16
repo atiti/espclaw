@@ -1,9 +1,9 @@
 # ESPClaw
 
-ESPClaw is an ESP32-native AI agent runtime inspired by OpenClaw, NanoClaw, and PicoClaw. It targets ESP32-S3-class boards first, while keeping classic ESP32-CAM support as a constrained compatibility profile.
+ESPClaw is an ESP32-native AI agent runtime inspired by OpenClaw, NanoClaw, and PicoClaw. It targets ESP32-S3-class boards first, while keeping classic ESP32-CAM support as a constrained compatibility profile and ESP32-C3 support as the first flash-backed no-SD profile.
 
-The project is designed around a simple rule: remote LLMs, local tools. The device stores its workspace on SD, connects to Wi-Fi, exposes a local admin UI, talks to chat channels, and executes hardware-aware tool calls directly on the MCU.
-It can also host Lua-based dynamic apps directly from the SD-backed workspace.
+The project is designed around a simple rule: remote LLMs, local tools. The device stores its workspace on SD or internal flash, connects to Wi-Fi, exposes a local admin UI, talks to chat channels, and executes hardware-aware tool calls directly on the MCU.
+It can also host Lua-based dynamic apps directly from the workspace filesystem.
 The current provider path now also supports OpenAI Codex-style ChatGPT account auth, so the iterative chat loop can run against ChatGPT/Codex subscription credentials instead of only API keys.
 
 ## Current State
@@ -14,7 +14,7 @@ This repository now contains the initial firmware scaffold and the host-testable
 - workspace bootstrap and file layout
 - workspace filesystem bootstrap
 - session JSONL persistence
-- Lua app manifests, scaffolding, and SD-backed app discovery
+- Lua app manifests, scaffolding, and workspace-backed app discovery
 - provider capability registry
 - provider auth storage for API-key and ChatGPT/Codex-style backends
 - provider request rendering
@@ -34,7 +34,7 @@ This repository now contains the initial firmware scaffold and the host-testable
 - a host simulator for the firmware admin and Lua app runtime
 
 The runtime integrations with ESP-IDF networking, Telegram polling, Lua app execution, camera capture, and OTA transport are intentionally staged behind these interfaces.
-The firmware now also includes a live runtime path for NVS init, Wi‑Fi provisioning startup, SD-backed workspace bootstrap, Telegram polling/reply loops, Lua app boot hooks, provider auth storage, iterative LLM run execution, and the embedded admin HTTP server.
+The firmware now also includes a live runtime path for NVS init, Wi‑Fi provisioning startup, SD or LittleFS workspace bootstrap, Telegram polling/reply loops, Lua app boot hooks, provider auth storage, iterative LLM run execution, and the embedded admin HTTP server.
 
 ## Repository Layout
 
@@ -57,7 +57,7 @@ The firmware now also includes a live runtime path for NVS init, Wi‑Fi provisi
 
 ## Workspace Layout
 
-ESPClaw standardizes the SD-backed workspace layout:
+ESPClaw standardizes the workspace layout regardless of whether it lives on SD or internal flash:
 
 ```text
 /workspace/
@@ -109,7 +109,7 @@ Bootstrap the toolchain:
 ```bash
 mkdir -p .deps
 git clone -b v5.5.2 --recursive https://github.com/espressif/esp-idf.git .deps/esp-idf-v5.5.2
-IDF_TOOLS_PATH=$PWD/.deps/.espressif ./.deps/esp-idf-v5.5.2/install.sh esp32s3,esp32
+IDF_TOOLS_PATH=$PWD/.deps/.espressif ./.deps/esp-idf-v5.5.2/install.sh esp32s3,esp32,esp32c3
 ```
 
 Activate it in a shell:
@@ -126,6 +126,8 @@ idf.py -B build-esp32s3 set-target esp32s3
 idf.py -B build-esp32s3 build
 idf.py -B build-esp32 set-target esp32
 idf.py -B build-esp32 build
+idf.py -B build-esp32c3 set-target esp32c3
+idf.py -B build-esp32c3 build
 ```
 
 The firmware now serves the admin UI directly from the device root path and exposes the app-management API on the same port:
@@ -155,7 +157,9 @@ The firmware defaults now assume at least `4MB` flash because the Lua app runtim
 Configure runtime options with `idf.py menuconfig` under `ESPClaw`, including:
 
 - board profile
+- storage backend override
 - SD mount point and SDSPI pins
+- flash workspace mount point and partition label
 - Telegram bot token
 - Telegram polling interval
 
@@ -165,16 +169,17 @@ Provisioning transport is selected at runtime from the board profile, but BLE re
 
 - Primary board profile: `esp32s3`
 - Compatibility board profile: `esp32cam`
+- Flash-backed board profile: `esp32c3`
 - Initial chat channel: Telegram
 - Initial provider types: OpenAI-compatible, Anthropic Messages, and OpenAI Codex / ChatGPT OAuth
 - Default admin surface: local web UI served by the device
 - Default secret storage: NVS
-- Default workspace storage: SD card
+- Default workspace storage: board-profile dependent (`sdcard` on S3/CAM, `littlefs` on C3)
 - Default dynamic app runtime: Lua
 
 ## Dynamic Apps
 
-ESPClaw Lua apps live on SD under `/workspace/apps/<app_id>/`.
+ESPClaw Lua apps live under `/workspace/apps/<app_id>/` on either SD or internal flash.
 
 Each app contains:
 
@@ -183,7 +188,7 @@ Each app contains:
 
 Current runtime surfaces:
 
-- boot-trigger apps run automatically after SD workspace mount
+- boot-trigger apps run automatically after workspace mount
 - Telegram `/apps` lists installed apps with versions
 - Telegram `/newapp <app_id>` scaffolds a new Lua app bundle
 - Telegram `/app <app_id> [payload]` runs an installed app with the `telegram` trigger

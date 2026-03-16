@@ -12,7 +12,7 @@ Shows:
 
 - device profile
 - provisioning mode
-- SD workspace status
+- workspace storage status
 - selected provider
 - enabled chat channel
 - OTA status
@@ -75,7 +75,7 @@ Allows editing the main user-facing control files:
 - `HEARTBEAT.md`
 - `memory/MEMORY.md`
 
-The backend should also expose file metadata for these control files so the UI can indicate whether the workspace has been bootstrapped correctly on the SD card.
+The backend should also expose file metadata for these control files so the UI can indicate whether the workspace has been bootstrapped correctly on the active storage backend.
 
 Current route:
 
@@ -104,7 +104,7 @@ Allows:
 
 - listing installed Lua apps with id, version, permissions, and triggers
 - loading an app manifest plus Lua source into an editor
-- creating or updating an app bundle on SD
+- creating or updating an app bundle in the workspace
 - running an app with a chosen trigger and payload body
 - removing an installed app cleanly from `/workspace/apps/<app_id>/`
 

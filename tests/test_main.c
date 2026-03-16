@@ -21,6 +21,7 @@
 #include "espclaw/provider.h"
 #include "espclaw/provider_request.h"
 #include "espclaw/session_store.h"
+#include "espclaw/storage.h"
 #include "espclaw/telegram_protocol.h"
 #include "espclaw/tool_catalog.h"
 #include "espclaw/workspace.h"
@@ -165,13 +166,20 @@ static void test_board_profiles(void)
 {
     espclaw_board_profile_t s3 = espclaw_board_profile_for(ESPCLAW_BOARD_PROFILE_ESP32S3);
     espclaw_board_profile_t cam = espclaw_board_profile_for(ESPCLAW_BOARD_PROFILE_ESP32CAM);
+    espclaw_board_profile_t c3 = espclaw_board_profile_for(ESPCLAW_BOARD_PROFILE_ESP32C3);
 
     assert_true(strcmp(s3.id, "esp32s3") == 0, "esp32s3 profile id");
     assert_true(strcmp(s3.provisioning, "ble") == 0, "esp32s3 uses BLE provisioning");
+    assert_true(s3.default_storage_backend == ESPCLAW_STORAGE_BACKEND_SD_CARD, "esp32s3 defaults to sd storage");
     assert_true(s3.supports_concurrent_capture, "esp32s3 supports concurrent capture");
     assert_true(strcmp(cam.id, "esp32cam") == 0, "esp32cam profile id");
     assert_true(strcmp(cam.provisioning, "softap") == 0, "esp32cam uses SoftAP provisioning");
+    assert_true(cam.default_storage_backend == ESPCLAW_STORAGE_BACKEND_SD_CARD, "esp32cam defaults to sd storage");
     assert_true(!cam.supports_ble_provisioning, "esp32cam does not expose BLE provisioning");
+    assert_true(strcmp(c3.id, "esp32c3") == 0, "esp32c3 profile id");
+    assert_true(strcmp(c3.provisioning, "ble") == 0, "esp32c3 uses BLE provisioning");
+    assert_true(c3.default_storage_backend == ESPCLAW_STORAGE_BACKEND_LITTLEFS, "esp32c3 defaults to littlefs");
+    assert_true(!c3.has_camera, "esp32c3 has no camera");
 }
 
 static void test_workspace_manifest(void)
@@ -213,14 +221,29 @@ static void test_default_config_render(void)
     char buffer[4096];
     size_t written;
     espclaw_board_profile_t s3 = espclaw_board_profile_for(ESPCLAW_BOARD_PROFILE_ESP32S3);
+    espclaw_board_profile_t c3 = espclaw_board_profile_for(ESPCLAW_BOARD_PROFILE_ESP32C3);
 
     written = espclaw_render_default_config(&s3, buffer, sizeof(buffer));
 
     assert_true(written > 0, "config render produced data");
     assert_string_contains(buffer, "\"board_profile\": \"esp32s3\"", "board profile rendered");
+    assert_string_contains(buffer, "\"backend\": \"sdcard\"", "storage backend rendered");
     assert_string_contains(buffer, "\"providers\": [", "providers section rendered");
     assert_string_contains(buffer, "\"telegram\": {", "telegram section rendered");
     assert_string_contains(buffer, "\"admin_auth_required\": true", "security section rendered");
+
+    written = espclaw_render_default_config(&c3, buffer, sizeof(buffer));
+    assert_true(written > 0, "c3 config render produced data");
+    assert_string_contains(buffer, "\"board_profile\": \"esp32c3\"", "c3 board profile rendered");
+    assert_string_contains(buffer, "\"backend\": \"littlefs\"", "c3 storage backend rendered");
+    assert_string_contains(buffer, "\"enabled\": false", "c3 camera disabled in config");
+}
+
+static void test_storage_backend_description(void)
+{
+    assert_true(strcmp(espclaw_storage_describe_workspace_root("/workspace"), "littlefs") == 0, "littlefs path detected");
+    assert_true(strcmp(espclaw_storage_describe_workspace_root("/sdcard/workspace"), "sdcard") == 0, "sdcard path detected");
+    assert_true(strcmp(espclaw_storage_describe_workspace_root("/tmp/espclaw"), "host") == 0, "host path detected");
 }
 
 static void test_workspace_bootstrap_and_read(void)
@@ -378,6 +401,7 @@ static void test_admin_api_json(void)
     assert_true(
         espclaw_render_admin_status_json(
             &profile,
+            profile.default_storage_backend,
             "openai_compat",
             "telegram",
             true,
@@ -388,6 +412,7 @@ static void test_admin_api_json(void)
         "status json rendered"
     );
     assert_string_contains(status_json, "\"board_profile\":\"esp32s3\"", "status board profile");
+    assert_string_contains(status_json, "\"storage_backend\":\"sdcard\"", "status storage backend");
     assert_string_contains(status_json, "\"workspace_ready\":true", "status workspace flag");
     assert_string_contains(status_json, "\"status\":\"downloaded\"", "status ota state");
 
@@ -1021,6 +1046,7 @@ int main(void)
     test_provider_and_channel_registry();
     test_tool_catalog();
     test_default_config_render();
+    test_storage_backend_description();
     test_workspace_bootstrap_and_read();
     test_session_store();
     test_ota_state_machine();

@@ -26,10 +26,11 @@ The current profiles are:
 
 - `esp32s3`: primary feature profile
 - `esp32cam`: constrained compatibility profile
+- `esp32c3`: flash-backed no-SD profile
 
 ### Workspace Store
 
-The workspace store defines the SD card file layout and the bootstrap contents for the control files:
+The workspace store defines the file layout and the bootstrap contents for the control files:
 
 - `AGENTS.md`
 - `IDENTITY.md`
@@ -39,7 +40,12 @@ The workspace store defines the SD card file layout and the bootstrap contents f
 
 Session transcripts, media captures, and non-secret config also live under the workspace root.
 
-The workspace module now includes filesystem bootstrap logic so firmware can create the expected SD structure without re-implementing path handling in the HTTP or agent layers.
+The workspace module now includes filesystem bootstrap logic so firmware can create the expected structure on SD or LittleFS without re-implementing path handling in the HTTP or agent layers.
+
+The current storage backends are:
+
+- `sdcard`, which mounts under `/sdcard/workspace`
+- `littlefs`, which mounts directly at `/workspace`
 
 ### Providers
 
@@ -116,7 +122,7 @@ This is the current shared path used by the admin chat panel, simulator chat API
 ESPClaw apps are small Lua bundles stored under `/workspace/apps/<app_id>/`. The runtime contract covers:
 
 - manifest parsing and validation
-- app scaffolding on the SD workspace
+- app scaffolding in the workspace
 - trigger matching
 - installed app discovery
 - Lua host bindings for a permissioned API surface
@@ -159,9 +165,9 @@ The firmware now has an initial runtime path that performs:
 1. NVS initialization
 2. network stack initialization
 3. Wi-Fi provisioning manager startup
-4. SD-backed workspace mount/bootstrap when available
+4. Workspace mount/bootstrap from SD or LittleFS when available
 5. Telegram polling in a background FreeRTOS task
-6. Lua app boot-trigger execution from the SD workspace
+6. Lua app boot-trigger execution from the mounted workspace
 
 The Telegram runtime now has two layers:
 

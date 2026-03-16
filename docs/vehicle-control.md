@@ -52,7 +52,7 @@ Recommended split:
   - telemetry formatting
   - interaction with Telegram/admin UI/LLM workflows
 
-That keeps the control path predictable while still making the system editable from the SD card.
+That keeps the control path predictable while still making the system editable from the mounted workspace.
 
 ## Rover Pattern
 

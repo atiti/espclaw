@@ -21,6 +21,7 @@
 #include "espclaw/hardware.h"
 #include "espclaw/provider.h"
 #include "espclaw/session_store.h"
+#include "espclaw/storage.h"
 #include "espclaw/tool_catalog.h"
 #include "espclaw/workspace.h"
 
@@ -808,13 +809,16 @@ static int tool_system_info(const char *workspace_root, char *buffer, size_t buf
     struct stat statbuf;
     char apps_json[1024];
     bool workspace_ready = workspace_root != NULL && stat(workspace_root, &statbuf) == 0;
+    const char *storage_backend = espclaw_storage_describe_workspace_root(workspace_root);
 
     espclaw_render_apps_json(workspace_root, apps_json, sizeof(apps_json));
     snprintf(
         buffer,
         buffer_size,
-        "{\"ok\":true,\"workspace_ready\":%s,\"tool_count\":%u,\"apps\":%s}",
+        "{\"ok\":true,\"workspace_ready\":%s,\"workspace_root\":\"%s\",\"storage_backend\":\"%s\",\"tool_count\":%u,\"apps\":%s}",
         workspace_ready ? "true" : "false",
+        workspace_root != NULL ? workspace_root : "",
+        storage_backend,
         (unsigned)espclaw_tool_count(),
         apps_json
     );
