@@ -6,6 +6,7 @@
 #include <string.h>
 
 #ifdef ESP_PLATFORM
+#include "esp_camera.h"
 #include "driver/gpio.h"
 #include "driver/i2c.h"
 #include "driver/ledc.h"
@@ -15,6 +16,7 @@
 #include "esp_adc/adc_cali_scheme.h"
 #include "esp_adc/adc_oneshot.h"
 #include "esp_err.h"
+#include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -77,8 +79,10 @@ static espclaw_hw_pwm_state_t s_pwm_state[ESPCLAW_HW_PWM_CHANNEL_MAX];
 static espclaw_hw_ppm_state_t s_ppm_state[ESPCLAW_HW_PPM_CHANNEL_MAX];
 static espclaw_hw_i2c_state_t s_i2c_state[ESPCLAW_HW_I2C_PORT_MAX];
 static espclaw_hw_uart_state_t s_uart_state[ESPCLAW_HW_UART_PORT_MAX];
+static bool s_camera_initialized;
 
 #ifdef ESP_PLATFORM
+static const char *TAG = "espclaw_hw";
 static adc_oneshot_unit_handle_t s_adc_units[ESPCLAW_HW_ADC_UNIT_MAX];
 static bool s_adc_units_ready[ESPCLAW_HW_ADC_UNIT_MAX];
 static bool s_adc_channel_configured[ESPCLAW_HW_ADC_UNIT_MAX][ESPCLAW_HW_ADC_CHANNEL_MAX];
@@ -90,6 +94,13 @@ static int s_adc_raw[ESPCLAW_HW_ADC_UNIT_MAX][ESPCLAW_HW_ADC_CHANNEL_MAX];
 static espclaw_hw_i2c_device_t s_i2c_devices[ESPCLAW_HW_I2C_PORT_MAX][ESPCLAW_HW_I2C_DEVICE_MAX];
 static bool s_host_stdio_nonblocking_ready;
 #endif
+static bool s_camera_last_capture_ok;
+static bool s_camera_last_simulated;
+static size_t s_camera_last_width;
+static size_t s_camera_last_height;
+static size_t s_camera_last_bytes_written;
+static char s_camera_last_relative_path[ESPCLAW_HW_CAMERA_PATH_MAX];
+static char s_camera_last_error[ESPCLAW_HW_CAMERA_ERROR_MAX];
 
 #ifndef ESP_PLATFORM
 static const uint8_t ESPCLAW_SIM_CAMERA_JPEG[] = {
@@ -129,6 +140,47 @@ static bool i2c_port_valid(int port)
 static bool uart_port_valid(int port)
 {
     return port >= 0 && port < ESPCLAW_HW_UART_PORT_MAX;
+}
+
+static void camera_reset_last_status(void)
+{
+    s_camera_last_capture_ok = false;
+    s_camera_last_simulated = false;
+    s_camera_last_width = 0U;
+    s_camera_last_height = 0U;
+    s_camera_last_bytes_written = 0U;
+    s_camera_last_relative_path[0] = '\0';
+    s_camera_last_error[0] = '\0';
+}
+
+static void camera_set_error(espclaw_hw_camera_capture_t *capture_out, const char *message)
+{
+    const char *value = message != NULL ? message : "camera capture failed";
+
+    s_camera_last_capture_ok = false;
+    s_camera_last_width = 0U;
+    s_camera_last_height = 0U;
+    s_camera_last_bytes_written = 0U;
+    s_camera_last_relative_path[0] = '\0';
+    snprintf(s_camera_last_error, sizeof(s_camera_last_error), "%s", value);
+    if (capture_out != NULL) {
+        snprintf(capture_out->error, sizeof(capture_out->error), "%s", value);
+    }
+}
+
+static void camera_set_success(const espclaw_hw_camera_capture_t *capture)
+{
+    if (capture == NULL) {
+        return;
+    }
+
+    s_camera_last_capture_ok = true;
+    s_camera_last_simulated = capture->simulated;
+    s_camera_last_width = capture->width;
+    s_camera_last_height = capture->height;
+    s_camera_last_bytes_written = capture->bytes_written;
+    snprintf(s_camera_last_relative_path, sizeof(s_camera_last_relative_path), "%s", capture->relative_path);
+    s_camera_last_error[0] = '\0';
 }
 
 int espclaw_hw_apply_board_boot_defaults(void)
@@ -1149,7 +1201,6 @@ int espclaw_hw_mix_quad_x(
     return 0;
 }
 
-#ifndef ESP_PLATFORM
 static int write_binary_file(const char *path, const uint8_t *data, size_t length)
 {
     FILE *file;
@@ -1169,6 +1220,78 @@ static int write_binary_file(const char *path, const uint8_t *data, size_t lengt
     fclose(file);
     return 0;
 }
+
+#ifdef ESP_PLATFORM
+static framesize_t camera_framesize_for_profile(const espclaw_board_profile_t *profile)
+{
+    if (profile == NULL) {
+        return FRAMESIZE_VGA;
+    }
+    if (profile->default_capture_width >= 1280 || profile->default_capture_height >= 720) {
+        return FRAMESIZE_HD;
+    }
+    if (profile->default_capture_width >= 800 || profile->default_capture_height >= 600) {
+        return FRAMESIZE_SVGA;
+    }
+    return FRAMESIZE_VGA;
+}
+
+static int camera_init_for_board(const espclaw_board_descriptor_t *board, const espclaw_board_profile_t *profile)
+{
+    camera_config_t config;
+    esp_err_t err;
+
+    if (board == NULL || profile == NULL) {
+        return -1;
+    }
+    if (s_camera_initialized) {
+        return 0;
+    }
+    if (board->profile_id != ESPCLAW_BOARD_PROFILE_ESP32CAM ||
+        strcmp(board->variant_id, "ai_thinker_esp32cam") != 0) {
+        ESP_LOGW(TAG, "camera init unsupported on board variant '%s'", board->variant_id);
+        snprintf(s_camera_last_error, sizeof(s_camera_last_error), "camera unsupported on board '%s'", board->variant_id);
+        return -1;
+    }
+
+    memset(&config, 0, sizeof(config));
+    config.ledc_channel = LEDC_CHANNEL_0;
+    config.ledc_timer = LEDC_TIMER_0;
+    config.pin_d0 = 5;
+    config.pin_d1 = 18;
+    config.pin_d2 = 19;
+    config.pin_d3 = 21;
+    config.pin_d4 = 36;
+    config.pin_d5 = 39;
+    config.pin_d6 = 34;
+    config.pin_d7 = 35;
+    config.pin_xclk = 0;
+    config.pin_pclk = 22;
+    config.pin_vsync = 25;
+    config.pin_href = 23;
+    config.pin_sccb_sda = 26;
+    config.pin_sccb_scl = 27;
+    config.pin_pwdn = 32;
+    config.pin_reset = -1;
+    config.xclk_freq_hz = 20000000;
+    config.pixel_format = PIXFORMAT_JPEG;
+    config.frame_size = camera_framesize_for_profile(profile);
+    config.jpeg_quality = 12;
+    config.fb_count = 1;
+    config.grab_mode = CAMERA_GRAB_LATEST;
+    config.fb_location = CAMERA_FB_IN_PSRAM;
+
+    err = esp_camera_init(&config);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_camera_init failed: %s", esp_err_to_name(err));
+        snprintf(s_camera_last_error, sizeof(s_camera_last_error), "esp_camera_init failed: %s", esp_err_to_name(err));
+        return -1;
+    }
+
+    s_camera_initialized = true;
+    ESP_LOGI(TAG, "camera initialized for board=%s", board->variant_id);
+    return 0;
+}
 #endif
 
 int espclaw_hw_camera_capture(
@@ -1184,12 +1307,17 @@ int espclaw_hw_camera_capture(
     uint64_t now_ms;
 
     if (workspace_root == NULL || capture_out == NULL || board == NULL) {
+        if (capture_out != NULL) {
+            camera_set_error(capture_out, "camera capture requires board and workspace context");
+        }
         return -1;
     }
 
     memset(capture_out, 0, sizeof(*capture_out));
+    camera_reset_last_status();
     profile = espclaw_board_profile_for(board->profile_id);
     if (!profile.has_camera) {
+        camera_set_error(capture_out, "camera is not supported by the active board profile");
         return -1;
     }
 
@@ -1200,13 +1328,52 @@ int espclaw_hw_camera_capture(
         snprintf(relative_path, sizeof(relative_path), "media/capture_%llu.jpg", (unsigned long long)now_ms);
     }
     if (espclaw_workspace_resolve_path(workspace_root, relative_path, absolute_path, sizeof(absolute_path)) != 0) {
+        camera_set_error(capture_out, "failed to resolve capture path inside workspace");
         return -1;
     }
 
 #ifdef ESP_PLATFORM
-    return -1;
+    camera_fb_t *frame;
+
+    if (camera_init_for_board(board, &profile) != 0) {
+        camera_set_error(capture_out, s_camera_last_error[0] != '\0' ? s_camera_last_error : "camera initialization failed");
+        return -1;
+    }
+
+    frame = esp_camera_fb_get();
+    if (frame == NULL) {
+        ESP_LOGE(TAG, "camera frame capture failed");
+        camera_set_error(capture_out, "camera frame capture failed");
+        return -1;
+    }
+    if (frame->format != PIXFORMAT_JPEG || frame->buf == NULL || frame->len == 0) {
+        ESP_LOGE(TAG, "camera frame is not a valid JPEG");
+        esp_camera_fb_return(frame);
+        camera_set_error(capture_out, "camera frame is not a valid JPEG");
+        return -1;
+    }
+    if (write_binary_file(absolute_path, frame->buf, frame->len) != 0) {
+        ESP_LOGE(TAG, "failed to persist camera frame to %s", absolute_path);
+        esp_camera_fb_return(frame);
+        camera_set_error(capture_out, "failed to persist captured JPEG to the workspace");
+        return -1;
+    }
+
+    capture_out->ok = true;
+    capture_out->simulated = false;
+    capture_out->width = frame->width;
+    capture_out->height = frame->height;
+    capture_out->bytes_written = frame->len;
+    snprintf(capture_out->relative_path, sizeof(capture_out->relative_path), "%s", relative_path);
+    snprintf(capture_out->mime_type, sizeof(capture_out->mime_type), "image/jpeg");
+    capture_out->error[0] = '\0';
+    esp_camera_fb_return(frame);
+    (void)espclaw_hw_apply_board_boot_defaults();
+    camera_set_success(capture_out);
+    return 0;
 #else
     if (write_binary_file(absolute_path, ESPCLAW_SIM_CAMERA_JPEG, sizeof(ESPCLAW_SIM_CAMERA_JPEG)) != 0) {
+        camera_set_error(capture_out, "failed to write simulated camera JPEG");
         return -1;
     }
     capture_out->ok = true;
@@ -1216,8 +1383,39 @@ int espclaw_hw_camera_capture(
     capture_out->bytes_written = sizeof(ESPCLAW_SIM_CAMERA_JPEG);
     snprintf(capture_out->relative_path, sizeof(capture_out->relative_path), "%s", relative_path);
     snprintf(capture_out->mime_type, sizeof(capture_out->mime_type), "image/jpeg");
+    capture_out->error[0] = '\0';
+    camera_set_success(capture_out);
     return 0;
 #endif
+}
+
+int espclaw_hw_camera_status(espclaw_hw_camera_status_t *status_out)
+{
+    const espclaw_board_descriptor_t *board = espclaw_board_current();
+    espclaw_board_profile_t profile;
+
+    if (status_out == NULL) {
+        return -1;
+    }
+
+    memset(status_out, 0, sizeof(*status_out));
+    if (board == NULL) {
+        snprintf(status_out->last_error, sizeof(status_out->last_error), "board descriptor is unavailable");
+        return -1;
+    }
+
+    profile = espclaw_board_profile_for(board->profile_id);
+    status_out->supported = profile.has_camera;
+    status_out->initialized = s_camera_initialized;
+    status_out->simulated = s_camera_last_simulated;
+    status_out->last_capture_ok = s_camera_last_capture_ok;
+    status_out->last_width = s_camera_last_width;
+    status_out->last_height = s_camera_last_height;
+    status_out->last_bytes_written = s_camera_last_bytes_written;
+    snprintf(status_out->board_variant, sizeof(status_out->board_variant), "%s", board->variant_id);
+    snprintf(status_out->last_relative_path, sizeof(status_out->last_relative_path), "%s", s_camera_last_relative_path);
+    snprintf(status_out->last_error, sizeof(status_out->last_error), "%s", s_camera_last_error);
+    return 0;
 }
 
 uint64_t espclaw_hw_ticks_ms(void)

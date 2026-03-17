@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Added direct `/media/<relative-path>` serving from the workspace so admin camera captures can be opened directly instead of returning a 404 after a successful save.
+- Added `YOLO mode` to the local admin chat and simulator chat APIs, letting trusted operator runs ask the model to execute permitted tools immediately without another approval hop.
+- Expanded the real-device bench with `tool_matrix_full` and `large_lua_app` stages so the AI Thinker board now has explicit real-LLM coverage for per-tool auditing and large Lua app generation attempts.
+- Fixed the model-loop parser to accept completed follow-up responses with no terminal text after a successful tool round, which keeps action-heavy YOLO runs from failing just because the backend returned an empty assistant message.
+- Fixed function-call parsing to extract fields from the actual `function_call` object instead of searching the remainder of the JSON stream, which makes large tool-call payloads safer against nested `name`/`arguments` collisions.
+- Switched the `esp32cam` build to PSRAM-backed mbedTLS allocation and enabled dynamic mbedTLS config-data cleanup, which targets the live `MBEDTLS_ERR_SSL_ALLOC_FAILED (-0x7F00)` failure seen in direct Codex transport setup on the AI Thinker board.
+- Added camera diagnostics and a direct admin test-capture path so `/api/camera` and the admin UI now report camera support, initialization state, the last saved JPEG, and the real underlying failure reason instead of only a generic capture error.
+- Fixed `camera.capture` and Lua `espclaw.camera.capture()` failure reporting to preserve the hardware-layer error detail, making stale firmware, init failures, bad JPEG frames, and workspace write errors distinguishable in chat/tool responses.
+- Completed the real AI Thinker `esp32cam` vision path: live runs now capture a JPEG on-device, persist it to the SD workspace, attach it to a direct Codex/ChatGPT Pro follow-up, and return a correct image-grounded assistant description.
+- Fixed Codex multimodal follow-up formatting on embedded builds by sending camera images as `message` items with `input_image.image_url` data URLs, matching the Responses API contract the ChatGPT/Codex backend actually accepts.
+- Fixed mutation-enabled admin chat runs to advertise operator-approved mutating tools in the system prompt, so local operator requests no longer ask for an extra confirmation step after the runtime already permits the action.
+- Added real AI Thinker `esp32cam` JPEG capture through `esp32-camera` and persisted captures into the SD-backed workspace so the camera tool no longer stays simulator-only on supported hardware.
+- Added a real-device `vision` bench stage so camera capture and image-to-LLM runs can be validated on live hardware instead of only through simulator mocks.
 - Forced the AI Thinker `esp32cam` `flash_led` alias on GPIO4 low during board bootstrap so SD/storage bring-up no longer leaves the camera flash LED stuck on after boot.
 - Fixed `app.install` on real hardware by increasing the model tool-argument budget, rejecting truncated JSON strings, accepting `name` / `lua` / `permissions` / `triggers` aliases, and normalizing human-friendly app names into valid app ids.
 - Fixed Lua app scaffolding to treat empty permission/trigger CSV values as defaults instead of zero-length manifests, which unblocked model-generated app installation from live Codex runs.
@@ -120,3 +133,5 @@
 - fix(runtime): use a single supported SNTP server on the ESP32-C3 build so time sync actually starts instead of failing on CONFIG_LWIP_SNTP_MAX_SERVERS
 - fix(test): restore simulator API tool-listing expectations in the host Codex mock
 - fix(runtime): allow direct LLM app installs to scaffold large manifests on-device and correct the real-board event-task bench to use matching sensor triggers
+- fix(agent): preserve streamed Codex output-text segments when `response.completed` omits inline assistant text, so vision replies no longer collapse to empty chat output
+- fix(runtime): raise the ESP32-CAM PSRAM runtime budget for request/response/image buffers so multimodal Codex follow-up bodies no longer truncate at the old balanced-profile ceiling

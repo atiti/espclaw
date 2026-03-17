@@ -28,11 +28,13 @@ The next implementation batch should focus on proving the whole runtime surface 
    - Validate every newly enabled tool through the real-device bench before treating it as supported.
 
 3. Real camera capture on hardware
+   - Status: completed on the AI Thinker `esp32cam`
    - Replace the current host-only/simulator camera path with a real `esp32-camera` backend for `esp32cam`.
    - Persist captured JPEGs to the SD-backed workspace.
    - Add board-aware failure reporting when the camera is unavailable or misconfigured.
 
 4. Vision bench
+   - Status: completed on the AI Thinker `esp32cam`
    - Add a real image-to-LLM validation stage:
      - capture a JPEG
      - attach it to a live Codex run
@@ -43,8 +45,9 @@ The next implementation batch should focus on proving the whole runtime surface 
 The immediate next work should happen in this order:
 
 1. Enable and validate more hardware/task tools for the LLM.
-2. Implement the real camera backend.
-3. Add image-to-LLM verification on real hardware.
+2. Expand the staged real-device bench to cover those hardware surfaces explicitly.
+3. Keep the camera/vision path green while new hardware tools are added.
+4. Close the current tool-catalog vs. tool-executor gap the new `tool_matrix_full` bench now exposes on the real AI Thinker board.
 
 ## Latest Validation Snapshot
 
@@ -56,6 +59,7 @@ The current real-device bench is green on the AI Thinker `esp32cam` running the 
 - `tool_reasoning`
 - `generate_echo_app`
 - `task_event_runtime`
+- `vision`
 
 This proves the current baseline on hardware:
 
@@ -65,3 +69,10 @@ This proves the current baseline on hardware:
 - model-driven tool reasoning
 - model-generated Lua app installation and execution
 - event-driven task runtime
+- real camera capture plus image-to-LLM reasoning
+
+## Current Bench Findings
+
+- `tool_matrix_full` is now implemented and running on the real AI Thinker board.
+- The matrix currently shows that the model/runtime can reach a subset of tools reliably, but many advertised hardware tools still resolve to `unsupported_tool` or are skipped by the model after the first successful tool call.
+- `large_lua_app` is now implemented and currently exposes model tool-call compliance limits before a verified RAM ceiling on `esp32cam`.

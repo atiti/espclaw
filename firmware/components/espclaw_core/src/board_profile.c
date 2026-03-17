@@ -21,14 +21,14 @@ static espclaw_runtime_budget_t esp32cam_runtime_budget(void)
     return (espclaw_runtime_budget_t){
         .memory_class = "balanced",
         .agent_history_max = 12,
-        .agent_request_buffer_max = 24576,
-        .agent_response_buffer_max = 24576,
-        .agent_codex_items_max = 8192,
-        .agent_instructions_max = 4096,
-        .agent_tool_result_max = 767,
-        .agent_image_data_max = 16384,
-        .agent_estimated_heap_bytes = 98304,
-        .recommended_free_heap_bytes = 65536,
+        .agent_request_buffer_max = 65536,
+        .agent_response_buffer_max = 49152,
+        .agent_codex_items_max = 16384,
+        .agent_instructions_max = 6144,
+        .agent_tool_result_max = 1023,
+        .agent_image_data_max = 32768,
+        .agent_estimated_heap_bytes = 196608,
+        .recommended_free_heap_bytes = 131072,
     };
 }
 

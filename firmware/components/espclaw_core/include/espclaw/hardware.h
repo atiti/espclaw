@@ -14,6 +14,7 @@
 #define ESPCLAW_HW_I2C_SCAN_MAX 126
 #define ESPCLAW_HW_UART_PORT_MAX 3
 #define ESPCLAW_HW_CAMERA_PATH_MAX 128
+#define ESPCLAW_HW_CAMERA_ERROR_MAX 128
 
 typedef struct {
     bool configured;
@@ -51,7 +52,21 @@ typedef struct {
     size_t bytes_written;
     char relative_path[ESPCLAW_HW_CAMERA_PATH_MAX];
     char mime_type[24];
+    char error[ESPCLAW_HW_CAMERA_ERROR_MAX];
 } espclaw_hw_camera_capture_t;
+
+typedef struct {
+    bool supported;
+    bool initialized;
+    bool simulated;
+    bool last_capture_ok;
+    size_t last_width;
+    size_t last_height;
+    size_t last_bytes_written;
+    char board_variant[64];
+    char last_relative_path[ESPCLAW_HW_CAMERA_PATH_MAX];
+    char last_error[ESPCLAW_HW_CAMERA_ERROR_MAX];
+} espclaw_hw_camera_status_t;
 
 int espclaw_hw_apply_board_boot_defaults(void);
 
@@ -133,6 +148,7 @@ int espclaw_hw_camera_capture(
     const char *filename,
     espclaw_hw_camera_capture_t *capture_out
 );
+int espclaw_hw_camera_status(espclaw_hw_camera_status_t *status_out);
 
 uint64_t espclaw_hw_ticks_ms(void);
 void espclaw_hw_sleep_ms(uint32_t duration_ms);

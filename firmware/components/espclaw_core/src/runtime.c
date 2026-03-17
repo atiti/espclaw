@@ -839,6 +839,7 @@ static void telegram_polling_task(void *arg)
                                    update.chat_id,
                                    update.text,
                                    false,
+                                   false,
                                    &run_result) == 0 || run_result.ok) {
                         snprintf(reply, sizeof(reply), "%s", run_result.final_text);
                     } else {

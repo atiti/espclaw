@@ -48,6 +48,7 @@ int espclaw_agent_loop_run(
     const char *session_id,
     const char *user_message,
     bool allow_mutations,
+    bool yolo_mode,
     espclaw_agent_run_result_t *result
 );
 

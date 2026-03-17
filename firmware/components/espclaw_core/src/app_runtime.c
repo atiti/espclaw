@@ -2022,7 +2022,7 @@ static int lua_espclaw_camera_capture(lua_State *state)
             filename != NULL && filename[0] != '\0' ? filename : NULL,
             &capture) != 0) {
         lua_pushnil(state);
-        lua_pushstring(state, "camera capture failed");
+        lua_pushstring(state, capture.error[0] != '\0' ? capture.error : "camera capture failed");
         return 2;
     }
 

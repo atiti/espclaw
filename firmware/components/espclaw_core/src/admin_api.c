@@ -856,6 +856,54 @@ size_t espclaw_render_system_monitor_json(
     return used;
 }
 
+size_t espclaw_render_camera_status_json(
+    const espclaw_hw_camera_status_t *status,
+    char *buffer,
+    size_t buffer_size
+)
+{
+    size_t used = 0;
+    espclaw_hw_camera_status_t empty;
+    const espclaw_hw_camera_status_t *value = status;
+
+    if (buffer == NULL || buffer_size == 0) {
+        return 0;
+    }
+    if (value == NULL) {
+        memset(&empty, 0, sizeof(empty));
+        value = &empty;
+    }
+
+    used = append_json_chunk(
+        buffer,
+        buffer_size,
+        used,
+        "{"
+        "\"supported\":%s,"
+        "\"initialized\":%s,"
+        "\"simulated\":%s,"
+        "\"last_capture_ok\":%s,"
+        "\"last_width\":%u,"
+        "\"last_height\":%u,"
+        "\"last_bytes_written\":%u,"
+        "\"board_variant\":",
+        value->supported ? "true" : "false",
+        value->initialized ? "true" : "false",
+        value->simulated ? "true" : "false",
+        value->last_capture_ok ? "true" : "false",
+        (unsigned int)value->last_width,
+        (unsigned int)value->last_height,
+        (unsigned int)value->last_bytes_written
+    );
+    used = append_json_escaped_string(buffer, buffer_size, used, value->board_variant);
+    used = append_json_chunk(buffer, buffer_size, used, ",\"last_relative_path\":");
+    used = append_json_escaped_string(buffer, buffer_size, used, value->last_relative_path);
+    used = append_json_chunk(buffer, buffer_size, used, ",\"last_error\":");
+    used = append_json_escaped_string(buffer, buffer_size, used, value->last_error);
+    used = append_json_chunk(buffer, buffer_size, used, "}");
+    return used;
+}
+
 size_t espclaw_render_ota_status_json(
     const espclaw_ota_snapshot_t *snapshot,
     char *buffer,

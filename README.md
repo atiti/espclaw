@@ -31,6 +31,8 @@ This repository now contains the initial firmware scaffold and the host-testable
 - simulator-backed camera capture plus image handoff into vision-capable model follow-up rounds
 - tool catalog and safety levels
 - real HTTP firmware OTA upload into dual OTA slots with reboot scheduling
+- camera diagnostics and direct test-capture actions in the admin UI/API
+- direct media serving for captured workspace JPEGs under `/media/...`
 - admin UI asset packaging
 - admin API JSON rendering
 - firmware-served admin HTTP routes for app management
@@ -193,7 +195,9 @@ The firmware defaults now assume at least `4MB` flash because the Lua app runtim
 
 On the `esp32cam` profile, the internal flash `workspace` partition is only a fallback because the primary workspace lives on the SD card. The partition table therefore prioritizes two equally large `0x190000` OTA app slots over a large internal workspace reserve so OTA remains viable after PSRAM-enabled growth.
 
-The vision/tool path is now end-to-end in the simulator: `camera.capture` writes a deterministic JPEG into `/workspace/media/` and the next model round receives it as an `input_image` attachment. The real ESP32 camera backend is board-specific work on the supported camera boards rather than a fake on-device capture path.
+The vision/tool path is now end-to-end in the simulator, and `esp32cam` now has a real AI Thinker JPEG capture path. `camera.capture` writes a JPEG into `/workspace/media/`, and the next model round receives it as a Codex-compatible `input_image.image_url` attachment when the selected model supports vision.
+
+For local operator testing, the admin chat now has a `YOLO mode` toggle. When enabled, the model is told to execute permitted tools directly instead of asking for an extra confirmation step. This is intended for bench and bring-up workflows on a trusted local surface.
 
 Configure runtime options with `idf.py menuconfig` under `ESPClaw`, including:
 

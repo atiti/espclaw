@@ -5,8 +5,10 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <strings.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -132,6 +134,85 @@ static void send_http_response(int client_fd, int status_code, const char *statu
     if (body_length > 0) {
         send(client_fd, body, body_length, 0);
     }
+}
+
+static const char *media_content_type(const char *relative_path)
+{
+    const char *extension;
+
+    if (relative_path == NULL) {
+        return "application/octet-stream";
+    }
+    extension = strrchr(relative_path, '.');
+    if (extension == NULL) {
+        return "application/octet-stream";
+    }
+    if (strcasecmp(extension, ".jpg") == 0 || strcasecmp(extension, ".jpeg") == 0) {
+        return "image/jpeg";
+    }
+    if (strcasecmp(extension, ".png") == 0) {
+        return "image/png";
+    }
+    if (strcasecmp(extension, ".gif") == 0) {
+        return "image/gif";
+    }
+    if (strcasecmp(extension, ".webp") == 0) {
+        return "image/webp";
+    }
+    if (strcasecmp(extension, ".txt") == 0 || strcasecmp(extension, ".log") == 0) {
+        return "text/plain; charset=utf-8";
+    }
+    if (strcasecmp(extension, ".json") == 0) {
+        return "application/json";
+    }
+    return "application/octet-stream";
+}
+
+static void send_http_file_response(int client_fd, int status_code, const char *status_text, const char *content_type, const char *absolute_path)
+{
+    FILE *file = NULL;
+    char header[512];
+    char chunk[2048];
+    struct stat file_stat;
+    int header_length;
+
+    if (absolute_path == NULL || stat(absolute_path, &file_stat) != 0 || !S_ISREG(file_stat.st_mode)) {
+        send_http_response(client_fd, 404, "Not Found", "application/json", "{\"ok\":false,\"message\":\"media file not found\"}");
+        return;
+    }
+
+    file = fopen(absolute_path, "rb");
+    if (file == NULL) {
+        send_http_response(client_fd, 500, "Internal Server Error", "application/json", "{\"ok\":false,\"message\":\"failed to open media file\"}");
+        return;
+    }
+
+    header_length = snprintf(
+        header,
+        sizeof(header),
+        "HTTP/1.1 %d %s\r\n"
+        "Content-Type: %s\r\n"
+        "Content-Length: %zu\r\n"
+        "Cache-Control: no-store\r\n"
+        "Connection: close\r\n"
+        "\r\n",
+        status_code,
+        status_text,
+        content_type,
+        (size_t)file_stat.st_size
+    );
+    if (header_length > 0) {
+        send(client_fd, header, (size_t)header_length, 0);
+    }
+    while (!feof(file)) {
+        size_t read_size = fread(chunk, 1, sizeof(chunk), file);
+
+        if (read_size == 0) {
+            break;
+        }
+        send(client_fd, chunk, read_size, 0);
+    }
+    fclose(file);
 }
 
 static bool parse_request(
@@ -742,12 +823,14 @@ static void handle_api_request(
     if (strcmp(method, "POST") == 0 && strcmp(path, "/api/chat/run") == 0) {
         char session_id[ESPCLAW_AGENT_SESSION_ID_MAX + 1];
         espclaw_agent_run_result_t result;
+        bool yolo_mode = false;
 
         if (!espclaw_admin_query_value(query, "session_id", session_id, sizeof(session_id))) {
             copy_text(session_id, sizeof(session_id), "admin");
         }
+        yolo_mode = query_u32_or_default(query, "yolo", 0) != 0;
 
-        if (espclaw_agent_loop_run(config->workspace_root, session_id, body != NULL ? body : "", true, &result) != 0 && !result.ok) {
+        if (espclaw_agent_loop_run(config->workspace_root, session_id, body != NULL ? body : "", true, yolo_mode, &result) != 0 && !result.ok) {
             espclaw_admin_render_result_json(false, result.final_text, response, sizeof(response));
             send_http_response(client_fd, 500, "Internal Server Error", "application/json", response);
         } else {
@@ -764,6 +847,19 @@ static void handle_api_request(
             strncat(response, "}", sizeof(response) - strlen(response) - 1);
             send_http_response(client_fd, 200, "OK", "application/json", response);
         }
+        return;
+    }
+
+    if (strcmp(method, "GET") == 0 && strncmp(path, "/media/", 7) == 0) {
+        char relative_path[256];
+        char absolute_path[512];
+
+        snprintf(relative_path, sizeof(relative_path), "media/%s", path + 7);
+        if (espclaw_workspace_resolve_path(config->workspace_root, relative_path, absolute_path, sizeof(absolute_path)) != 0) {
+            send_http_response(client_fd, 400, "Bad Request", "application/json", "{\"ok\":false,\"message\":\"invalid media path\"}");
+            return;
+        }
+        send_http_file_response(client_fd, 200, "OK", media_content_type(relative_path), absolute_path);
         return;
     }
 

@@ -35,6 +35,7 @@ idf_component_register(
     bootloader_support
     driver
     esp_adc
+    esp32-camera
     esp_app_format
     esp_event
     esp_http_client

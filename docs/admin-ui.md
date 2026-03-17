@@ -31,6 +31,7 @@ Current routes:
 Current UI behavior:
 
 - `Send To Model` runs the iterative tool-using loop for the current session.
+- `YOLO mode` adds a stronger system instruction for trusted local operator runs, telling the model to execute permitted tools directly instead of asking for another approval hop.
 - local admin chat runs with mutation-enabled tools, so the model can install Lua apps, start tasks, and emit events from the browser.
 - local admin chat can now also register and start persisted autonomous behaviors from the same tool loop.
 - `Refresh` reloads the stored transcript.
@@ -122,6 +123,8 @@ Allows:
 - inspecting the live hardware capability map exposed to Lua and to the model tool loop
 - checking workspace bootstrap state
 - checking flash, RAM, CPU, and workspace usage through the system monitor
+- checking camera support, initialization state, and the last capture result through a dedicated diagnostics panel
+- running a direct test capture without going through the model loop
 
 Current routes:
 
@@ -131,12 +134,17 @@ Current routes:
 - `GET /api/board/config`
 - `PUT /api/board/config`
 - `POST /api/board/apply?variant_id=<id>`
+- `GET /api/camera`
+- `POST /api/camera/capture?filename=<name>`
 
 Current UI behavior:
 
 - `Refresh` reloads the resolved descriptor.
 - `Apply Preset` writes the chosen preset into the workspace and activates it immediately.
 - the main board view is structured, while the raw `board.json` editor sits behind `Custom board descriptor`.
+- `Refresh Camera` reloads the current camera diagnostics snapshot.
+- `Test Capture` takes a fresh JPEG with the live hardware camera path and shows the saved workspace path or the real failure reason.
+- when a capture succeeds, the panel links directly to the saved image through `/media/<path>`.
 
 ### Tools
 

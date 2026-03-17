@@ -1,11 +1,12 @@
 import unittest
 
-from scripts.real_device_bench import HELLO_MARKER, normalize_base_url, parse_json_body, run_stages
+from scripts.real_device_bench import HELLO_MARKER, collect_requested_tools, normalize_base_url, parse_json_body, run_stages
 
 
 class FakeClient:
     def __init__(self, responses):
         self.responses = responses
+        self.yolo_mode = True
 
     def get_json(self, path):
         return self.responses[path]
@@ -20,6 +21,22 @@ class FakeClient:
 
     def delete_json(self, path):
         return self.responses[path]
+
+    def chat_run_path(self, session_id):
+        path = f"/api/chat/run?session_id={session_id}"
+        if self.yolo_mode:
+            path += "&yolo=1"
+        return path
+
+    def chat_run(self, session_id, prompt):
+        from scripts.real_device_bench import require_json
+
+        return require_json(self.post_text(self.chat_run_path(session_id), prompt), "/api/chat/run")
+
+    def chat_session(self, session_id):
+        from scripts.real_device_bench import require_json
+
+        return require_json(self.get_json(f"/api/chat/session?session_id={session_id}"), "/api/chat/session")
 
 
 class HttpResult:
@@ -37,11 +54,18 @@ class RealDeviceBenchTests(unittest.TestCase):
         self.assertIsNone(parse_json_body("[1,2,3]"))
         self.assertIsNone(parse_json_body("not-json"))
 
+    def test_collect_requested_tools_deduplicates(self):
+        transcript = (
+            "{\"role\":\"assistant\",\"content\":\"Requested tools: tool.list, fs.read\"}\n"
+            "{\"role\":\"assistant\",\"content\":\"Requested tools: fs.read, camera.capture\"}\n"
+        )
+        self.assertEqual(collect_requested_tools(transcript), ["tool.list", "fs.read", "camera.capture"])
+
     def test_run_stages_stops_on_first_failure(self):
         responses = {
             "/api/status": HttpResult(200, "", {"workspace_ready": True}),
             "/api/auth/status": HttpResult(200, "", {"configured": True}),
-            ("POST", "/api/chat/run?session_id=bench_hello", f"Reply with exactly {HELLO_MARKER} and nothing else."): HttpResult(
+            ("POST", "/api/chat/run?session_id=bench_hello&yolo=1", f"Reply with exactly {HELLO_MARKER} and nothing else."): HttpResult(
                 200,
                 "",
                 {"ok": False, "final_text": "wrong"},
@@ -56,7 +80,7 @@ class RealDeviceBenchTests(unittest.TestCase):
         responses = {
             "/api/status": HttpResult(200, "", {"workspace_ready": True}),
             "/api/auth/status": HttpResult(200, "", {"configured": True}),
-            ("POST", "/api/chat/run?session_id=bench_hello", f"Reply with exactly {HELLO_MARKER} and nothing else."): HttpResult(
+            ("POST", "/api/chat/run?session_id=bench_hello&yolo=1", f"Reply with exactly {HELLO_MARKER} and nothing else."): HttpResult(
                 200,
                 "",
                 {"ok": True, "final_text": HELLO_MARKER},
@@ -264,6 +288,153 @@ class RealDeviceBenchTests(unittest.TestCase):
         result = run_stages(LegacyTaskClient(responses), "bench", ["task_event_runtime"], continue_on_failure=False)
         self.assertTrue(result["stages"][0]["ok"])
         self.assertEqual(result["stages"][0]["details"]["contract"], "legacy")
+
+    def test_vision_stage_passes(self):
+        responses = {
+            ("POST", "/api/chat/run?session_id=bench_vision&yolo=1", "Use the camera tool to capture a fresh image, then describe the image briefly. Mention the capture path in your answer."): HttpResult(
+                200,
+                "",
+                {
+                    "ok": True,
+                    "used_tools": True,
+                    "final_text": "Captured image at media/capture_123.jpg. It appears evenly lit.",
+                },
+            ),
+            "/api/chat/session?session_id=bench_vision": HttpResult(
+                200,
+                "",
+                {
+                    "session_id": "bench_vision",
+                    "transcript": (
+                        "{\"role\":\"assistant\",\"content\":\"Requested tools: camera.capture\"}\n"
+                        "{\"role\":\"tool\",\"content\":\"{\\\"path\\\":\\\"media/capture_123.jpg\\\"}\"}\n"
+                    ),
+                },
+            ),
+        }
+
+        result = run_stages(FakeClient(responses), "bench", ["vision"], continue_on_failure=False)
+        self.assertTrue(result["stages"][0]["ok"])
+
+    def test_tool_sweep_stage_collects_requested_tools(self):
+        responses = {
+            "/api/tools": HttpResult(
+                200,
+                "",
+                {
+                    "tools": [
+                        {"name": "tool.list"},
+                        {"name": "system.info"},
+                        {"name": "hardware.list"},
+                        {"name": "wifi.status"},
+                        {"name": "wifi.scan"},
+                        {"name": "ble.scan"},
+                        {"name": "fs.list"},
+                        {"name": "fs.write"},
+                        {"name": "fs.read"},
+                        {"name": "fs.delete"},
+                        {"name": "app.list"},
+                        {"name": "app.install"},
+                        {"name": "app.run"},
+                        {"name": "app.remove"},
+                        {"name": "behavior.list"},
+                        {"name": "behavior.register"},
+                        {"name": "behavior.start"},
+                        {"name": "behavior.stop"},
+                        {"name": "behavior.remove"},
+                        {"name": "task.list"},
+                        {"name": "task.start"},
+                        {"name": "task.stop"},
+                        {"name": "event.emit"},
+                        {"name": "event.watch_list"},
+                        {"name": "event.watch_add"},
+                        {"name": "event.watch_remove"},
+                        {"name": "ota.check"},
+                        {"name": "camera.capture"},
+                        {"name": "gpio.read"},
+                        {"name": "gpio.write"},
+                        {"name": "pwm.write"},
+                        {"name": "ppm.write"},
+                        {"name": "adc.read"},
+                        {"name": "i2c.scan"},
+                        {"name": "i2c.read"},
+                        {"name": "i2c.write"},
+                        {"name": "temperature.read"},
+                        {"name": "imu.read"},
+                        {"name": "buzzer.play"},
+                        {"name": "pid.compute"},
+                        {"name": "control.mix"},
+                        {"name": "spi.transfer"},
+                        {"name": "uart.read"},
+                        {"name": "uart.write"},
+                    ]
+                },
+            ),
+            "/api/hardware": HttpResult(
+                200,
+                "",
+                {
+                    "pins": [{"name": "flash_led", "pin": 4}],
+                    "adc_channels": [{"unit": 1, "channel": 6}],
+                    "i2c_buses": [{"port": 0}],
+                    "uarts": [{"port": 0}],
+                },
+            ),
+            "/api/chat/session?session_id=bench_tool_sweep_a": HttpResult(
+                200,
+                "",
+                {"transcript": "{\"role\":\"assistant\",\"content\":\"Requested tools: tool.list, system.info, hardware.list, wifi.status, wifi.scan, ble.scan, fs.list, fs.write, fs.read, fs.delete, app.list, app.install, app.run, app.remove, behavior.list, behavior.register, behavior.start, behavior.stop, behavior.remove, task.list, task.start, task.stop, event.emit, event.watch_list, event.watch_add, event.watch_remove, ota.check\"}\n"},
+            ),
+            "/api/chat/session?session_id=bench_tool_sweep_b": HttpResult(
+                200,
+                "",
+                {"transcript": "{\"role\":\"assistant\",\"content\":\"Requested tools: camera.capture, gpio.read, gpio.write, pwm.write, ppm.write, adc.read, i2c.scan, i2c.read, i2c.write, temperature.read, imu.read, buzzer.play, pid.compute, control.mix, spi.transfer, uart.read, uart.write\"}\n"},
+            ),
+        }
+
+        class SweepClient(FakeClient):
+            def post_text(self, path, body):
+                if path == "/api/chat/run?session_id=bench_tool_sweep_a&yolo=1":
+                    return HttpResult(200, "", {"ok": True, "final_text": "TOOL_SWEEP_CORE_DONE"})
+                if path == "/api/chat/run?session_id=bench_tool_sweep_b&yolo=1":
+                    return HttpResult(200, "", {"ok": True, "final_text": "TOOL_SWEEP_HARDWARE_DONE"})
+                raise KeyError(path)
+
+        result = run_stages(SweepClient(responses), "bench", ["tool_sweep"], continue_on_failure=False)
+        self.assertTrue(result["stages"][0]["ok"])
+        self.assertEqual(result["stages"][0]["details"]["missing_tools"], [])
+
+    def test_large_lua_app_stage_records_largest_success(self):
+        responses = {
+            "/api/apps/detail?app_id=bench_large_1500": HttpResult(200, "", {"app": {"id": "bench_large_1500", "source": "a" * 1600}}),
+            "/api/chat/session?session_id=bench_large_1500": HttpResult(200, "", {"transcript": "{\"role\":\"assistant\",\"content\":\"Requested tools: app.install\"}\n"}),
+            ("POST", "/api/apps/run?app_id=bench_large_1500&trigger=manual", "payload"): HttpResult(200, "", {"result": "LARGE_APP_OK_1500"}),
+            "/api/apps?app_id=bench_large_1500": HttpResult(200, "", {"ok": True}),
+            "/api/apps/detail?app_id=bench_large_2500": HttpResult(200, "", {"app": {"id": "bench_large_2500", "source": "b" * 2600}}),
+            "/api/chat/session?session_id=bench_large_2500": HttpResult(200, "", {"transcript": "{\"role\":\"assistant\",\"content\":\"Requested tools: app.install\"}\n"}),
+            ("POST", "/api/apps/run?app_id=bench_large_2500&trigger=manual", "payload"): HttpResult(200, "", {"result": "LARGE_APP_OK_2500"}),
+            "/api/apps?app_id=bench_large_2500": HttpResult(200, "", {"ok": True}),
+            "/api/apps/detail?app_id=bench_large_3200": HttpResult(200, "", {"app": {"id": "bench_large_3200", "source": "c" * 1800}}),
+            "/api/chat/session?session_id=bench_large_3200": HttpResult(200, "", {"transcript": "{\"role\":\"assistant\",\"content\":\"Requested tools: app.install\"}\n"}),
+            ("POST", "/api/apps/run?app_id=bench_large_3200&trigger=manual", "payload"): HttpResult(200, "", {"result": "wrong"}),
+        }
+
+        class LargeClient(FakeClient):
+            def post_text(self, path, body):
+                if path == "/api/chat/run?session_id=bench_large_1500&yolo=1":
+                    return HttpResult(200, "", {"ok": True, "final_text": ""})
+                if path == "/api/chat/run?session_id=bench_large_2500&yolo=1":
+                    return HttpResult(200, "", {"ok": True, "final_text": "INSTALLED"})
+                if path == "/api/chat/run?session_id=bench_large_3200&yolo=1":
+                    return HttpResult(200, "", {"ok": False, "final_text": "too large"})
+                for key, value in self.responses.items():
+                    if isinstance(key, tuple) and key[0] == "POST" and key[1] == path:
+                        return value
+                raise KeyError(path)
+
+        result = run_stages(LargeClient(responses), "bench", ["large_lua_app"], continue_on_failure=False)
+        self.assertTrue(result["stages"][0]["ok"])
+        self.assertEqual(result["stages"][0]["details"]["largest_success_bytes"], 2600)
 
 
 if __name__ == "__main__":

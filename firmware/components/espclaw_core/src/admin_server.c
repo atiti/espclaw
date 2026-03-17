@@ -3,7 +3,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <strings.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #include "esp_http_server.h"
 #include "esp_log.h"
@@ -17,6 +19,7 @@
 #include "espclaw/behavior_runtime.h"
 #include "espclaw/board_config.h"
 #include "espclaw/control_loop.h"
+#include "espclaw/hardware.h"
 #include "espclaw/ota_manager.h"
 #include "espclaw/ota_state.h"
 #include "espclaw/runtime.h"
@@ -58,6 +61,69 @@ static esp_err_t send_json_status(httpd_req_t *req, const char *body, int status
     snprintf(status, sizeof(status), "%d %s", status_code, status_text);
     httpd_resp_set_status(req, status);
     return send_json(req, body);
+}
+
+static const char *media_content_type(const char *relative_path)
+{
+    const char *extension;
+
+    if (relative_path == NULL) {
+        return "application/octet-stream";
+    }
+
+    extension = strrchr(relative_path, '.');
+    if (extension == NULL) {
+        return "application/octet-stream";
+    }
+    if (strcasecmp(extension, ".jpg") == 0 || strcasecmp(extension, ".jpeg") == 0) {
+        return "image/jpeg";
+    }
+    if (strcasecmp(extension, ".png") == 0) {
+        return "image/png";
+    }
+    if (strcasecmp(extension, ".gif") == 0) {
+        return "image/gif";
+    }
+    if (strcasecmp(extension, ".webp") == 0) {
+        return "image/webp";
+    }
+    if (strcasecmp(extension, ".txt") == 0 || strcasecmp(extension, ".log") == 0) {
+        return "text/plain; charset=utf-8";
+    }
+    if (strcasecmp(extension, ".json") == 0) {
+        return "application/json";
+    }
+
+    return "application/octet-stream";
+}
+
+static esp_err_t send_file_response(httpd_req_t *req, const char *absolute_path, const char *content_type)
+{
+    FILE *file = NULL;
+    char chunk[2048];
+    size_t read_size;
+
+    if (req == NULL || absolute_path == NULL || content_type == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    file = fopen(absolute_path, "rb");
+    if (file == NULL) {
+        return ESP_FAIL;
+    }
+
+    httpd_resp_set_type(req, content_type);
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    while ((read_size = fread(chunk, 1, sizeof(chunk), file)) > 0) {
+        if (httpd_resp_send_chunk(req, chunk, read_size) != ESP_OK) {
+            fclose(file);
+            httpd_resp_send_chunk(req, NULL, 0);
+            return ESP_FAIL;
+        }
+    }
+
+    fclose(file);
+    return httpd_resp_send_chunk(req, NULL, 0);
 }
 
 static bool load_query_value(httpd_req_t *req, const char *key, char *buffer, size_t buffer_size)
@@ -316,6 +382,82 @@ static esp_err_t monitor_get_handler(httpd_req_t *req)
 
     espclaw_render_system_monitor_json(&snapshot, buffer, sizeof(buffer));
     return send_json(req, buffer);
+}
+
+static esp_err_t camera_get_handler(httpd_req_t *req)
+{
+    char buffer[1024];
+    espclaw_hw_camera_status_t status;
+
+    if (espclaw_hw_camera_status(&status) != 0) {
+        espclaw_admin_render_result_json(false, "failed to capture camera diagnostics", buffer, sizeof(buffer));
+        return send_json_status(req, buffer, 500, "Internal Server Error");
+    }
+
+    espclaw_render_camera_status_json(&status, buffer, sizeof(buffer));
+    return send_json(req, buffer);
+}
+
+static esp_err_t camera_capture_post_handler(httpd_req_t *req)
+{
+    char buffer[1024];
+    char filename[64];
+    espclaw_hw_camera_capture_t capture;
+    const espclaw_runtime_status_t *status = espclaw_runtime_status();
+    const char *workspace_root = "/workspace";
+
+    if (status != NULL && status->workspace_root[0] != '\0') {
+        workspace_root = status->workspace_root;
+    }
+    if (!load_query_value(req, "filename", filename, sizeof(filename))) {
+        filename[0] = '\0';
+    }
+    if (espclaw_hw_camera_capture(
+            workspace_root,
+            filename[0] != '\0' ? filename : NULL,
+            &capture) != 0) {
+        snprintf(buffer, sizeof(buffer), "{\"ok\":false,\"error\":");
+        append_escaped_json(buffer, sizeof(buffer), strlen(buffer), capture.error[0] != '\0' ? capture.error : "camera capture failed");
+        append_text(buffer, sizeof(buffer), "}");
+        return send_json_status(req, buffer, 500, "Internal Server Error");
+    }
+
+    snprintf(
+        buffer,
+        sizeof(buffer),
+        "{\"ok\":true,\"path\":\"%s\",\"mime_type\":\"%s\",\"bytes\":%u,\"width\":%u,\"height\":%u,\"simulated\":%s}",
+        capture.relative_path,
+        capture.mime_type,
+        (unsigned)capture.bytes_written,
+        (unsigned)capture.width,
+        (unsigned)capture.height,
+        capture.simulated ? "true" : "false"
+    );
+    return send_json(req, buffer);
+}
+
+static esp_err_t media_get_handler(httpd_req_t *req)
+{
+    char relative_path[256];
+    char absolute_path[512];
+    const espclaw_runtime_status_t *status = espclaw_runtime_status();
+    const char *uri = req != NULL ? req->uri : NULL;
+    struct stat file_stat;
+
+    if (status == NULL || !status->storage_ready || status->workspace_root[0] == '\0') {
+        return send_json_status(req, "{\"ok\":false,\"message\":\"workspace storage is not available\"}", 503, "Service Unavailable");
+    }
+    if (uri == NULL || strncmp(uri, "/media/", 7) != 0 || uri[7] == '\0') {
+        return send_json_status(req, "{\"ok\":false,\"message\":\"missing media path\"}", 400, "Bad Request");
+    }
+
+    snprintf(relative_path, sizeof(relative_path), "media/%s", uri + 7);
+    if (espclaw_workspace_resolve_path(status->workspace_root, relative_path, absolute_path, sizeof(absolute_path)) != 0 ||
+        stat(absolute_path, &file_stat) != 0 || !S_ISREG(file_stat.st_mode)) {
+        return send_json_status(req, "{\"ok\":false,\"message\":\"media file not found\"}", 404, "Not Found");
+    }
+
+    return send_file_response(req, absolute_path, media_content_type(relative_path));
 }
 
 static esp_err_t board_get_handler(httpd_req_t *req)
@@ -712,6 +854,7 @@ static esp_err_t chat_run_post_handler(httpd_req_t *req)
     char *body = NULL;
     espclaw_agent_run_result_t *result = NULL;
     const espclaw_runtime_status_t *status = espclaw_runtime_status();
+    bool yolo_mode = false;
 
     response = (char *)calloc(1, 12288);
     if (response == NULL) {
@@ -736,6 +879,7 @@ static esp_err_t chat_run_post_handler(httpd_req_t *req)
     if (!load_query_value(req, "session_id", session_id, sizeof(session_id))) {
         copy_text(session_id, sizeof(session_id), "admin");
     }
+    yolo_mode = load_query_u32(req, "yolo", 0) != 0;
     if (req->content_len <= 0 || read_request_body(req, body, 2048) != ESP_OK) {
         espclaw_admin_render_result_json(false, "missing chat body", response, 12288);
         send_json_status(req, response, 400, "Bad Request");
@@ -744,7 +888,13 @@ static esp_err_t chat_run_post_handler(httpd_req_t *req)
         free(response);
         return ESP_OK;
     }
-    if (espclaw_agent_loop_run(status->storage_ready ? status->workspace_root : NULL, session_id, body, true, result) != 0 &&
+    if (espclaw_agent_loop_run(
+            status->storage_ready ? status->workspace_root : NULL,
+            session_id,
+            body,
+            true,
+            yolo_mode,
+            result) != 0 &&
         !result->ok) {
         espclaw_admin_render_result_json(false, result->final_text, response, 12288);
         send_json_status(req, response, 500, "Internal Server Error");
@@ -1316,6 +1466,9 @@ esp_err_t espclaw_admin_server_start(void)
         {.uri = "/api/ota/upload", .method = HTTP_POST, .handler = ota_upload_post_handler, .user_ctx = NULL},
         {.uri = "/api/workspace/files", .method = HTTP_GET, .handler = workspace_get_handler, .user_ctx = NULL},
         {.uri = "/api/monitor", .method = HTTP_GET, .handler = monitor_get_handler, .user_ctx = NULL},
+        {.uri = "/api/camera", .method = HTTP_GET, .handler = camera_get_handler, .user_ctx = NULL},
+        {.uri = "/api/camera/capture", .method = HTTP_POST, .handler = camera_capture_post_handler, .user_ctx = NULL},
+        {.uri = "/media/*", .method = HTTP_GET, .handler = media_get_handler, .user_ctx = NULL},
         {.uri = "/api/tools", .method = HTTP_GET, .handler = tools_get_handler, .user_ctx = NULL},
         {.uri = "/api/hardware", .method = HTTP_GET, .handler = hardware_get_handler, .user_ctx = NULL},
         {.uri = "/api/apps", .method = HTTP_GET, .handler = apps_get_handler, .user_ctx = NULL},
@@ -1351,6 +1504,7 @@ esp_err_t espclaw_admin_server_start(void)
     config.max_open_sockets = 4;
     config.lru_purge_enable = true;
     config.core_id = admin_core >= 0 ? admin_core : tskNO_AFFINITY;
+    config.uri_match_fn = httpd_uri_match_wildcard;
     if (httpd_start(&s_admin_server, &config) != ESP_OK) {
         return ESP_FAIL;
     }

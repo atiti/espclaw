@@ -108,6 +108,12 @@ static int parse_provider_text_response(
     bool *has_tools_out
 );
 
+static bool is_completed_terminal_response_without_output(
+    const char *json,
+    char *response_id,
+    size_t response_id_size
+);
+
 static espclaw_agent_http_adapter_t s_http_adapter;
 static void *s_http_adapter_user_data;
 #ifndef ESPCLAW_HOST_LUA
@@ -415,6 +421,7 @@ static int read_file_bytes(const char *path, uint8_t *buffer, size_t max_length,
 
 static size_t append_input_images(
     const char *workspace_root,
+    const char *provider_id,
     char *buffer,
     size_t buffer_size,
     size_t used,
@@ -424,6 +431,7 @@ static size_t append_input_images(
 )
 {
     size_t index;
+    bool codex_data_url_mode = provider_id != NULL && strcmp(provider_id, "openai_codex") == 0;
 
     if (workspace_root == NULL || workspace_root[0] == '\0' || image_data_max == 0U) {
         return used;
@@ -466,12 +474,33 @@ static size_t append_input_images(
         if (used > 0) {
             used = append_format(buffer, buffer_size, used, ",");
         }
-        used = append_format(buffer, buffer_size, used, "{\"type\":\"input_image\",\"source\":{");
-        used = append_format(buffer, buffer_size, used, "\"type\":\"base64\",\"media_type\":");
-        used = append_escaped_json(buffer, buffer_size, used, media_refs[index].mime_type);
-        used = append_format(buffer, buffer_size, used, ",\"data\":");
-        used = append_escaped_json(buffer, buffer_size, used, encoded);
-        used = append_format(buffer, buffer_size, used, "}}");
+        if (codex_data_url_mode) {
+            size_t data_url_size = strlen("data:") + strlen(media_refs[index].mime_type) + strlen(";base64,") + strlen(encoded) + 1;
+            char *data_url = (char *)calloc(1, data_url_size);
+
+            if (data_url == NULL) {
+                free(image_data);
+                free(encoded);
+                continue;
+            }
+            snprintf(data_url, data_url_size, "data:%s;base64,%s", media_refs[index].mime_type, encoded);
+            used = append_format(
+                buffer,
+                buffer_size,
+                used,
+                "{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_image\",\"image_url\":"
+            );
+            used = append_escaped_json(buffer, buffer_size, used, data_url);
+            used = append_format(buffer, buffer_size, used, "}]}");
+            free(data_url);
+        } else {
+            used = append_format(buffer, buffer_size, used, "{\"type\":\"input_image\",\"source\":{");
+            used = append_format(buffer, buffer_size, used, "\"type\":\"base64\",\"media_type\":");
+            used = append_escaped_json(buffer, buffer_size, used, media_refs[index].mime_type);
+            used = append_format(buffer, buffer_size, used, ",\"data\":");
+            used = append_escaped_json(buffer, buffer_size, used, encoded);
+            used = append_format(buffer, buffer_size, used, "}}");
+        }
         free(image_data);
         free(encoded);
         if (append_buffer_full(used, buffer_size)) {
@@ -544,6 +573,7 @@ static void decode_tool_name(const char *wire_name, char *runtime_name, size_t r
     runtime_name[used] = '\0';
 }
 
+#ifdef ESPCLAW_HOST_LUA
 static bool contains_case_insensitive_text(const char *haystack, const char *needle)
 {
     size_t needle_length;
@@ -573,6 +603,7 @@ static bool contains_case_insensitive_text(const char *haystack, const char *nee
 
     return false;
 }
+#endif
 
 static const char *find_json_key_after(const char *json, const char *key, const char *after)
 {
@@ -644,6 +675,161 @@ static bool extract_json_string_from(const char *json, const char *key, const ch
     return true;
 }
 
+static bool extract_json_object_from(
+    const char *json,
+    const char *key,
+    const char *after,
+    char *buffer,
+    size_t buffer_size
+)
+{
+    const char *cursor = find_json_key_after(json, key, after);
+    const char *start = NULL;
+    const char *scan = NULL;
+    size_t depth = 0;
+    bool in_string = false;
+    bool escaped = false;
+
+    if (cursor == NULL || buffer == NULL || buffer_size == 0) {
+        if (buffer != NULL && buffer_size > 0) {
+            buffer[0] = '\0';
+        }
+        return false;
+    }
+
+    cursor = strchr(cursor, ':');
+    if (cursor == NULL) {
+        buffer[0] = '\0';
+        return false;
+    }
+    cursor++;
+    while (*cursor != '\0' && isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+    if (*cursor != '{') {
+        buffer[0] = '\0';
+        return false;
+    }
+
+    start = cursor;
+    for (scan = cursor; *scan != '\0'; ++scan) {
+        char ch = *scan;
+
+        if (in_string) {
+            if (escaped) {
+                escaped = false;
+            } else if (ch == '\\') {
+                escaped = true;
+            } else if (ch == '"') {
+                in_string = false;
+            }
+            continue;
+        }
+
+        if (ch == '"') {
+            in_string = true;
+            continue;
+        }
+        if (ch == '{') {
+            depth++;
+            continue;
+        }
+        if (ch == '}') {
+            if (depth == 0) {
+                break;
+            }
+            depth--;
+            if (depth == 0) {
+                size_t length = (size_t)(scan - start + 1);
+
+                if (length >= buffer_size) {
+                    length = buffer_size - 1;
+                }
+                memcpy(buffer, start, length);
+                buffer[length] = '\0';
+                return true;
+            }
+        }
+    }
+
+    buffer[0] = '\0';
+    return false;
+}
+
+static bool extract_json_object_containing(
+    const char *json,
+    const char *needle,
+    char *buffer,
+    size_t buffer_size
+)
+{
+    const char *cursor = needle;
+    const char *start = NULL;
+    const char *scan = NULL;
+    size_t depth = 0;
+    bool in_string = false;
+    bool escaped = false;
+
+    if (json == NULL || needle == NULL || buffer == NULL || buffer_size == 0) {
+        return false;
+    }
+
+    while (cursor > json) {
+        cursor--;
+        if (*cursor == '{') {
+            start = cursor;
+            break;
+        }
+    }
+    if (start == NULL) {
+        buffer[0] = '\0';
+        return false;
+    }
+
+    for (scan = start; *scan != '\0'; ++scan) {
+        char ch = *scan;
+
+        if (in_string) {
+            if (escaped) {
+                escaped = false;
+            } else if (ch == '\\') {
+                escaped = true;
+            } else if (ch == '"') {
+                in_string = false;
+            }
+            continue;
+        }
+
+        if (ch == '"') {
+            in_string = true;
+            continue;
+        }
+        if (ch == '{') {
+            depth++;
+            continue;
+        }
+        if (ch == '}') {
+            if (depth == 0) {
+                break;
+            }
+            depth--;
+            if (depth == 0) {
+                size_t length = (size_t)(scan - start + 1);
+
+                if (length >= buffer_size) {
+                    length = buffer_size - 1;
+                }
+                memcpy(buffer, start, length);
+                buffer[length] = '\0';
+                return true;
+            }
+        }
+    }
+
+    buffer[0] = '\0';
+    return false;
+}
+
 #ifdef ESPCLAW_HOST_LUA
 static bool extract_last_user_message(const char *request_body, char *buffer, size_t buffer_size)
 {
@@ -693,7 +879,13 @@ static bool user_message_requests_tool_listing(const char *request_body)
 }
 #endif
 
-static int load_system_prompt(const char *workspace_root, char *buffer, size_t buffer_size)
+static int load_system_prompt(
+    const char *workspace_root,
+    bool allow_mutations,
+    bool yolo_mode,
+    char *buffer,
+    size_t buffer_size
+)
 {
     static const char *CONTROL_FILES[] = {"AGENTS.md", "IDENTITY.md", "USER.md", "HEARTBEAT.md", "memory/MEMORY.md"};
     size_t index;
@@ -739,9 +931,30 @@ static int load_system_prompt(const char *workspace_root, char *buffer, size_t b
         "- The tool inventory snapshot below is part of the system prompt for every run.\n"
         "- When the user asks what tools or capabilities are available, use the prompt inventory first and call tool.list if you need an explicit detailed listing.\n"
         "- Read-only tools are preferred when exploring.\n"
-        "- Mutating tools require explicit confirmation from the user before execution.\n"
-        "- When a tool reports confirmation_required, ask the user for confirmation instead of retrying the same call.\n"
     );
+    if (yolo_mode) {
+        used += (size_t)snprintf(
+            buffer + used,
+            buffer_size - used,
+            "- YOLO mode is enabled for this run.\n"
+            "- If a tool is relevant, call it directly instead of asking the operator for another approval step.\n"
+            "- Prefer doing the work over narrating what you could do.\n"
+        );
+    } else if (allow_mutations) {
+        used += (size_t)snprintf(
+            buffer + used,
+            buffer_size - used,
+            "- This run was initiated by a trusted local operator surface. When a mutating tool is materially necessary, you may call it without asking for an extra confirmation step.\n"
+            "- If a tool still reports confirmation_required, explain that to the user instead of retrying the same call.\n"
+        );
+    } else {
+        used += (size_t)snprintf(
+            buffer + used,
+            buffer_size - used,
+            "- Mutating tools require explicit confirmation from the user before execution.\n"
+            "- When a tool reports confirmation_required, ask the user for confirmation instead of retrying the same call.\n"
+        );
+    }
 
     used += (size_t)snprintf(buffer + used, buffer_size - used, "\n# Tool Inventory Snapshot\n");
     used += (size_t)snprintf(buffer + used, buffer_size - used, "Read-only tools: ");
@@ -1060,7 +1273,7 @@ static int build_followup_request_body(
         used = append_escaped_json(buffer, buffer_size, used, tool_result_at((char *)results, result_stride, index));
         used += (size_t)snprintf(buffer + used, buffer_size - used, "}");
     }
-    used = append_input_images(workspace_root, buffer, buffer_size, used, media_refs, media_count, image_data_max);
+    used = append_input_images(workspace_root, profile->provider_id, buffer, buffer_size, used, media_refs, media_count, image_data_max);
     used += (size_t)snprintf(buffer + used, buffer_size - used, "]}");
     return 0;
 }
@@ -1154,7 +1367,7 @@ static int build_codex_followup_request_body(
         }
         used += (size_t)snprintf(buffer + used, buffer_size - used, "%s", codex_items_json);
     }
-    used = append_input_images(workspace_root, buffer, buffer_size, used, media_refs, media_count, image_data_max);
+    used = append_input_images(workspace_root, profile->provider_id, buffer, buffer_size, used, media_refs, media_count, image_data_max);
     used += (size_t)snprintf(buffer + used, buffer_size - used, "]");
     used += (size_t)snprintf(buffer + used, buffer_size - used, "}");
     return 0;
@@ -1203,6 +1416,37 @@ static void append_sse_output_text_done_segments(const char *payload, char *buff
             append_text_segment(buffer, buffer_size, segment);
         }
         cursor = event_end;
+    }
+}
+
+static void synthesize_text_response_json(
+    const char *response_id,
+    const char *text,
+    char *buffer,
+    size_t buffer_size
+)
+{
+    size_t used = 0;
+
+    if (buffer == NULL || buffer_size == 0) {
+        return;
+    }
+
+    buffer[0] = '\0';
+    used = append_format(buffer, buffer_size, used, "{");
+    used = append_format(buffer, buffer_size, used, "\"id\":");
+    used = append_escaped_json(buffer, buffer_size, used, response_id != NULL ? response_id : "");
+    used = append_format(buffer, buffer_size, used, ",\"status\":\"completed\",\"output\":[");
+    used = append_format(
+        buffer,
+        buffer_size,
+        used,
+        "{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":"
+    );
+    used = append_escaped_json(buffer, buffer_size, used, text != NULL ? text : "");
+    used = append_format(buffer, buffer_size, used, "}]}]}");
+    if (used >= buffer_size) {
+        buffer[buffer_size - 1] = '\0';
     }
 }
 
@@ -1266,11 +1510,13 @@ static int parse_provider_response(const char *json, espclaw_provider_response_t
     while ((cursor = strstr(cursor, "\"type\":\"function_call\"")) != NULL &&
            response->tool_call_count < ESPCLAW_AGENT_TOOL_CALL_MAX) {
         espclaw_agent_tool_call_t *tool_call = &response->tool_calls[response->tool_call_count];
+        char function_call_json[ESPCLAW_AGENT_TOOL_ARGS_MAX + 512];
         char wire_name[sizeof(tool_call->name)];
 
-        if (extract_json_string_from(json, "call_id", cursor, tool_call->call_id, sizeof(tool_call->call_id)) &&
-            extract_json_string_from(json, "name", cursor, wire_name, sizeof(wire_name)) &&
-            extract_json_string_from(json, "arguments", cursor, tool_call->arguments_json, sizeof(tool_call->arguments_json))) {
+        if (extract_json_object_containing(json, cursor, function_call_json, sizeof(function_call_json)) &&
+            extract_json_string_from(function_call_json, "call_id", NULL, tool_call->call_id, sizeof(tool_call->call_id)) &&
+            extract_json_string_from(function_call_json, "name", NULL, wire_name, sizeof(wire_name)) &&
+            extract_json_string_from(function_call_json, "arguments", NULL, tool_call->arguments_json, sizeof(tool_call->arguments_json))) {
             decode_tool_name(wire_name, tool_call->name, sizeof(tool_call->name));
             response->tool_call_count++;
         }
@@ -1315,13 +1561,49 @@ static int parse_provider_text_response(
         append_sse_output_text_done_segments(json, text, text_size);
     }
 
-    if (response_id[0] != '\0') {
+    if (response_id[0] != '\0' && (text[0] != '\0' || (has_tools_out != NULL && *has_tools_out))) {
         return 0;
     }
     if (text[0] != '\0' && (has_tools_out == NULL || !*has_tools_out)) {
         return 0;
     }
     return -1;
+}
+
+static bool is_completed_terminal_response_without_output(
+    const char *json,
+    char *response_id,
+    size_t response_id_size
+)
+{
+    bool has_tools = false;
+    char text[32];
+
+    if (json == NULL || response_id == NULL || response_id_size == 0) {
+        return false;
+    }
+
+    response_id[0] = '\0';
+    text[0] = '\0';
+    extract_json_string_from(json, "id", NULL, response_id, response_id_size);
+    if (response_id[0] == '\0') {
+        return false;
+    }
+    if (strstr(json, "\"status\":\"completed\"") == NULL) {
+        return false;
+    }
+    has_tools = strstr(json, "\"type\":\"function_call\"") != NULL;
+    if (has_tools) {
+        return false;
+    }
+
+    return parse_provider_text_response(
+               json,
+               response_id,
+               response_id_size,
+               text,
+               sizeof(text),
+               &has_tools) != 0;
 }
 
 static bool json_argument_string(const char *arguments_json, const char *key, char *buffer, size_t buffer_size)
@@ -2030,7 +2312,9 @@ static int tool_camera_capture(const char *workspace_root, const char *arguments
             workspace_root,
             filename[0] != '\0' ? filename : NULL,
             &capture) != 0) {
-        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"camera capture failed or unsupported\"}");
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":");
+        append_escaped_json(buffer, buffer_size, strlen(buffer), capture.error[0] != '\0' ? capture.error : "camera capture failed");
+        append_text_segment(buffer, buffer_size, "}");
         return -1;
     }
 
@@ -2631,6 +2915,20 @@ int espclaw_agent_reduce_sse_stream_to_response_json(
         return -1;
     }
     if (espclaw_agent_extract_sse_completed_response_json(http_buffer, buffer, buffer_size) == 0) {
+        char normalized[ESPCLAW_AGENT_TEXT_MAX * 4];
+        char streamed_text[ESPCLAW_AGENT_TEXT_MAX + 1];
+
+        if (extract_json_object_from(buffer, "response", NULL, normalized, sizeof(normalized))) {
+            copy_text(buffer, buffer_size, normalized);
+        }
+        if (parse_provider_text_response(buffer, response_id, sizeof(response_id), text, sizeof(text), &has_tools) != 0 &&
+            !has_tools) {
+            streamed_text[0] = '\0';
+            append_sse_output_text_done_segments(http_buffer, streamed_text, sizeof(streamed_text));
+            if (streamed_text[0] != '\0') {
+                synthesize_text_response_json(response_id, streamed_text, buffer, buffer_size);
+            }
+        }
         free(http_buffer);
         return 0;
     }
@@ -2872,6 +3170,7 @@ typedef struct {
     size_t event_len;
     char chunk_line[32];
     size_t chunk_line_len;
+    char output_text[ESPCLAW_AGENT_TEXT_MAX + 1];
     char *data;
     size_t data_len;
     size_t data_capacity;
@@ -3011,19 +3310,53 @@ static int codex_sse_finalize_event(
     }
 
     if (strcmp(parser->event, "response.output_text.done") == 0) {
+        char segment[1024];
+
+        if (extract_json_string_from(parser->data, "text", NULL, segment, sizeof(segment))) {
+            append_text_segment(parser->output_text, sizeof(parser->output_text), segment);
+        }
         codex_sse_reset_event(parser);
         return 0;
     }
 
     if (strcmp(parser->event, "response.completed") == 0) {
-        if (parser->data_len + 1 > buffer_size) {
+        char parsed_id[ESPCLAW_AGENT_RESPONSE_ID_MAX + 1];
+        char parsed_text[ESPCLAW_AGENT_TEXT_MAX + 1];
+        bool has_tools = false;
+        const char *terminal_json = parser->data;
+        size_t terminal_json_len = parser->data_len;
+        char *normalized = NULL;
+
+        normalized = (char *)calloc(1, buffer_size);
+        if (normalized != NULL &&
+            extract_json_object_from(parser->data, "response", NULL, normalized, buffer_size)) {
+            terminal_json = normalized;
+            terminal_json_len = strlen(normalized);
+        }
+        if (terminal_json_len + 1 > buffer_size) {
+            free(normalized);
             copy_text(error_text, error_text_size, "Provider completed response exceeded the embedded receive buffer.");
             return -1;
         }
-        if (espclaw_agent_store_terminal_response_json(parser->data, parser->data_len, buffer, buffer_size) != 0) {
+        if (espclaw_agent_store_terminal_response_json(terminal_json, terminal_json_len, buffer, buffer_size) != 0) {
+            free(normalized);
             copy_text(error_text, error_text_size, "Failed to preserve the provider completed response.");
             return -1;
         }
+        if (parse_provider_text_response(
+                buffer,
+                parsed_id,
+                sizeof(parsed_id),
+                parsed_text,
+                sizeof(parsed_text),
+                &has_tools) != 0 &&
+            parser->output_text[0] != '\0' &&
+            !has_tools) {
+            const char *response_id = parser->response_id[0] != '\0' ? parser->response_id : parsed_id;
+
+            synthesize_text_response_json(response_id, parser->output_text, buffer, buffer_size);
+        }
+        free(normalized);
         parser->saw_completed = true;
         /* On embedded raw-Codex paths the parser scratch space aliases the final
          * response buffer, so resetting the event here would wipe the completed
@@ -4098,6 +4431,7 @@ int espclaw_agent_loop_run(
     const char *session_id,
     const char *user_message,
     bool allow_mutations,
+    bool yolo_mode,
     espclaw_agent_run_result_t *result
 )
 {
@@ -4172,7 +4506,12 @@ int espclaw_agent_loop_run(
         return -1;
     }
 
-    if (load_system_prompt(workspace_root, instructions, runtime_budget.agent_instructions_max) != 0) {
+    if (load_system_prompt(
+            workspace_root,
+            allow_mutations,
+            yolo_mode,
+            instructions,
+            runtime_budget.agent_instructions_max) != 0) {
         free(instructions);
         free(codex_items_json);
         free(history);
@@ -4237,8 +4576,29 @@ int espclaw_agent_loop_run(
                            : -1;
         if (provider_status != 0 || parse_status != 0) {
             if (provider_status == 0) {
+                char completed_id[ESPCLAW_AGENT_RESPONSE_ID_MAX + 1];
                 char snippet[160];
                 size_t snippet_len = 0;
+
+                if (result->used_tools &&
+                    is_completed_terminal_response_without_output(
+                        response_body,
+                        completed_id,
+                        sizeof(completed_id))) {
+                    copy_text(previous_response_id, sizeof(previous_response_id), completed_id);
+                    copy_text(result->response_id, sizeof(result->response_id), completed_id);
+                    result->final_text[0] = '\0';
+                    result->ok = true;
+                    if (workspace_root != NULL && workspace_root[0] != '\0') {
+                        espclaw_session_append_message(workspace_root, session_id, "assistant", "");
+                    }
+                    free(instructions);
+                    free(codex_items_json);
+                    free(history);
+                    free(request_body);
+                    free(response_body);
+                    return 0;
+                }
 
                 while (snippet_len < sizeof(snippet) - 1 && response_body[snippet_len] != '\0') {
                     char c = response_body[snippet_len];

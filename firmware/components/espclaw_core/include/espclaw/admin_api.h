@@ -7,6 +7,7 @@
 #include "espclaw/auth_store.h"
 #include "espclaw/board_config.h"
 #include "espclaw/board_profile.h"
+#include "espclaw/hardware.h"
 #include "espclaw/ota_manager.h"
 #include "espclaw/ota_state.h"
 #include "espclaw/system_monitor.h"
@@ -82,6 +83,11 @@ size_t espclaw_render_session_transcript_json(
 );
 size_t espclaw_render_system_monitor_json(
     const espclaw_system_monitor_snapshot_t *snapshot,
+    char *buffer,
+    size_t buffer_size
+);
+size_t espclaw_render_camera_status_json(
+    const espclaw_hw_camera_status_t *status,
     char *buffer,
     size_t buffer_size
 );

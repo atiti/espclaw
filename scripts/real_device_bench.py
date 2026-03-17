@@ -7,7 +7,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Set
 
 
 HELLO_MARKER = "ESPCLAW_BENCH_HI"
@@ -48,9 +48,10 @@ def parse_json_body(body: str) -> Optional[Dict]:
 
 
 class BenchClient:
-    def __init__(self, base_url: str, timeout_seconds: float) -> None:
+    def __init__(self, base_url: str, timeout_seconds: float, yolo_mode: bool) -> None:
         self.base_url = normalize_base_url(base_url)
         self.timeout_seconds = timeout_seconds
+        self.yolo_mode = yolo_mode
 
     def get_json(self, path: str) -> HttpResult:
         return self._request_json("GET", path, None, None)
@@ -82,6 +83,21 @@ class BenchClient:
     def delete_json(self, path: str) -> HttpResult:
         return self._request_json("DELETE", path, None, None)
 
+    def chat_run_path(self, session_id: str) -> str:
+        path = f"/api/chat/run?session_id={urllib.parse.quote(session_id)}"
+        if self.yolo_mode:
+            path += "&yolo=1"
+        return path
+
+    def chat_run(self, session_id: str, prompt: str) -> Dict:
+        return require_json(self.post_text(self.chat_run_path(session_id), prompt), "/api/chat/run")
+
+    def chat_session(self, session_id: str) -> Dict:
+        return require_json(
+            self.get_json(f"/api/chat/session?session_id={urllib.parse.quote(session_id)}"),
+            "/api/chat/session",
+        )
+
     def _request_json(
         self,
         method: str,
@@ -112,6 +128,63 @@ def require_json(result: HttpResult, path: str) -> Dict:
     if result.json_body is None:
         raise BenchError(f"{path} did not return JSON: {result.body[:200]}")
     return result.json_body
+
+
+def collect_requested_tools(transcript: str) -> List[str]:
+    tools: List[str] = []
+    seen: Set[str] = set()
+
+    for raw_line in str(transcript or "").splitlines():
+        line = raw_line.strip()
+        payload: Optional[Dict] = None
+        content = ""
+
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            payload = None
+        if isinstance(payload, dict):
+            content = str(payload.get("content", ""))
+        else:
+            content = line
+        if not content.startswith("Requested tools:"):
+            continue
+        for name in content.partition(":")[2].split(","):
+            tool_name = name.strip()
+
+            if tool_name and tool_name not in seen:
+                seen.add(tool_name)
+                tools.append(tool_name)
+    return tools
+
+
+def run_tool_case(
+    client: BenchClient,
+    session_id: str,
+    prompt: str,
+    expected_tools: List[str],
+) -> Dict:
+    result = client.chat_run(session_id, prompt)
+    transcript = client.chat_session(session_id)
+    called_tools = collect_requested_tools(transcript.get("transcript", ""))
+    missing_tools = [name for name in expected_tools if name not in set(called_tools)]
+    marker = f"TOOL_CASE_{session_id.split('_')[-1].upper()}_OK"
+    final_text = result.get("final_text", "").strip()
+    ok = bool(result.get("ok")) and not missing_tools and (final_text == marker or final_text == "")
+    return {
+        "session_id": session_id,
+        "prompt": prompt,
+        "expected_tools": expected_tools,
+        "called_tools": called_tools,
+        "missing_tools": missing_tools,
+        "expected_marker": marker,
+        "final_text_matches_marker": final_text == marker,
+        "result": result,
+        "transcript": transcript,
+        "ok": ok,
+    }
 
 
 def task_event_runtime_attempt(
@@ -232,7 +305,7 @@ def stage_inventory(client: BenchClient, session_prefix: str) -> StageResult:
 def stage_hello(client: BenchClient, session_prefix: str) -> StageResult:
     session_id = f"{session_prefix}_hello"
     prompt = f"Reply with exactly {HELLO_MARKER} and nothing else."
-    result = require_json(client.post_text(f"/api/chat/run?session_id={urllib.parse.quote(session_id)}", prompt), "/api/chat/run")
+    result = client.chat_run(session_id, prompt)
     ok = bool(result.get("ok")) and result.get("final_text", "").strip() == HELLO_MARKER
     return StageResult(
         name="hello",
@@ -248,11 +321,8 @@ def stage_tool_reasoning(client: BenchClient, session_prefix: str) -> StageResul
         "Use tools to inspect the device, list installed apps, and tell me whether the workspace is ready. "
         "Keep the answer short."
     )
-    result = require_json(client.post_text(f"/api/chat/run?session_id={urllib.parse.quote(session_id)}", prompt), "/api/chat/run")
-    transcript = require_json(
-        client.get_json(f"/api/chat/session?session_id={urllib.parse.quote(session_id)}"),
-        "/api/chat/session",
-    )
+    result = client.chat_run(session_id, prompt)
+    transcript = client.chat_session(session_id)
     used_tools = bool(result.get("used_tools"))
     transcript_text = transcript.get("transcript", "")
     ok = bool(result.get("ok")) and used_tools and "Requested tools:" in transcript_text
@@ -273,7 +343,7 @@ def stage_generate_echo_app(client: BenchClient, session_prefix: str) -> StageRe
         "\"BENCH_ECHO:\" .. payload from handle(trigger, payload). "
         "After installing it, answer briefly."
     )
-    result = require_json(client.post_text(f"/api/chat/run?session_id={urllib.parse.quote(session_id)}", prompt), "/api/chat/run")
+    result = client.chat_run(session_id, prompt)
     detail = require_json(client.get_json(f"/api/apps/detail?app_id={urllib.parse.quote(app_id)}"), "/api/apps/detail")
     run = require_json(
         client.post_text(f"/api/apps/run?app_id={urllib.parse.quote(app_id)}&trigger=manual", "alpha"),
@@ -364,6 +434,265 @@ def stage_task_event_runtime(client: BenchClient, session_prefix: str) -> StageR
     )
 
 
+def stage_vision(client: BenchClient, session_prefix: str) -> StageResult:
+    session_id = f"{session_prefix}_vision"
+    prompt = (
+        "Use the camera tool to capture a fresh image, then describe the image briefly. "
+        "Mention the capture path in your answer."
+    )
+    result = client.chat_run(session_id, prompt)
+    transcript = client.chat_session(session_id)
+    transcript_text = transcript.get("transcript", "")
+    final_text = str(result.get("final_text", ""))
+    ok = (
+        bool(result.get("ok"))
+        and bool(result.get("used_tools"))
+        and "camera.capture" in transcript_text
+        and ".jpg" in transcript_text
+        and "media/" in final_text
+    )
+    return StageResult(
+        name="vision",
+        ok=ok,
+        summary="camera capture and image-to-LLM round validated" if ok else "vision run failed or did not use the camera path",
+        details={"session_id": session_id, "prompt": prompt, "result": result, "transcript": transcript},
+    )
+
+
+def stage_tool_sweep(client: BenchClient, session_prefix: str) -> StageResult:
+    session_id_a = f"{session_prefix}_tool_sweep_a"
+    session_id_b = f"{session_prefix}_tool_sweep_b"
+    tools_result = require_json(client.get_json("/api/tools"), "/api/tools")
+    hardware_result = require_json(client.get_json("/api/hardware"), "/api/hardware")
+    all_tools = [
+        str(item.get("name", ""))
+        for item in tools_result.get("tools", [])
+        if isinstance(item, dict) and item.get("name")
+    ]
+    excluded = {"system.reboot", "ota.apply"}
+    expected = [name for name in all_tools if name not in excluded]
+    pins = hardware_result.get("pins", []) if isinstance(hardware_result.get("pins", []), list) else []
+    adc_channels = hardware_result.get("adc_channels", []) if isinstance(hardware_result.get("adc_channels", []), list) else []
+    i2c_buses = hardware_result.get("i2c_buses", []) if isinstance(hardware_result.get("i2c_buses", []), list) else []
+    uart_ports = hardware_result.get("uarts", []) if isinstance(hardware_result.get("uarts", []), list) else []
+    flash_led_pin = next((int(item.get("pin", -1)) for item in pins if isinstance(item, dict) and item.get("name") == "flash_led"), 4)
+    adc_channel = next((int(item.get("channel", 0)) for item in adc_channels if isinstance(item, dict)), 0)
+    i2c_port = next((int(item.get("port", 0)) for item in i2c_buses if isinstance(item, dict)), 0)
+    uart_port = next((int(item.get("port", 0)) for item in uart_ports if isinstance(item, dict)), 0)
+    prompt_a = (
+        "YOLO mode is enabled. This is a tool-call compliance test. The transcript is audited, so you must actually call every applicable tool from this exact set at least once before replying: "
+        "tool.list, system.info, hardware.list, wifi.status, wifi.scan, ble.scan, fs.list, fs.write, fs.read, fs.delete, "
+        "app.list, app.install, app.run, app.remove, behavior.list, behavior.register, behavior.start, behavior.stop, behavior.remove, "
+        "task.list, task.start, task.stop, event.emit, event.watch_list, event.watch_add, event.watch_remove, ota.check. "
+        "Use temporary ids starting with tool_sweep_. Create a minimal Lua app tool_sweep_app that returns 'TOOL_SWEEP_OK'. "
+        "Create a periodic task tool_sweep_task and a periodic behavior tool_sweep_behavior, then stop/remove them. "
+        "Use a workspace file named memory/tool_sweep.txt and delete it before finishing. "
+        "Do not answer TOOL_SWEEP_CORE_DONE unless you completed the tool calls."
+    )
+    prompt_b = (
+        "YOLO mode is enabled. This is a tool-call compliance test. The transcript is audited, so you must actually call every applicable tool from this exact set at least once before replying: "
+        "camera.capture, gpio.read, gpio.write, pwm.write, ppm.write, adc.read, i2c.scan, i2c.read, i2c.write, temperature.read, imu.read, "
+        "buzzer.play, pid.compute, control.mix, spi.transfer, uart.read, uart.write. "
+        f"Use flash LED pin {flash_led_pin} for gpio/pwm/buzzer/ppm if you need a concrete pin, ADC channel {adc_channel}, I2C port {i2c_port}, and UART port {uart_port}. "
+        "Hardware-dependent tools may fail if no external peripheral is attached, but you must still call them and then continue. "
+        "Capture the camera into tool_sweep.jpg. "
+        "Do not answer TOOL_SWEEP_HARDWARE_DONE unless you completed the tool calls."
+    )
+    result_a = client.chat_run(session_id_a, prompt_a)
+    transcript_a = client.chat_session(session_id_a)
+    result_b = client.chat_run(session_id_b, prompt_b)
+    transcript_b = client.chat_session(session_id_b)
+    called_tools = collect_requested_tools(transcript_a.get("transcript", "")) + collect_requested_tools(transcript_b.get("transcript", ""))
+    called_set = set(called_tools)
+    missing_tools = [name for name in expected if name not in called_set]
+    ok = (
+        bool(result_a.get("ok"))
+        and bool(result_b.get("ok"))
+        and result_a.get("final_text", "").strip() == "TOOL_SWEEP_CORE_DONE"
+        and result_b.get("final_text", "").strip() == "TOOL_SWEEP_HARDWARE_DONE"
+        and not missing_tools
+    )
+    return StageResult(
+        name="tool_sweep",
+        ok=ok,
+        summary="LLM invoked the full non-disruptive tool catalog" if ok else "tool sweep missed one or more tools",
+        details={
+            "session_ids": [session_id_a, session_id_b],
+            "expected_tools": expected,
+            "called_tools": called_tools,
+            "missing_tools": missing_tools,
+            "prompt_a": prompt_a,
+            "prompt_b": prompt_b,
+            "result_a": result_a,
+            "result_b": result_b,
+            "transcript_a": transcript_a,
+            "transcript_b": transcript_b,
+        },
+    )
+
+
+def stage_tool_matrix_full(client: BenchClient, session_prefix: str) -> StageResult:
+    hardware_result = require_json(client.get_json("/api/hardware"), "/api/hardware")
+    pins = hardware_result.get("pins", []) if isinstance(hardware_result.get("pins", []), list) else []
+    adc_channels = hardware_result.get("adc_channels", []) if isinstance(hardware_result.get("adc_channels", []), list) else []
+    i2c_buses = hardware_result.get("i2c_buses", []) if isinstance(hardware_result.get("i2c_buses", []), list) else []
+    uart_ports = hardware_result.get("uarts", []) if isinstance(hardware_result.get("uarts", []), list) else []
+    flash_led_pin = next((int(item.get("pin", -1)) for item in pins if isinstance(item, dict) and item.get("name") == "flash_led"), 4)
+    adc_channel = next((int(item.get("channel", 0)) for item in adc_channels if isinstance(item, dict)), 0)
+    i2c_port = next((int(item.get("port", 0)) for item in i2c_buses if isinstance(item, dict)), 0)
+    uart_port = next((int(item.get("port", 0)) for item in uart_ports if isinstance(item, dict)), 0)
+    cases = [
+        (
+            "catalog",
+            "This is a tool-call compliance test. Call tool.list exactly once, then reply exactly TOOL_CASE_CATALOG_OK.",
+            ["tool.list"],
+        ),
+        (
+            "inventory",
+            "This is a tool-call compliance test. Call system.info and hardware.list, then reply exactly TOOL_CASE_INVENTORY_OK.",
+            ["system.info", "hardware.list"],
+        ),
+        (
+            "network",
+            "This is a tool-call compliance test. Call wifi.status, wifi.scan, and ble.scan even if one reports unavailable, then reply exactly TOOL_CASE_NETWORK_OK.",
+            ["wifi.status", "wifi.scan", "ble.scan"],
+        ),
+        (
+            "workspace",
+            "This is a tool-call compliance test. Call fs.list on '.', fs.write on memory/tool_matrix.txt with content 'matrix', fs.read on that file, then fs.delete it. Reply exactly TOOL_CASE_WORKSPACE_OK.",
+            ["fs.list", "fs.write", "fs.read", "fs.delete"],
+        ),
+        (
+            "apps",
+            "This is a tool-call compliance test. Call app.list, then app.install to create tool_matrix_app whose manual trigger returns exactly TOOL_MATRIX_APP_OK, then app.run it, then app.remove it. Reply exactly TOOL_CASE_APPS_OK.",
+            ["app.list", "app.install", "app.run", "app.remove"],
+        ),
+        (
+            "behaviors",
+            "This is a tool-call compliance test. Create tool_matrix_behavior_app with app.install, then call behavior.list, behavior.register, behavior.start, behavior.stop, and behavior.remove using ids tool_matrix_behavior_app and tool_matrix_behavior. Reply exactly TOOL_CASE_BEHAVIORS_OK.",
+            ["app.install", "behavior.list", "behavior.register", "behavior.start", "behavior.stop", "behavior.remove"],
+        ),
+        (
+            "tasks",
+            "This is a tool-call compliance test. Create tool_matrix_task_app with app.install, then call task.list, task.start, event.emit, task.stop, event.watch_list, event.watch_add, and event.watch_remove. Use ids tool_matrix_task_app, tool_matrix_task, and tool_matrix_watch. Reply exactly TOOL_CASE_TASKS_OK.",
+            ["app.install", "task.list", "task.start", "event.emit", "task.stop", "event.watch_list", "event.watch_add", "event.watch_remove"],
+        ),
+        (
+            "camera",
+            "This is a tool-call compliance test. Call camera.capture with filename tool_matrix.jpg, then reply exactly TOOL_CASE_CAMERA_OK.",
+            ["camera.capture"],
+        ),
+        (
+            "gpio",
+            f"This is a tool-call compliance test. Call gpio.read on pin {flash_led_pin}, then gpio.write on pin {flash_led_pin} with value 0, then reply exactly TOOL_CASE_GPIO_OK.",
+            ["gpio.read", "gpio.write"],
+        ),
+        (
+            "motion",
+            f"This is a tool-call compliance test. Call pwm.write, ppm.write, and buzzer.play using pin {flash_led_pin} or that same channel where needed, then reply exactly TOOL_CASE_MOTION_OK.",
+            ["pwm.write", "ppm.write", "buzzer.play"],
+        ),
+        (
+            "busio",
+            f"This is a tool-call compliance test. Call adc.read on channel {adc_channel}, uart.write on port {uart_port}, and uart.read on port {uart_port}. Reply exactly TOOL_CASE_BUSIO_OK.",
+            ["adc.read", "uart.write", "uart.read"],
+        ),
+        (
+            "sensors",
+            f"This is a tool-call compliance test. Call i2c.scan, i2c.read, i2c.write, temperature.read, and imu.read using I2C port {i2c_port}. Hardware-dependent tools may fail, but you must still call them. Reply exactly TOOL_CASE_SENSORS_OK.",
+            ["i2c.scan", "i2c.read", "i2c.write", "temperature.read", "imu.read"],
+        ),
+        (
+            "compute",
+            "This is a tool-call compliance test. Call pid.compute, control.mix, spi.transfer, and ota.check, then reply exactly TOOL_CASE_COMPUTE_OK.",
+            ["pid.compute", "control.mix", "spi.transfer", "ota.check"],
+        ),
+    ]
+    case_results = []
+    called_tools: Set[str] = set()
+    missing_tools: List[str] = []
+
+    for case_id, prompt, expected_tools in cases:
+        case = run_tool_case(client, f"{session_prefix}_{case_id}", prompt, expected_tools)
+
+        case_results.append(case)
+        called_tools.update(case["called_tools"])
+        for tool_name in case["missing_tools"]:
+            if tool_name not in missing_tools:
+                missing_tools.append(tool_name)
+
+    return StageResult(
+        name="tool_matrix_full",
+        ok=all(case["ok"] for case in case_results),
+        summary="real LLM tool matrix completed" if all(case["ok"] for case in case_results) else "one or more tool-matrix cases failed",
+        details={
+            "hardware": hardware_result,
+            "cases": case_results,
+            "called_tools": sorted(called_tools),
+            "missing_tools": missing_tools,
+        },
+    )
+
+
+def stage_large_lua_app(client: BenchClient, session_prefix: str) -> StageResult:
+    thresholds = [1500, 2500, 3200, 3800]
+    largest_success = 0
+    attempts = []
+
+    for target in thresholds:
+        app_id = f"{session_prefix}_large_{target}"
+        session_id = f"{session_prefix}_large_{target}"
+        marker = f"LARGE_APP_OK_{target}"
+        prompt = (
+            f"YOLO mode is enabled. This is a tool-call compliance test. You must call app.install to create a Lua app named {app_id}. "
+            f"The source must be at least {target} bytes long, include several helper functions, local tables, and non-trivial branching, "
+            f"and when run with the manual trigger it must return exactly {marker}. "
+            "Do not answer INSTALLED unless the tool call succeeded. If you skip the tool call, answer FAILED."
+        )
+        result = client.chat_run(session_id, prompt)
+        transcript = client.chat_session(session_id)
+        detail = require_json(client.get_json(f"/api/apps/detail?app_id={urllib.parse.quote(app_id)}"), "/api/apps/detail")
+        run = require_json(
+            client.post_text(f"/api/apps/run?app_id={urllib.parse.quote(app_id)}&trigger=manual", "payload"),
+            "/api/apps/run",
+        )
+        source = str(detail.get("app", {}).get("source", ""))
+        source_length = len(source)
+        success = (
+            bool(result.get("ok"))
+            and "app.install" in collect_requested_tools(transcript.get("transcript", ""))
+            and detail.get("app", {}).get("id") == app_id
+            and source_length >= target
+            and run.get("result") == marker
+        )
+        attempts.append(
+            {
+                "target_bytes": target,
+                "session_id": session_id,
+                "app_id": app_id,
+                "result": result,
+                "transcript": transcript,
+                "detail": detail,
+                "run": run,
+                "source_length": source_length,
+                "ok": success,
+            }
+        )
+        if success:
+            largest_success = source_length
+            client.delete_json(f"/api/apps?app_id={urllib.parse.quote(app_id)}")
+            continue
+        break
+
+    ok = largest_success >= thresholds[0]
+    return StageResult(
+        name="large_lua_app",
+        ok=ok,
+        summary=f"largest successful generated Lua app source: {largest_success} bytes" if ok else "large Lua app generation failed at the first threshold",
+        details={"attempts": attempts, "largest_success_bytes": largest_success},
+    )
+
+
 STAGES: Dict[str, Callable[[BenchClient, str], StageResult]] = {
     "preflight": stage_preflight,
     "inventory": stage_inventory,
@@ -371,6 +700,10 @@ STAGES: Dict[str, Callable[[BenchClient, str], StageResult]] = {
     "tool_reasoning": stage_tool_reasoning,
     "generate_echo_app": stage_generate_echo_app,
     "task_event_runtime": stage_task_event_runtime,
+    "vision": stage_vision,
+    "tool_sweep": stage_tool_sweep,
+    "tool_matrix_full": stage_tool_matrix_full,
+    "large_lua_app": stage_large_lua_app,
 }
 
 
@@ -403,19 +736,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default="http://192.168.1.253:8080", help="Base URL of the ESPClaw device.")
     parser.add_argument(
         "--stages",
-        default="preflight,inventory,hello,tool_reasoning,generate_echo_app,task_event_runtime",
+        default="preflight,inventory,hello,tool_reasoning,generate_echo_app,task_event_runtime,vision",
         help="Comma-separated stage list.",
     )
     parser.add_argument("--session-prefix", default="bench", help="Prefix for generated session/app ids.")
     parser.add_argument("--continue-on-failure", action="store_true", help="Run all stages even after a failure.")
     parser.add_argument("--timeout-seconds", type=float, default=30.0, help="Per-request timeout.")
     parser.add_argument("--output-json", help="Optional path to write the bench result JSON.")
+    parser.set_defaults(yolo=True)
+    parser.add_argument("--yolo", dest="yolo", action="store_true", help="Run chat stages with yolo=1 (default).")
+    parser.add_argument("--no-yolo", dest="yolo", action="store_false", help="Disable yolo mode for chat stages.")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    client = BenchClient(args.device, args.timeout_seconds)
+    client = BenchClient(args.device, args.timeout_seconds, args.yolo)
     stage_names = [item.strip() for item in args.stages.split(",") if item.strip()]
     unknown = [item for item in stage_names if item not in STAGES]
     if unknown:

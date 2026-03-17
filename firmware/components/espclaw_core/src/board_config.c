@@ -28,6 +28,21 @@ static const espclaw_board_pin_alias_t GENERIC_ESP32S3_PINS[] = {
 
 static const espclaw_board_pin_alias_t AI_THINKER_ESP32CAM_PINS[] = {
     {"flash_led", 4},
+    {"camera_pwdn", 32},
+    {"camera_xclk", 0},
+    {"camera_siod", 26},
+    {"camera_sioc", 27},
+    {"camera_y2", 5},
+    {"camera_y3", 18},
+    {"camera_y4", 19},
+    {"camera_y5", 21},
+    {"camera_y6", 36},
+    {"camera_y7", 39},
+    {"camera_y8", 34},
+    {"camera_y9", 35},
+    {"camera_vsync", 25},
+    {"camera_href", 23},
+    {"camera_pclk", 22},
 };
 
 static const espclaw_builtin_board_t BUILTIN_BOARDS[] = {

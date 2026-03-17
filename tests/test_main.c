@@ -122,6 +122,7 @@ static int confirmation_http_adapter(
     assert_string_contains(body, "hardware.list", "system prompt includes hardware tool");
     assert_string_contains(body, "behavior.register", "system prompt includes behavior tool");
     assert_string_contains(body, "task.start", "system prompt includes task tool");
+    assert_string_contains(body, "Mutating tools require explicit confirmation", "read-only runs preserve confirmation policy");
 
     if (state != NULL && state->calls > 1) {
         assert_string_contains(body, "\"instructions\":", "follow-up codex requests retain instructions");
@@ -477,6 +478,36 @@ static void test_incremental_sse_stream_handles_long_completed_line(void)
     free(payload);
 }
 
+static void test_incremental_sse_stream_uses_output_text_done_when_completed_lacks_text(void)
+{
+    char payload[4096];
+    char reduced[2048];
+    char error_text[256];
+
+    snprintf(
+        payload,
+        sizeof(payload),
+        "HTTP/1.1 200 OK\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+        "event: response.created\n"
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_vision\"}}\n\n"
+        "event: response.output_text.done\n"
+        "data: {\"type\":\"response.output_text.done\",\"text\":\"A workbench with electronics parts.\"}\n\n"
+        "event: response.completed\n"
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_vision\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"refusal\",\"refusal\":\"\"}]}]}}\n\n"
+    );
+    memset(error_text, 0, sizeof(error_text));
+
+    assert_true(
+        espclaw_agent_reduce_sse_stream_to_response_json(payload, reduced, sizeof(reduced), error_text, sizeof(error_text)) == 0,
+        "incremental sse reduction uses streamed output_text when completed lacks inline text"
+    );
+    assert_string_contains(reduced, "\"id\":\"resp_vision\"", "vision fallback retained response id");
+    assert_string_contains(reduced, "\"type\":\"output_text\"", "vision fallback synthesized output text");
+    assert_string_contains(reduced, "A workbench with electronics parts.", "vision fallback retained streamed output text");
+}
+
 static void test_terminal_response_storage_handles_overlap(void)
 {
     char buffer[256];
@@ -565,6 +596,52 @@ static int sse_wrapped_http_adapter(
         "\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"ESPCLAW_BENCH_HI\"}]}]"
         "}"
         "}\n\n"
+    );
+    return 0;
+}
+
+static int app_install_arguments_first_http_adapter(
+    const char *url,
+    const espclaw_auth_profile_t *profile,
+    const char *body,
+    char *response,
+    size_t response_size,
+    void *user_data
+)
+{
+    test_agent_adapter_state_t *state = (test_agent_adapter_state_t *)user_data;
+
+    (void)url;
+    (void)profile;
+    (void)body;
+
+    if (state != NULL) {
+        state->calls++;
+    }
+
+    if (state != NULL && state->calls > 1) {
+        snprintf(
+            response,
+            response_size,
+            "{"
+            "\"id\":\"resp_install_args_first_final\","
+            "\"status\":\"completed\","
+            "\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Installed the arguments-first app.\"}]}]"
+            "}"
+        );
+        return 0;
+    }
+
+    snprintf(
+        response,
+        response_size,
+        "{"
+        "\"id\":\"resp_install_args_first\","
+        "\"status\":\"completed\","
+        "\"output\":["
+        "{\"type\":\"function_call\",\"call_id\":\"call_install_args_first\",\"arguments\":\"{\\\"app_id\\\":\\\"args_first_app\\\",\\\"title\\\":\\\"Args First\\\",\\\"source\\\":\\\"function handle(trigger, payload)\\\\n  return \\'args-first:\\' .. payload\\\\nend\\\\n\\\",\\\"permissions\\\":\\\"fs.read\\\",\\\"triggers\\\":\\\"manual\\\"}\",\"name\":\"app.install\",\"status\":\"completed\"}"
+        "]"
+        "}"
     );
     return 0;
 }
@@ -663,11 +740,17 @@ static int camera_capture_http_adapter(
 
     assert_string_contains(body, "Tool Inventory Snapshot", "camera capture prompt includes tool inventory");
     assert_string_contains(body, "camera.capture", "camera capture prompt includes camera tool");
+    assert_string_contains(
+        body,
+        "trusted local operator surface",
+        "mutation-enabled runs advertise operator-approved mutation policy"
+    );
 
     if (state != NULL && state->calls > 1) {
         assert_string_contains(body, "\"type\":\"function_call_output\"", "camera follow-up includes tool output");
-        assert_string_contains(body, "\"type\":\"input_image\"", "camera follow-up includes input image");
-        assert_string_contains(body, "\"media_type\":\"image/jpeg\"", "camera follow-up uses jpeg media type");
+        assert_string_contains(body, "\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_image\"", "camera follow-up wraps image in a user message");
+        assert_string_contains(body, "\"type\":\"input_image\"", "camera follow-up includes input_image content");
+        assert_string_contains(body, "\"image_url\":\"data:image/jpeg;base64,", "camera follow-up includes jpeg data url on input_image");
         snprintf(
             response,
             response_size,
@@ -688,6 +771,52 @@ static int camera_capture_http_adapter(
         "\"status\":\"completed\","
         "\"output\":["
         "{\"type\":\"function_call\",\"call_id\":\"call_camera\",\"name\":\"camera.capture\",\"arguments\":\"{\\\"filename\\\":\\\"vision_test.jpg\\\"}\",\"status\":\"completed\"}"
+        "]"
+        "}"
+    );
+    return 0;
+}
+
+static int empty_completion_http_adapter(
+    const char *url,
+    const espclaw_auth_profile_t *profile,
+    const char *body,
+    char *response,
+    size_t response_size,
+    void *user_data
+)
+{
+    test_agent_adapter_state_t *state = (test_agent_adapter_state_t *)user_data;
+
+    (void)url;
+    (void)profile;
+
+    if (state != NULL) {
+        state->calls++;
+    }
+
+    if (state != NULL && state->calls > 1) {
+        assert_string_contains(body, "\"type\":\"function_call_output\"", "empty completion follow-up includes tool output");
+        snprintf(
+            response,
+            response_size,
+            "{"
+            "\"id\":\"resp_empty_final\","
+            "\"status\":\"completed\","
+            "\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"refusal\",\"refusal\":\"\"}]}]"
+            "}"
+        );
+        return 0;
+    }
+
+    snprintf(
+        response,
+        response_size,
+        "{"
+        "\"id\":\"resp_empty_first\","
+        "\"status\":\"completed\","
+        "\"output\":["
+        "{\"type\":\"function_call\",\"call_id\":\"call_tool_list\",\"name\":\"tool.list\",\"arguments\":\"{}\",\"status\":\"completed\"}"
         "]"
         "}"
     );
@@ -885,6 +1014,35 @@ static void test_system_monitor_snapshot_and_json(void)
     assert_string_contains(json, "\"agent_history_slots\":12", "system monitor json history slots");
 }
 
+static void test_camera_status_and_json(void)
+{
+    char temp_dir[128];
+    char json[1024];
+    espclaw_board_profile_t cam = espclaw_board_profile_for(ESPCLAW_BOARD_PROFILE_ESP32CAM);
+    espclaw_hw_camera_capture_t capture;
+    espclaw_hw_camera_status_t status;
+
+    make_temp_dir(temp_dir, sizeof(temp_dir));
+    assert_true(espclaw_workspace_bootstrap(temp_dir) == 0, "workspace bootstrap for camera status");
+    assert_true(espclaw_board_configure_current(temp_dir, &cam) == 0, "camera board configured");
+    assert_true(
+        espclaw_hw_camera_capture(temp_dir, "admin_capture.jpg", &capture) == 0,
+        "host camera capture succeeded"
+    );
+    assert_true(capture.ok, "host camera capture marked ok");
+    assert_true(espclaw_hw_camera_status(&status) == 0, "camera status snapshot succeeded");
+    assert_true(status.supported, "camera status reports supported");
+    assert_true(status.last_capture_ok, "camera status reports last capture success");
+    assert_true(strcmp(status.last_relative_path, "media/admin_capture.jpg") == 0, "camera status tracks last capture path");
+    assert_true(
+        espclaw_render_camera_status_json(&status, json, sizeof(json)) > 0,
+        "camera status json rendered"
+    );
+    assert_string_contains(json, "\"supported\":true", "camera status json support flag");
+    assert_string_contains(json, "\"last_capture_ok\":true", "camera status json success flag");
+    assert_string_contains(json, "\"last_relative_path\":\"media/admin_capture.jpg\"", "camera status json capture path");
+}
+
 static void test_runtime_wifi_boot_deferral_policy(void)
 {
     espclaw_board_profile_t s3 = espclaw_board_profile_for(ESPCLAW_BOARD_PROFILE_ESP32S3);
@@ -950,8 +1108,19 @@ static void test_ota_manager_host_state_and_partition_layout(void)
     assert_string_contains(csv, "otadata", "partition table includes otadata");
     assert_string_contains(csv, "ota_0", "partition table includes ota_0");
     assert_string_contains(csv, "ota_1", "partition table includes ota_1");
-    assert_string_contains(csv, "0x190000", "partition table uses enlarged symmetric ota slots");
-    assert_string_contains(csv, "0x0d0000", "partition table reserves the reduced internal workspace");
+    assert_string_contains(csv, "0x1A0000", "partition table uses enlarged symmetric ota slots");
+    assert_string_contains(csv, "0x0b0000", "partition table reserves the reduced internal workspace");
+}
+
+static void test_esp32_sdkconfig_defaults_enable_psram_tls(void)
+{
+    char path[512];
+    char contents[2048];
+
+    snprintf(path, sizeof(path), "%s/firmware/sdkconfig.defaults.esp32", ESPCLAW_SOURCE_DIR);
+    read_text_file(path, contents, sizeof(contents));
+    assert_string_contains(contents, "CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y", "esp32 defaults enable PSRAM-backed mbedtls alloc");
+    assert_string_contains(contents, "CONFIG_MBEDTLS_DYNAMIC_FREE_CONFIG_DATA=y", "esp32 defaults free mbedtls config data after setup");
 }
 
 static void test_provisioning_descriptor(void)
@@ -1081,6 +1250,7 @@ static void test_admin_ui_asset(void)
     assert_string_contains(html, "data-load-section='apps'", "apps module present");
     assert_string_contains(html, "Custom board descriptor", "board json editor moved behind advanced details");
     assert_string_contains(html, "Send To Model", "chat send action present");
+    assert_string_contains(html, "YOLO mode", "chat yolo toggle present");
     assert_string_contains(html, "Create", "app create action present");
     assert_string_contains(html, "/api/apps/scaffold", "app api wired into ui");
     assert_string_contains(html, "body: $('app-source').value", "save source posts editor contents");
@@ -1096,8 +1266,13 @@ static void test_admin_ui_asset(void)
     assert_string_contains(html, "/api/network/provisioning", "network provisioning api wired into ui");
     assert_string_contains(html, "provisioning-info", "provisioning panel present");
     assert_string_contains(html, "/api/monitor", "monitor api wired into ui");
+    assert_string_contains(html, "/api/camera", "camera diagnostics api wired into ui");
+    assert_string_contains(html, "/api/camera/capture", "camera capture test api wired into ui");
+    assert_string_contains(html, "Camera Diagnostics", "camera diagnostics card present");
+    assert_string_contains(html, "Test Capture", "camera test capture action present");
     assert_string_contains(html, "/api/tools", "tools api wired into ui");
     assert_string_contains(html, "/api/chat/run", "chat api wired into ui");
+    assert_string_contains(html, "&yolo=1", "chat yolo query wiring present");
     assert_string_contains(html, "/api/behaviors", "behaviors api wired into ui");
     assert_string_contains(html, "/api/behaviors/register", "behavior register api wired into ui");
     assert_string_contains(html, "/api/tasks", "tasks api wired into ui");
@@ -2460,7 +2635,7 @@ static void test_agent_loop(void)
 
     memset(&result, 0, sizeof(result));
     assert_true(
-        espclaw_agent_loop_run(temp_dir, "chat_tool_loop", "What apps are installed?", false, &result) == 0,
+        espclaw_agent_loop_run(temp_dir, "chat_tool_loop", "What apps are installed?", false, false, &result) == 0,
         "tool loop run succeeded"
     );
     assert_true(result.ok, "tool loop result ok");
@@ -2479,7 +2654,7 @@ static void test_agent_loop(void)
     espclaw_agent_set_http_adapter(sse_wrapped_http_adapter, &adapter_state);
     memset(&result, 0, sizeof(result));
     assert_true(
-        espclaw_agent_loop_run(temp_dir, "chat_sse_wrapped", "Say hi.", false, &result) == 0,
+        espclaw_agent_loop_run(temp_dir, "chat_sse_wrapped", "Say hi.", false, false, &result) == 0,
         "sse wrapped loop succeeded"
     );
     espclaw_agent_set_http_adapter(NULL, NULL);
@@ -2492,7 +2667,7 @@ static void test_agent_loop(void)
     espclaw_agent_set_http_adapter(sse_stream_http_adapter, &adapter_state);
     memset(&result, 0, sizeof(result));
     assert_true(
-        espclaw_agent_loop_run(temp_dir, "chat_sse_stream", "Say hi from sse stream.", false, &result) == 0,
+        espclaw_agent_loop_run(temp_dir, "chat_sse_stream", "Say hi from sse stream.", false, false, &result) == 0,
         "sse stream fallback loop succeeded"
     );
     espclaw_agent_set_http_adapter(NULL, NULL);
@@ -2505,7 +2680,7 @@ static void test_agent_loop(void)
     assert_true(espclaw_auth_store_save(&profile) == 0, "fs read auth profile saved");
     memset(&result, 0, sizeof(result));
     assert_true(
-        espclaw_agent_loop_run(temp_dir, "chat_fs_read", "Read the control file.", false, &result) == 0,
+        espclaw_agent_loop_run(temp_dir, "chat_fs_read", "Read the control file.", false, false, &result) == 0,
         "fs read loop succeeded"
     );
     assert_string_contains(result.final_text, "read the requested file", "fs read final text");
@@ -2520,7 +2695,7 @@ static void test_agent_loop(void)
     espclaw_agent_set_http_adapter(tool_list_http_adapter, &adapter_state);
     memset(&result, 0, sizeof(result));
     assert_true(
-        espclaw_agent_loop_run(temp_dir, "chat_tools_via_model", "List out all the available tools to you", false, &result) == 0,
+        espclaw_agent_loop_run(temp_dir, "chat_tools_via_model", "List out all the available tools to you", false, false, &result) == 0,
         "tool listing via model succeeded"
     );
     espclaw_agent_set_http_adapter(NULL, NULL);
@@ -2538,7 +2713,7 @@ static void test_agent_loop(void)
     espclaw_agent_set_http_adapter(confirmation_http_adapter, &adapter_state);
     memset(&result, 0, sizeof(result));
     assert_true(
-        espclaw_agent_loop_run(temp_dir, "chat_confirm", "Run the demo app.", false, &result) == 0,
+        espclaw_agent_loop_run(temp_dir, "chat_confirm", "Run the demo app.", false, false, &result) == 0,
         "confirmation loop completed"
     );
     espclaw_agent_set_http_adapter(NULL, NULL);
@@ -2556,7 +2731,7 @@ static void test_agent_loop(void)
     espclaw_agent_set_http_adapter(app_install_http_adapter, &adapter_state);
     memset(&result, 0, sizeof(result));
     assert_true(
-        espclaw_agent_loop_run(temp_dir, "chat_install", "Create a sensor agent Lua app and save it.", true, &result) == 0,
+        espclaw_agent_loop_run(temp_dir, "chat_install", "Create a sensor agent Lua app and save it.", true, false, &result) == 0,
         "app install loop succeeded"
     );
     espclaw_agent_set_http_adapter(NULL, NULL);
@@ -2567,10 +2742,26 @@ static void test_agent_loop(void)
     assert_string_contains(transcript, "function on_sensor(payload)", "installed app source persisted");
 
     adapter_state.calls = 0;
+    espclaw_agent_set_http_adapter(app_install_arguments_first_http_adapter, &adapter_state);
+    memset(&result, 0, sizeof(result));
+    assert_true(
+        espclaw_agent_loop_run(temp_dir, "chat_install_args_first", "Create another Lua app and save it.", true, true, &result) == 0,
+        "arguments-first app install loop succeeded"
+    );
+    espclaw_agent_set_http_adapter(NULL, NULL);
+    assert_true(result.ok, "arguments-first install result ok");
+    assert_true(result.used_tools, "arguments-first install used tools");
+    assert_true(
+        espclaw_app_read_source(temp_dir, "args_first_app", transcript, sizeof(transcript)) == 0,
+        "arguments-first app source readable"
+    );
+    assert_string_contains(transcript, "args-first:", "arguments-first app source persisted");
+
+    adapter_state.calls = 0;
     espclaw_agent_set_http_adapter(behavior_register_http_adapter, &adapter_state);
     memset(&result, 0, sizeof(result));
     assert_true(
-        espclaw_agent_loop_run(temp_dir, "chat_behavior", "Create an autonomous wall watcher behavior that reacts to sensor events.", true, &result) == 0,
+        espclaw_agent_loop_run(temp_dir, "chat_behavior", "Create an autonomous wall watcher behavior that reacts to sensor events.", true, false, &result) == 0,
         "behavior register loop succeeded"
     );
     espclaw_agent_set_http_adapter(NULL, NULL);
@@ -2588,7 +2779,7 @@ static void test_agent_loop(void)
     espclaw_agent_set_http_adapter(camera_capture_http_adapter, &adapter_state);
     memset(&result, 0, sizeof(result));
     assert_true(
-        espclaw_agent_loop_run(temp_dir, "chat_camera", "Capture a camera image and inspect it.", true, &result) == 0,
+        espclaw_agent_loop_run(temp_dir, "chat_camera", "Capture a camera image and inspect it.", true, false, &result) == 0,
         "camera capture loop succeeded"
     );
     espclaw_agent_set_http_adapter(NULL, NULL);
@@ -2600,6 +2791,24 @@ static void test_agent_loop(void)
         "camera transcript readable"
     );
     assert_string_contains(transcript, "vision_test.jpg", "camera tool output persisted");
+
+    adapter_state.calls = 0;
+    espclaw_agent_set_http_adapter(empty_completion_http_adapter, &adapter_state);
+    memset(&result, 0, sizeof(result));
+    assert_true(
+        espclaw_agent_loop_run(temp_dir, "chat_empty_completion", "List your tools and finish.", true, true, &result) == 0,
+        "empty completion after tool round succeeded"
+    );
+    espclaw_agent_set_http_adapter(NULL, NULL);
+    assert_true(result.ok, "empty completion result ok");
+    assert_true(result.used_tools, "empty completion used tools");
+    assert_true(result.final_text[0] == '\0', "empty completion preserves empty final text");
+    assert_true(
+        espclaw_session_read_transcript(temp_dir, "chat_empty_completion", transcript, sizeof(transcript)) == 0,
+        "empty completion transcript readable"
+    );
+    assert_string_contains(transcript, "Requested tools: tool.list", "empty completion stored tool summary");
+    assert_string_contains(transcript, "\"role\":\"assistant\",\"content\":\"\"", "empty completion stored blank assistant message");
 }
 
 int main(void)
@@ -2613,7 +2822,9 @@ int main(void)
     test_storage_backend_description();
     test_storage_esp32cam_sdmmc_wiring_policy();
     test_ota_manager_host_state_and_partition_layout();
+    test_esp32_sdkconfig_defaults_enable_psram_tls();
     test_system_monitor_snapshot_and_json();
+    test_camera_status_and_json();
     test_runtime_wifi_boot_deferral_policy();
     test_provisioning_descriptor();
     test_workspace_bootstrap_and_read();
@@ -2642,6 +2853,7 @@ int main(void)
     test_incremental_sse_stream_reduction();
     test_incremental_sse_stream_fallback_text();
     test_incremental_sse_stream_handles_long_completed_line();
+    test_incremental_sse_stream_uses_output_text_done_when_completed_lacks_text();
     test_terminal_response_storage_handles_overlap();
     test_esp32cam_storage_attempts();
     test_board_boot_defaults_force_flash_led_low();
