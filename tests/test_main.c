@@ -1490,6 +1490,32 @@ static void test_console_chat_skips_embedded_transcript_writes(void)
     assert_string_contains(append_fn, "return;", "console transcript helper can no-op on embedded targets");
 }
 
+static void test_runtime_uses_larger_uart_console_stack(void)
+{
+    char path[512];
+    char contents[65536];
+
+    snprintf(path, sizeof(path), "%s/firmware/components/espclaw_core/src/runtime.c", ESPCLAW_SOURCE_DIR);
+    read_text_file(path, contents, sizeof(contents));
+    assert_string_contains(contents, "ESPCLAW_UART_CONSOLE_STACK_BYTES 32768", "runtime defines a larger UART console stack");
+    assert_string_contains(contents, "\"espclaw_uart\",\n            ESPCLAW_UART_CONSOLE_STACK_BYTES,", "uart console task uses the dedicated larger stack");
+}
+
+static void test_embedded_console_and_agent_paths_heap_allocate_auth_profiles(void)
+{
+    char path[512];
+    char contents[131072];
+
+    snprintf(path, sizeof(path), "%s/firmware/components/espclaw_core/src/console_chat.c", ESPCLAW_SOURCE_DIR);
+    read_text_file(path, contents, sizeof(contents));
+    assert_string_contains(contents, "calloc(1, sizeof(*profile))", "console status path heap allocates auth profile on embedded");
+
+    snprintf(path, sizeof(path), "%s/firmware/components/espclaw_core/src/agent_loop.c", ESPCLAW_SOURCE_DIR);
+    read_text_file(path, contents, sizeof(contents));
+    assert_string_contains(contents, "profile = (espclaw_auth_profile_t *)calloc(1, sizeof(*profile));", "agent loop heap allocates auth profile on embedded");
+    assert_string_contains(contents, "free_embedded_auth_profile(profile);", "agent loop frees embedded auth profiles through helper");
+}
+
 static void test_provisioning_descriptor(void)
 {
     espclaw_provisioning_descriptor_t descriptor;
@@ -3431,6 +3457,8 @@ int main(void)
     test_behavior_register_avoids_sd_manifest_validation();
     test_session_append_avoids_workspace_bootstrap_on_embedded_console_paths();
     test_console_chat_skips_embedded_transcript_writes();
+    test_runtime_uses_larger_uart_console_stack();
+    test_embedded_console_and_agent_paths_heap_allocate_auth_profiles();
     test_system_monitor_snapshot_and_json();
     test_camera_status_and_json();
     test_runtime_wifi_boot_deferral_policy();

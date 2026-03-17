@@ -2,6 +2,7 @@
 
 #include <ctype.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
 #include <time.h>
@@ -87,6 +88,7 @@ static bool s_console_yolo_mode;
 #ifdef ESP_PLATFORM
 #define ESPCLAW_BEHAVIOR_AUTOSTART_DELAY_MS 8000
 #define ESPCLAW_BEHAVIOR_AUTOSTART_STACK_WORDS 6144
+#define ESPCLAW_UART_CONSOLE_STACK_BYTES 32768
 #endif
 
 static bool should_skip_boot_automation_for_reset_reason(esp_reset_reason_t reason)
@@ -785,15 +787,32 @@ static void build_status_reply(char *buffer, size_t buffer_size)
 {
     espclaw_ota_state_t ota_state = espclaw_ota_state_init();
     char admin_status[384];
-    espclaw_auth_profile_t profile;
+    const char *provider_id = "not configured";
+#ifdef ESP_PLATFORM
+    espclaw_auth_profile_t *profile = (espclaw_auth_profile_t *)calloc(1, sizeof(*profile));
 
-    espclaw_auth_profile_default(&profile);
-    espclaw_auth_store_load(&profile);
+    if (profile != NULL) {
+        espclaw_auth_profile_default(profile);
+        espclaw_auth_store_load(profile);
+        if (espclaw_auth_profile_is_ready(profile)) {
+            provider_id = profile->provider_id;
+        }
+    }
+#else
+    espclaw_auth_profile_t profile_storage;
+    espclaw_auth_profile_t *profile = &profile_storage;
+
+    espclaw_auth_profile_default(profile);
+    espclaw_auth_store_load(profile);
+    if (espclaw_auth_profile_is_ready(profile)) {
+        provider_id = profile->provider_id;
+    }
+#endif
 
     espclaw_render_admin_status_json(
         &s_runtime_status.profile,
         s_runtime_status.storage_backend,
-        profile.provider_id,
+        provider_id,
         "telegram",
         s_runtime_status.storage_ready,
         &ota_state,
@@ -801,6 +820,10 @@ static void build_status_reply(char *buffer, size_t buffer_size)
         sizeof(admin_status)
     );
     snprintf(buffer, buffer_size, "ESPClaw status: %s", admin_status);
+
+#ifdef ESP_PLATFORM
+    free(profile);
+#endif
 }
 
 static void build_apps_list_reply(char *buffer, size_t buffer_size)
@@ -1106,7 +1129,7 @@ static esp_err_t maybe_start_uart_console(void)
     if (xTaskCreatePinnedToCore(
             uart_console_task,
             "espclaw_uart",
-            8192,
+            ESPCLAW_UART_CONSOLE_STACK_BYTES,
             NULL,
             4,
             NULL,

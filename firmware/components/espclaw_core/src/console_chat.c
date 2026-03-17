@@ -192,13 +192,32 @@ static size_t render_help(char *buffer, size_t buffer_size)
 
 static size_t render_status(char *buffer, size_t buffer_size)
 {
-    espclaw_auth_profile_t profile;
     const espclaw_runtime_status_t *status = console_runtime_status();
+    const char *provider_id = "not configured";
+    const char *model = "n/a";
+#ifdef ESP_PLATFORM
+    espclaw_auth_profile_t *profile = (espclaw_auth_profile_t *)calloc(1, sizeof(*profile));
 
-    espclaw_auth_profile_default(&profile);
-    espclaw_auth_store_load(&profile);
+    if (profile != NULL) {
+        espclaw_auth_profile_default(profile);
+        espclaw_auth_store_load(profile);
+        if (espclaw_auth_profile_is_ready(profile)) {
+            provider_id = profile->provider_id;
+            model = profile->model;
+        }
+    }
+#else
+    espclaw_auth_profile_t profile_storage;
+    espclaw_auth_profile_t *profile = &profile_storage;
 
-    return (size_t)snprintf(
+    espclaw_auth_profile_default(profile);
+    espclaw_auth_store_load(profile);
+    if (espclaw_auth_profile_is_ready(profile)) {
+        provider_id = profile->provider_id;
+        model = profile->model;
+    }
+#endif
+    size_t written = (size_t)snprintf(
         buffer,
         buffer_size,
         "Board: %s\nStorage: %s (%s)\nWorkspace: %s\nWi-Fi: %s%s%s\nProvisioning: %s\nProvider: %s (%s)",
@@ -210,9 +229,14 @@ static size_t render_status(char *buffer, size_t buffer_size)
         status != NULL && status->wifi_ssid[0] != '\0' ? " to " : "",
         status != NULL && status->wifi_ssid[0] != '\0' ? status->wifi_ssid : "",
         status != NULL && status->provisioning_active ? "active" : "inactive",
-        espclaw_auth_profile_is_ready(&profile) ? profile.provider_id : "not configured",
-        espclaw_auth_profile_is_ready(&profile) ? profile.model : "n/a"
+        provider_id,
+        model
     );
+
+#ifdef ESP_PLATFORM
+    free(profile);
+#endif
+    return written;
 }
 
 static size_t render_memory_status(const char *workspace_root, char *buffer, size_t buffer_size)

@@ -167,3 +167,5 @@
 - fix(runtime): raise the ESP32-CAM PSRAM runtime budget for request/response/image buffers so multimodal Codex follow-up bodies no longer truncate at the old balanced-profile ceiling
 - fix(console): stop re-running workspace bootstrap for every console transcript append so UART slash commands no longer crash SD-backed ESP32-CAM builds
 - fix(console): skip embedded console transcript file writes on the ESP32-CAM runtime so slash commands stay reliable on the shared SD workspace
+- fix(console): increase the UART console task stack to 32 KB so real LLM turns over serial have enough headroom for embedded model startup
+- fix(console): heap-allocate embedded auth profiles in the UART/web console and agent loop so auth loading no longer burns several kilobytes of task stack on ESP32-CAM

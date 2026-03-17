@@ -152,6 +152,15 @@ static espclaw_agent_http_adapter_t s_http_adapter;
 static void *s_http_adapter_user_data;
 #ifndef ESPCLAW_HOST_LUA
 static const char *TAG = "espclaw_agent";
+
+static void free_embedded_auth_profile(espclaw_auth_profile_t *profile)
+{
+#ifdef ESP_PLATFORM
+    free(profile);
+#else
+    (void)profile;
+#endif
+}
 typedef enum {
     ESPCLAW_CODEX_TRANSPORT_BUNDLE_ANY = 0,
     ESPCLAW_CODEX_TRANSPORT_BUNDLE_TLS12 = 1,
@@ -5433,7 +5442,12 @@ int espclaw_agent_loop_run(
     espclaw_agent_run_result_t *result
 )
 {
-    espclaw_auth_profile_t profile;
+#ifdef ESP_PLATFORM
+    espclaw_auth_profile_t *profile = NULL;
+#else
+    espclaw_auth_profile_t profile_storage;
+    espclaw_auth_profile_t *profile = &profile_storage;
+#endif
     espclaw_runtime_budget_t runtime_budget;
     espclaw_history_message_t *history = NULL;
     char *request_body = NULL;
@@ -5456,8 +5470,19 @@ int espclaw_agent_loop_run(
     }
 
     memset(result, 0, sizeof(*result));
-    if (espclaw_auth_store_load(&profile) != 0 || !espclaw_auth_profile_is_ready(&profile)) {
+#ifdef ESP_PLATFORM
+    profile = (espclaw_auth_profile_t *)calloc(1, sizeof(*profile));
+    if (profile == NULL) {
+        copy_text(result->final_text, sizeof(result->final_text), "Out of memory loading provider credentials.");
+        return -1;
+    }
+#endif
+    espclaw_auth_profile_default(profile);
+    if (espclaw_auth_store_load(profile) != 0 || !espclaw_auth_profile_is_ready(profile)) {
         copy_text(result->final_text, sizeof(result->final_text), "Provider credentials are not configured.");
+#ifdef ESP_PLATFORM
+        free_embedded_auth_profile(profile);
+#endif
         return -1;
     }
 #ifdef ESP_PLATFORM
@@ -5467,6 +5492,7 @@ int espclaw_agent_loop_run(
             sizeof(result->final_text),
             "Device clock is not synchronized yet. Wait a few seconds after Wi-Fi connects and try again."
         );
+        free_embedded_auth_profile(profile);
         return -1;
     }
 #endif
@@ -5503,6 +5529,7 @@ int espclaw_agent_loop_run(
         free(history);
         free(request_body);
         free(response_body);
+        free_embedded_auth_profile(profile);
         copy_text(result->final_text, sizeof(result->final_text), "Out of memory building model request.");
         return -1;
     }
@@ -5519,6 +5546,7 @@ int espclaw_agent_loop_run(
         free(history);
         free(request_body);
         free(response_body);
+        free_embedded_auth_profile(profile);
         copy_text(result->final_text, sizeof(result->final_text), "Failed to load system prompt.");
         return -1;
     }
@@ -5532,7 +5560,7 @@ int espclaw_agent_loop_run(
         copy_text(history[0].content, sizeof(history[0].content), user_message);
         history_count = 1;
     }
-    if (build_initial_request_body(&profile, instructions, history, history_count, request_body, runtime_budget.agent_request_buffer_max) != 0) {
+    if (build_initial_request_body(profile, instructions, history, history_count, request_body, runtime_budget.agent_request_buffer_max) != 0) {
         free(media_refs);
         free(tool_results);
         free(provider_response);
@@ -5541,6 +5569,7 @@ int espclaw_agent_loop_run(
         free(history);
         free(request_body);
         free(response_body);
+        free_embedded_auth_profile(profile);
         copy_text(result->final_text, sizeof(result->final_text), "Failed to build the model request.");
         return -1;
     }
@@ -5558,7 +5587,7 @@ int espclaw_agent_loop_run(
 
         memset(response_body, 0, runtime_budget.agent_response_buffer_max);
         provider_status = call_provider(
-            &profile,
+            profile,
             request_body,
             response_body,
             runtime_budget.agent_response_buffer_max,
@@ -5599,6 +5628,7 @@ int espclaw_agent_loop_run(
                     free(history);
                     free(request_body);
                     free(response_body);
+                    free_embedded_auth_profile(profile);
                     return 0;
                 }
 
@@ -5627,6 +5657,7 @@ int espclaw_agent_loop_run(
             free(history);
             free(request_body);
             free(response_body);
+            free_embedded_auth_profile(profile);
             return -1;
         }
 
@@ -5642,11 +5673,12 @@ int espclaw_agent_loop_run(
                     free(codex_items_json);
                     free(history);
                     free(response_body);
+                    free_embedded_auth_profile(profile);
                     copy_text(result->final_text, sizeof(result->final_text), "Out of memory retrying app installation request.");
                     return -1;
                 }
                 if (build_app_install_retry_request_body(
-                        &profile,
+                        profile,
                         workspace_root,
                         session_id,
                         instructions,
@@ -5659,6 +5691,7 @@ int espclaw_agent_loop_run(
                     free(history);
                     free(request_body);
                     free(response_body);
+                    free_embedded_auth_profile(profile);
                     copy_text(result->final_text, sizeof(result->final_text), "Failed to retry the app installation request.");
                     return -1;
                 }
@@ -5674,6 +5707,7 @@ int espclaw_agent_loop_run(
             free(history);
             free(request_body);
             free(response_body);
+            free_embedded_auth_profile(profile);
             return 0;
         }
 
@@ -5686,6 +5720,7 @@ int espclaw_agent_loop_run(
             free(history);
             free(request_body);
             free(response_body);
+            free_embedded_auth_profile(profile);
             copy_text(result->final_text, sizeof(result->final_text), "Out of memory parsing model response.");
             return -1;
         }
@@ -5717,6 +5752,7 @@ int espclaw_agent_loop_run(
             free(history);
             free(request_body);
             free(response_body);
+            free_embedded_auth_profile(profile);
             copy_text(result->final_text, sizeof(result->final_text), "Out of memory executing tool round.");
             return -1;
         }
@@ -5761,11 +5797,12 @@ int espclaw_agent_loop_run(
                 free(codex_items_json);
                 free(history);
                 free(response_body);
+                free_embedded_auth_profile(profile);
                 copy_text(result->final_text, sizeof(result->final_text), "Out of memory retrying app installation request.");
                 return -1;
             }
             if (build_app_install_retry_request_body(
-                    &profile,
+                    profile,
                     workspace_root,
                     session_id,
                     instructions,
@@ -5781,6 +5818,7 @@ int espclaw_agent_loop_run(
                 free(history);
                 free(request_body);
                 free(response_body);
+                free_embedded_auth_profile(profile);
                 copy_text(result->final_text, sizeof(result->final_text), "Failed to retry the app installation request.");
                 return -1;
             }
@@ -5803,10 +5841,11 @@ int espclaw_agent_loop_run(
             free(codex_items_json);
             free(history);
             free(response_body);
+            free_embedded_auth_profile(profile);
             copy_text(result->final_text, sizeof(result->final_text), "Out of memory building follow-up request.");
             return -1;
         }
-        if (strcmp(profile.provider_id, "openai_codex") == 0) {
+        if (strcmp(profile->provider_id, "openai_codex") == 0) {
             size_t codex_items_used = strlen(codex_items_json);
 
             history = (espclaw_history_message_t *)agent_calloc(runtime_budget.agent_history_max, sizeof(*history));
@@ -5818,6 +5857,7 @@ int espclaw_agent_loop_run(
                 free(codex_items_json);
                 free(request_body);
                 free(response_body);
+                free_embedded_auth_profile(profile);
                 copy_text(result->final_text, sizeof(result->final_text), "Out of memory loading follow-up history.");
                 return -1;
             }
@@ -5837,7 +5877,7 @@ int espclaw_agent_loop_run(
                 provider_response->tool_call_count
             );
             if (build_codex_followup_request_body(
-                    &profile,
+                    profile,
                     instructions,
                     workspace_root,
                     history,
@@ -5857,6 +5897,7 @@ int espclaw_agent_loop_run(
                 history = NULL;
                 free(request_body);
                 free(response_body);
+                free_embedded_auth_profile(profile);
                 copy_text(result->final_text, sizeof(result->final_text), "Failed to continue after tool execution.");
                 return -1;
             }
@@ -5864,7 +5905,7 @@ int espclaw_agent_loop_run(
             history = NULL;
             history_count = 0;
         } else if (build_followup_request_body(
-                       &profile,
+                       profile,
                        instructions,
                        workspace_root,
                        previous_response_id,
@@ -5885,6 +5926,7 @@ int espclaw_agent_loop_run(
             free(history);
             free(request_body);
             free(response_body);
+            free_embedded_auth_profile(profile);
             copy_text(result->final_text, sizeof(result->final_text), "Failed to continue after tool execution.");
             return -1;
         }
@@ -5903,6 +5945,7 @@ int espclaw_agent_loop_run(
     free(history);
     free(request_body);
     free(response_body);
+    free_embedded_auth_profile(profile);
     return -1;
 }
 
