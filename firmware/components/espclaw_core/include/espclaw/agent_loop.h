@@ -52,6 +52,15 @@ int espclaw_agent_loop_run(
     espclaw_agent_run_result_t *result
 );
 
+int espclaw_agent_execute_tool(
+    const char *workspace_root,
+    const char *tool_name,
+    const char *arguments_json,
+    bool allow_mutations,
+    char *buffer,
+    size_t buffer_size
+);
+
 void espclaw_agent_set_http_adapter(espclaw_agent_http_adapter_t adapter, void *user_data);
 
 int espclaw_agent_format_transport_error(

@@ -13,8 +13,10 @@ idf_component_register(
     "src/channel.c"
     "src/control_loop.c"
     "src/config_render.c"
+    "src/console_chat.c"
     "src/event_watch.c"
     "src/hardware.c"
+    "src/lua_api_registry.c"
     "src/ota_manager.c"
     "src/ota_state.c"
     "src/provisioning.c"
@@ -28,6 +30,7 @@ idf_component_register(
     "src/task_runtime.c"
     "src/telegram_protocol.c"
     "src/tool_catalog.c"
+    "src/web_tools.c"
     "src/workspace.c"
   INCLUDE_DIRS "include"
   REQUIRES

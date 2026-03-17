@@ -6,7 +6,6 @@
 
 #ifdef ESP_PLATFORM
 #include "freertos/FreeRTOS.h"
-#include "freertos/semphr.h"
 #include "freertos/task.h"
 #else
 #include <pthread.h>
@@ -26,7 +25,7 @@ typedef struct {
     size_t pending_count;
 #ifdef ESP_PLATFORM
     TaskHandle_t task;
-    SemaphoreHandle_t lock;
+    portMUX_TYPE lock;
 #else
     pthread_t thread;
     pthread_mutex_t lock;
@@ -38,6 +37,10 @@ typedef struct {
 
 static espclaw_task_slot_t s_tasks[ESPCLAW_TASK_RUNTIME_MAX];
 
+#ifdef ESP_PLATFORM
+#define ESPCLAW_TASK_RUNTIME_STACK_WORDS 16384
+#endif
+
 static int task_lock_init(espclaw_task_slot_t *slot)
 {
     if (slot == NULL) {
@@ -48,10 +51,7 @@ static int task_lock_init(espclaw_task_slot_t *slot)
     }
 
 #ifdef ESP_PLATFORM
-    slot->lock = xSemaphoreCreateMutex();
-    if (slot->lock == NULL) {
-        return -1;
-    }
+    portMUX_INITIALIZE(&slot->lock);
 #else
     if (pthread_mutex_init(&slot->lock, NULL) != 0) {
         return -1;
@@ -71,7 +71,7 @@ static void task_lock(espclaw_task_slot_t *slot)
         return;
     }
 #ifdef ESP_PLATFORM
-    xSemaphoreTake(slot->lock, portMAX_DELAY);
+    taskENTER_CRITICAL(&slot->lock);
 #else
     pthread_mutex_lock(&slot->lock);
 #endif
@@ -83,7 +83,7 @@ static void task_unlock(espclaw_task_slot_t *slot)
         return;
     }
 #ifdef ESP_PLATFORM
-    xSemaphoreGive(slot->lock);
+    taskEXIT_CRITICAL(&slot->lock);
 #else
     pthread_mutex_unlock(&slot->lock);
 #endif
@@ -456,7 +456,7 @@ int espclaw_task_start_with_schedule(
         if (xTaskCreatePinnedToCore(
                 task_runtime_worker,
                 "espclaw_task",
-                8192,
+                ESPCLAW_TASK_RUNTIME_STACK_WORDS,
                 slot,
                 5,
                 &slot->task,

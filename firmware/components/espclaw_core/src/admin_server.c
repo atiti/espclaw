@@ -12,6 +12,7 @@
 
 #include "espclaw/admin_api.h"
 #include "espclaw/agent_loop.h"
+#include "espclaw/console_chat.h"
 #include "espclaw/admin_ops.h"
 #include "espclaw/admin_ui.h"
 #include "espclaw/app_runtime.h"
@@ -20,6 +21,7 @@
 #include "espclaw/board_config.h"
 #include "espclaw/control_loop.h"
 #include "espclaw/hardware.h"
+#include "espclaw/lua_api_registry.h"
 #include "espclaw/ota_manager.h"
 #include "espclaw/ota_state.h"
 #include "espclaw/runtime.h"
@@ -292,6 +294,22 @@ static esp_err_t tools_get_handler(httpd_req_t *req)
 
     espclaw_render_tools_json(buffer, sizeof(buffer));
     return send_json(req, buffer);
+}
+
+static esp_err_t lua_api_get_handler(httpd_req_t *req)
+{
+    char buffer[12288];
+
+    espclaw_render_lua_api_json(buffer, sizeof(buffer));
+    return send_json(req, buffer);
+}
+
+static esp_err_t lua_api_markdown_get_handler(httpd_req_t *req)
+{
+    char buffer[16384];
+
+    espclaw_render_lua_api_markdown(buffer, sizeof(buffer));
+    return send_body(req, "text/markdown; charset=utf-8", buffer);
 }
 
 static esp_err_t ota_status_get_handler(httpd_req_t *req)
@@ -888,7 +906,7 @@ static esp_err_t chat_run_post_handler(httpd_req_t *req)
         free(response);
         return ESP_OK;
     }
-    if (espclaw_agent_loop_run(
+    if (espclaw_console_run(
             status->storage_ready ? status->workspace_root : NULL,
             session_id,
             body,
@@ -1470,6 +1488,8 @@ esp_err_t espclaw_admin_server_start(void)
         {.uri = "/api/camera/capture", .method = HTTP_POST, .handler = camera_capture_post_handler, .user_ctx = NULL},
         {.uri = "/media/*", .method = HTTP_GET, .handler = media_get_handler, .user_ctx = NULL},
         {.uri = "/api/tools", .method = HTTP_GET, .handler = tools_get_handler, .user_ctx = NULL},
+        {.uri = "/api/lua-api", .method = HTTP_GET, .handler = lua_api_get_handler, .user_ctx = NULL},
+        {.uri = "/api/lua-api.md", .method = HTTP_GET, .handler = lua_api_markdown_get_handler, .user_ctx = NULL},
         {.uri = "/api/hardware", .method = HTTP_GET, .handler = hardware_get_handler, .user_ctx = NULL},
         {.uri = "/api/apps", .method = HTTP_GET, .handler = apps_get_handler, .user_ctx = NULL},
         {.uri = "/api/apps", .method = HTTP_DELETE, .handler = apps_delete_handler, .user_ctx = NULL},

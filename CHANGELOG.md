@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- Added a shared console executor across UART0, the simulator console, and the admin web chat so slash commands and normal LLM turns now behave consistently on every local operator surface.
+- Added slash commands for local operator workflows, including `/status`, `/tools`, `/tool`, `/wifi status`, `/wifi scan`, `/wifi join`, `/memory`, `/reboot`, and `/factory-reset`.
+- Added proxy-backed `web.search` and `web.fetch` tools plus a generic HTTP adapter layer, with `web.fetch` persisting larger scraped markdown into the workspace under `memory/web_fetch_<hash>.md`.
+- Added user-facing documentation for the shared console, current workspace markdown memory semantics, and the new web-search/fetch tool surfaces.
+- Rebalanced the `esp32cam` partition table again to shrink the internal fallback workspace to `0x030000` and expand both OTA app slots to `0x1E0000`, restoring healthier firmware headroom on 4 MB boards that primarily use SD-backed workspaces.
+- Fixed a real `esp32cam` boot-time task runtime crash by replacing the queue-backed FreeRTOS task-slot mutex with a short critical-section `portMUX` lock, avoiding the invalid semaphore state hit during autostarted behavior workers.
+- Increased the `espclaw_task` worker stack on `esp32cam` so autostarted background behaviors no longer overflow immediately after boot on the enlarged-OTA image.
+- Added a crash-loop guard for persisted boot automation: after panic, watchdog, or brownout-class resets, ESPClaw now skips both boot-triggered apps and behavior autostart on the next boot so the board can recover to a stable admin/UI state instead of immediately re-crashing.
+- Delayed clean-boot behavior autostart further on `esp32cam` and gated it behind late boot progress logging, reducing early SD-backed workspace access during startup while preserving autonomous behavior execution.
+- Replaced boot-time autostart directory enumeration with a persisted behavior autostart index, so `esp32cam` no longer has to scan `/workspace/behaviors` from the delayed startup task just to discover which behaviors should start automatically.
+- Persisted full embedded behavior specs into compact NVS keys as well, so delayed autostart and `/api/behaviors` no longer need to open SD-backed behavior JSON files just to load behavior metadata on `esp32cam`.
+- Added an embedded app-manifest cache and stopped behavior registration from synchronously opening `apps/<id>/app.json` in the HTTP handler, removing another SDSPI/FATFS control-path crash on `esp32cam`.
+- Moved the UART console's large reply buffer and full agent result struct off the task stack, avoiding a new `esp32cam` boot-time crash introduced once the shared console runtime grew beyond an 8 KB task stack.
+- Reserved LEDC channel/timer 1 for ESP32-CAM camera XCLK so background PWM apps using channel 0 no longer break `camera.capture` initialization.
+- Fixed a Lua API contract mismatch where `espclaw.board.variant()` returned a table at runtime even though the documented and model-facing contract promised a variant id string.
+- Added a dedicated Lua API registry that now drives the `lua_api.list` model tool, generated `/api/lua-api` and `/api/lua-api.md` admin surfaces, and the compact `Lua App Contract` snapshot injected into Lua/app-generation runs.
+- Tightened Lua-app guidance so the model is explicitly steered toward valid handler entrypoints, exact `espclaw.*` signatures, and away from external modules like `cjson`.
+- fix(agent): move large on-device agent buffers onto PSRAM-backed allocation on `esp32` builds so direct Codex TLS setup no longer fails from internal-heap exhaustion during live chat and app-generation runs
+- docs(apps): document the exact prompt constraints that produced working model-generated ESP32-CAM demo apps for PWM LED fade and MS5611 I2C polling
 - Extended the Lua runtime to accept module-return entrypoints as well as global handlers, so model-generated apps that return a table with `manual`, `on_event`, or `handle` functions now execute without needing the model to match only one Lua style.
 - Tightened the real-device `task.start` tool-matrix case by pre-scaffolding the app through the admin API and forbidding `app.list`/`app.install` detours, which restores a truthful live probe of the actual `task.start` tool call.
 - Simplified the `large_lua_app` benchmark prompt to require a top-level `handle(trigger, payload)` entrypoint and no returned module table, which moved the first real ESP32-CAM success to a 2,581-byte model-generated Lua app installed and run entirely on-device.
@@ -146,3 +165,5 @@
 - fix(runtime): allow direct LLM app installs to scaffold large manifests on-device and correct the real-board event-task bench to use matching sensor triggers
 - fix(agent): preserve streamed Codex output-text segments when `response.completed` omits inline assistant text, so vision replies no longer collapse to empty chat output
 - fix(runtime): raise the ESP32-CAM PSRAM runtime budget for request/response/image buffers so multimodal Codex follow-up bodies no longer truncate at the old balanced-profile ceiling
+- fix(console): stop re-running workspace bootstrap for every console transcript append so UART slash commands no longer crash SD-backed ESP32-CAM builds
+- fix(console): skip embedded console transcript file writes on the ESP32-CAM runtime so slash commands stay reliable on the shared SD workspace

@@ -166,6 +166,44 @@ Apps declaring `boot` are executed automatically after the workspace is mounted.
 
 The runtime now also supports persistent scheduled execution where the same Lua VM instance is reused across iterations. That allows apps to keep controller state such as integrators, filters, or calibration globals in memory instead of reconstructing them on every trigger.
 
+## Prompting The Model To Build Apps
+
+Model-generated apps are reliable when the prompt anchors to the exact ESPClaw Lua contract instead of asking for a generic Lua script.
+
+The authoritative contract is now generated from the runtime registry and is available through:
+
+- `lua_api.list`
+- `GET /api/lua-api`
+- `GET /api/lua-api.md`
+
+Use these rules when asking the model to generate an installable app:
+
+- require an explicit entrypoint such as `function handle(trigger, payload)`
+- tell it not to execute side effects at load time
+- tell it to avoid `require(...)` unless the needed module already exists in the workspace
+- tell it to use the exact `espclaw.*` API names instead of guessed globals like `pwm.write` or `i2c_write`
+- if you need a JSON return value, tell it to build the JSON string with `string.format` instead of assuming `cjson`
+
+Two live prompts are now proven on the real AI Thinker ESP32-CAM:
+
+### LED Fade Demo
+
+This prompt generated a working manual-trigger app that fades the flash LED on GPIO 4 and returns `LED_FADE_DONE`:
+
+```text
+Create an app called led_fade_demo4 for this ESP32-CAM board. Use the flash LED on GPIO 4. Use the exact Lua API names espclaw.pwm.setup(channel, pin, frequency_hz, resolution_bits), espclaw.pwm.write(channel, duty), and espclaw.time.sleep_ms(ms). Create a manual-trigger Lua app with function handle(trigger, payload). When trigger is manual, it must fade the LED up and down once, then turn it fully off and return exactly LED_FADE_DONE. For any other trigger return exactly IGNORED. Do not execute the fade at load time. Install it via app.install and reply only INSTALLED when done.
+```
+
+### MS5611 Reader Demo
+
+This prompt generated a working manual-trigger app that uses the built-in I2C APIs and returns `I2C_INIT_FAILED` on an unwired board:
+
+```text
+Create an app called ms5611_reader6. Do not use require() or any external Lua modules. Use only the built-in ESPClaw Lua APIs: espclaw.i2c.begin_board("default"), espclaw.i2c.begin(port, sda, scl, frequency_hz), espclaw.i2c.read_reg(port, address, reg, length), espclaw.i2c.write_reg(port, address, reg, bytes), and espclaw.time.sleep_ms(ms). The app must expose exactly function handle(trigger, payload). If trigger is not manual, return exactly SENSOR_UNAVAILABLE_MS5611. If I2C init fails return exactly I2C_INIT_FAILED. If the sensor is unavailable return exactly SENSOR_UNAVAILABLE_MS5611. Otherwise reset the MS5611 at 0x77, read the 6 calibration PROM words, read raw pressure and temperature, compute first-order pressure in mbar and temperature in C, and return a JSON string built with string.format. Install it via app.install and reply only INSTALLED when done.
+```
+
+The second prompt is useful even without hardware attached, because it validates that the model can produce runnable I2C Lua that follows the runtime contract rather than inventing unavailable helpers.
+
 There are now two task styles:
 
 - `periodic`: the runtime calls the chosen trigger every `period_ms`

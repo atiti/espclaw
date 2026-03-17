@@ -120,6 +120,75 @@ Credentials are stored in device auth storage (`NVS` on firmware, workspace conf
 
 The local admin chat and simulator chat run with mutation-enabled tool access so the model can install Lua apps, start tasks, and emit events from the operator console. Telegram and other remote channels still keep confirmation gating for mutating tools.
 The system prompt now also includes an automatic live tool inventory snapshot on every run, so the model starts with a readable capability list before it decides whether it needs a separate `tool.list` call.
+Lua and app-generation runs also get a compact Lua contract snapshot sourced from the runtime API registry, and the model can call `lua_api.list` for the authoritative `espclaw.*` function surface when generating or debugging Lua code.
+
+## Shared Console
+
+ESPClaw now uses one shared console executor across:
+
+- `UART0` on real hardware
+- the simulator process console
+- the admin web chat
+
+Lines starting with `/` are treated as static commands. Everything else is passed through a normal iterative LLM turn.
+
+Supported slash commands:
+
+- `/help`
+- `/status`
+- `/tools`
+- `/tool <name> [json]`
+- `/wifi status`
+- `/wifi scan`
+- `/wifi join <ssid> [password]`
+- `/memory`
+- `/reboot`
+- `/factory-reset`
+
+Use `/tool` for direct operator execution of a specific tool:
+
+```text
+/tool system.info {}
+/tool fs.read {"path":"USER.md"}
+/tool web.search {"query":"ms5611 datasheet"}
+```
+
+The web UI chat now uses this same shared console path instead of a separate chat-only controller.
+
+## Workspace Memory Files
+
+The workspace bootstrap creates:
+
+- `AGENTS.md`
+- `IDENTITY.md`
+- `USER.md`
+- `HEARTBEAT.md`
+- `memory/MEMORY.md`
+
+Today these markdown files are injected directly into the system prompt whenever workspace storage is ready. They are not yet selectively retrieved, summarized, or indexed semantically.
+
+They can be updated through normal workspace writes:
+
+- `fs.write`
+- `/tool fs.write {...}`
+- `espclaw.fs.write(...)`
+
+Keep them short, because they currently consume prompt budget on every run.
+
+## Web Search And Fetch
+
+ESPClaw now exposes two proxy-backed web tools:
+
+- `web.search`
+- `web.fetch`
+
+They currently use the configured `llmproxy.markster.io` adapter to:
+
+- run structured web searches
+- fetch and scrape pages or documents
+- persist larger fetched markdown into the workspace under `memory/web_fetch_<hash>.md`
+
+These tools are available to the model and also through the shared operator console via `/tool`.
 
 ## Local ESP-IDF Setup
 
@@ -169,6 +238,8 @@ The firmware now serves the admin UI directly from the device root path and expo
 - `GET /api/workspace/files`
 - `GET /api/monitor`
 - `GET /api/tools`
+- `GET /api/lua-api`
+- `GET /api/lua-api.md`
 - `GET /api/hardware`
 - `GET /api/apps`
 - `GET /api/apps/detail?app_id=<id>`
@@ -193,7 +264,7 @@ The firmware now serves the admin UI directly from the device root path and expo
 
 The firmware defaults now assume at least `4MB` flash because the Lua app runtime does not fit in the old `2MB` / `1MB app partition` layout.
 
-On the `esp32cam` profile, the internal flash `workspace` partition is only a fallback because the primary workspace lives on the SD card. The partition table therefore prioritizes two equally large `0x190000` OTA app slots over a large internal workspace reserve so OTA remains viable after PSRAM-enabled growth.
+On the `esp32cam` profile, the internal flash `workspace` partition is only a fallback because the primary workspace lives on the SD card. The partition table therefore prioritizes two equally large `0x1E0000` OTA app slots and keeps only a small `0x030000` fallback internal workspace reserve so OTA remains viable as the firmware grows.
 
 The vision/tool path is now end-to-end in the simulator, and `esp32cam` now has a real AI Thinker JPEG capture path. `camera.capture` writes a JPEG into `/workspace/media/`, and the next model round receives it as a Codex-compatible `input_image.image_url` attachment when the selected model supports vision.
 
@@ -479,8 +550,12 @@ The current default bench order is:
 - Architecture: `docs/architecture.md`
 - Admin UI: `docs/admin-ui.md`
 - Apps: `docs/apps.md`
+- Console Chat: `docs/console-chat.md`
+- Lua API: `docs/lua-api.md`
 - Hardware Lua: `docs/hardware-lua.md`
 - Real Hardware Bench: `docs/real-hardware-bench.md`
 - Next Phase Plan: `docs/next-phase-plan.md`
+- Web Tools: `docs/web-tools.md`
+- Workspace Memory: `docs/workspace-memory.md`
 - Vehicle Control: `docs/vehicle-control.md`
 - Simulator: `docs/simulator.md`

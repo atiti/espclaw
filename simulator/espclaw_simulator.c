@@ -15,6 +15,7 @@
 
 #include "espclaw/admin_api.h"
 #include "espclaw/agent_loop.h"
+#include "espclaw/console_chat.h"
 #include "espclaw/admin_ops.h"
 #include "espclaw/admin_ui.h"
 #include "espclaw/app_runtime.h"
@@ -830,7 +831,7 @@ static void handle_api_request(
         }
         yolo_mode = query_u32_or_default(query, "yolo", 0) != 0;
 
-        if (espclaw_agent_loop_run(config->workspace_root, session_id, body != NULL ? body : "", true, yolo_mode, &result) != 0 && !result.ok) {
+        if (espclaw_console_run(config->workspace_root, session_id, body != NULL ? body : "", true, yolo_mode, &result) != 0 && !result.ok) {
             espclaw_admin_render_result_json(false, result.final_text, response, sizeof(response));
             send_http_response(client_fd, 500, "Internal Server Error", "application/json", response);
         } else {

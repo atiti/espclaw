@@ -1281,8 +1281,10 @@ static int camera_init_for_board(const espclaw_board_descriptor_t *board, const 
     }
 
     memset(&config, 0, sizeof(config));
-    config.ledc_channel = LEDC_CHANNEL_0;
-    config.ledc_timer = LEDC_TIMER_0;
+    /* Reserve LEDC channel/timer 1 for camera XCLK so user PWM apps can
+       continue using channel 0 without breaking camera initialization. */
+    config.ledc_channel = LEDC_CHANNEL_1;
+    config.ledc_timer = LEDC_TIMER_1;
     config.pin_d0 = 5;
     config.pin_d1 = 18;
     config.pin_d2 = 19;

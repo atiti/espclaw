@@ -54,6 +54,8 @@ esp_err_t espclaw_runtime_wifi_join(
 esp_err_t espclaw_runtime_get_provisioning_descriptor(espclaw_provisioning_descriptor_t *descriptor);
 bool espclaw_runtime_time_is_sane(void);
 bool espclaw_runtime_wait_for_time_sync(uint32_t timeout_ms);
+esp_err_t espclaw_runtime_factory_reset(char *message, size_t message_size);
+void espclaw_runtime_reboot(void);
 #ifdef ESP_PLATFORM
 bool espclaw_runtime_should_defer_wifi_boot(const espclaw_board_profile_t *profile, bool storage_ready);
 bool espclaw_runtime_should_force_softap_only_boot(

@@ -50,6 +50,7 @@
 #include "espclaw/board_config.h"
 #include "espclaw/event_watch.h"
 #include "espclaw/hardware.h"
+#include "espclaw/lua_api_registry.h"
 #include "espclaw/ota_manager.h"
 #include "espclaw/provider.h"
 #include "espclaw/runtime.h"
@@ -57,6 +58,7 @@
 #include "espclaw/storage.h"
 #include "espclaw/task_runtime.h"
 #include "espclaw/tool_catalog.h"
+#include "espclaw/web_tools.h"
 #include "espclaw/workspace.h"
 
 #define ESPCLAW_AGENT_MEDIA_MAX 2
@@ -78,6 +80,36 @@ typedef struct {
     char relative_path[ESPCLAW_HW_CAMERA_PATH_MAX];
     char mime_type[24];
 } espclaw_agent_media_ref_t;
+
+static int load_history(
+    const char *workspace_root,
+    const char *session_id,
+    espclaw_history_message_t *messages,
+    size_t max_messages,
+    size_t *count_out
+);
+static int build_initial_request_body(
+    const espclaw_auth_profile_t *profile,
+    const char *instructions,
+    const espclaw_history_message_t *history,
+    size_t history_count,
+    char *buffer,
+    size_t buffer_size
+);
+
+static void *agent_calloc(size_t count, size_t size)
+{
+#ifdef ESP_PLATFORM
+#if defined(CONFIG_SPIRAM_USE_MALLOC)
+    void *ptr = heap_caps_calloc(count, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+
+    if (ptr != NULL) {
+        return ptr;
+    }
+#endif
+#endif
+    return calloc(count, size);
+}
 
 static espclaw_runtime_budget_t current_runtime_budget(void)
 {
@@ -575,7 +607,6 @@ static void decode_tool_name(const char *wire_name, char *runtime_name, size_t r
     runtime_name[used] = '\0';
 }
 
-#ifdef ESPCLAW_HOST_LUA
 static bool contains_case_insensitive_text(const char *haystack, const char *needle)
 {
     size_t needle_length;
@@ -605,7 +636,6 @@ static bool contains_case_insensitive_text(const char *haystack, const char *nee
 
     return false;
 }
-#endif
 
 static const char *find_json_key_after(const char *json, const char *key, const char *after)
 {
@@ -874,8 +904,104 @@ static bool user_message_requests_tool_listing(const char *request_body)
 }
 #endif
 
+static bool user_message_requests_lua_app_contract(const char *user_message)
+{
+    if (user_message == NULL || user_message[0] == '\0') {
+        return false;
+    }
+
+    return contains_case_insensitive_text(user_message, "lua") ||
+           contains_case_insensitive_text(user_message, "app") ||
+           contains_case_insensitive_text(user_message, "script") ||
+           contains_case_insensitive_text(user_message, "behavior") ||
+           contains_case_insensitive_text(user_message, "task") ||
+           contains_case_insensitive_text(user_message, "install") ||
+           contains_case_insensitive_text(user_message, "write code") ||
+           contains_case_insensitive_text(user_message, "generate code");
+}
+
+static bool user_message_requests_app_install(const char *user_message)
+{
+    if (user_message == NULL || user_message[0] == '\0') {
+        return false;
+    }
+
+    if (!contains_case_insensitive_text(user_message, "app")) {
+        return false;
+    }
+
+    return contains_case_insensitive_text(user_message, "create") ||
+           contains_case_insensitive_text(user_message, "install") ||
+           contains_case_insensitive_text(user_message, "update");
+}
+
+static void history_append_message(
+    espclaw_history_message_t *history,
+    size_t max_messages,
+    size_t *count_io,
+    const char *role,
+    const char *content
+)
+{
+    size_t count;
+
+    if (history == NULL || count_io == NULL || max_messages == 0 || role == NULL || content == NULL) {
+        return;
+    }
+
+    count = *count_io;
+    if (count >= max_messages) {
+        memmove(history, history + 1, sizeof(*history) * (max_messages - 1));
+        count = max_messages - 1;
+    }
+
+    copy_text(history[count].role, sizeof(history[count].role), role);
+    copy_text(history[count].content, sizeof(history[count].content), content);
+    *count_io = count + 1;
+}
+
+static int build_app_install_retry_request_body(
+    const espclaw_auth_profile_t *profile,
+    const char *workspace_root,
+    const char *session_id,
+    const char *instructions,
+    const char *assistant_reply,
+    char *buffer,
+    size_t buffer_size,
+    size_t history_max
+)
+{
+    static const char *RETRY_USER_MESSAGE =
+        "You must not claim that an app was installed or updated unless you actually call app.install successfully in this run. "
+        "Call app.install now with complete Lua source, triggers, and permissions if needed, then reply concisely.";
+    espclaw_history_message_t *history = NULL;
+    size_t history_count = 0;
+    int status;
+
+    if (profile == NULL || instructions == NULL || buffer == NULL || buffer_size == 0 || history_max == 0) {
+        return -1;
+    }
+
+    history = (espclaw_history_message_t *)agent_calloc(history_max, sizeof(*history));
+    if (history == NULL) {
+        return -1;
+    }
+
+    if (workspace_root != NULL && workspace_root[0] != '\0') {
+        load_history(workspace_root, session_id, history, history_max, &history_count);
+    }
+    if (assistant_reply != NULL && assistant_reply[0] != '\0') {
+        history_append_message(history, history_max, &history_count, "assistant", assistant_reply);
+    }
+    history_append_message(history, history_max, &history_count, "user", RETRY_USER_MESSAGE);
+    status = build_initial_request_body(profile, instructions, history, history_count, buffer, buffer_size);
+    free(history);
+    return status;
+}
+
 static int load_system_prompt(
     const char *workspace_root,
+    const char *user_message,
     bool allow_mutations,
     bool yolo_mode,
     char *buffer,
@@ -996,8 +1122,15 @@ static int load_system_prompt(
         buffer + used,
         buffer_size - used,
         "\nUse hardware.list when board-specific pins, buses, or capabilities matter.\n"
+        "Use lua_api.list when generating or debugging Lua apps and you need exact espclaw.* signatures or handler rules.\n"
         "If the user says this is a tool-call compliance test, says the transcript is audited, or explicitly lists tools you must use, call every applicable listed tool before replying, even if some of those tool calls fail.\n"
     );
+    if (user_message_requests_lua_app_contract(user_message)) {
+        if (used + 2 < buffer_size) {
+            used += (size_t)snprintf(buffer + used, buffer_size - used, "\n");
+        }
+        used += espclaw_render_lua_api_prompt_snapshot(buffer + used, buffer_size - used);
+    }
     return 0;
 }
 
@@ -1989,6 +2122,41 @@ static int tool_system_info(const char *workspace_root, char *buffer, size_t buf
 static int tool_hardware_list(char *buffer, size_t buffer_size)
 {
     return (int)espclaw_render_hardware_json(espclaw_board_current(), buffer, buffer_size);
+}
+
+static int tool_lua_api_list(char *buffer, size_t buffer_size)
+{
+    return (int)espclaw_render_lua_api_json(buffer, buffer_size);
+}
+
+static int tool_web_search(const char *arguments_json, char *buffer, size_t buffer_size)
+{
+    char query[256];
+
+    if (!json_argument_string(arguments_json, "query", query, sizeof(query)) || query[0] == '\0') {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"missing query\"}");
+        return -1;
+    }
+    if (espclaw_web_search(query, buffer, buffer_size) != 0) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"web search failed\"}");
+        return -1;
+    }
+    return 0;
+}
+
+static int tool_web_fetch(const char *workspace_root, const char *arguments_json, char *buffer, size_t buffer_size)
+{
+    char url[512];
+
+    if (!json_argument_string(arguments_json, "url", url, sizeof(url)) || url[0] == '\0') {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"missing url\"}");
+        return -1;
+    }
+    if (espclaw_web_fetch(workspace_root, url, buffer, buffer_size) != 0) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"web fetch failed\"}");
+        return -1;
+    }
+    return 0;
 }
 
 static int tool_list_tools(char *buffer, size_t buffer_size)
@@ -3164,6 +3332,9 @@ static int tool_execute(
     if (strcmp(tool_call->name, "hardware.list") == 0) {
         return tool_hardware_list(buffer, buffer_size);
     }
+    if (strcmp(tool_call->name, "lua_api.list") == 0) {
+        return tool_lua_api_list(buffer, buffer_size);
+    }
     if (strcmp(tool_call->name, "tool.list") == 0) {
         return tool_list_tools(buffer, buffer_size);
     }
@@ -3177,6 +3348,12 @@ static int tool_execute(
             }
         }
         return status;
+    }
+    if (strcmp(tool_call->name, "web.search") == 0) {
+        return tool_web_search(tool_call->arguments_json, buffer, buffer_size);
+    }
+    if (strcmp(tool_call->name, "web.fetch") == 0) {
+        return tool_web_fetch(workspace_root, tool_call->arguments_json, buffer, buffer_size);
     }
     if (strcmp(tool_call->name, "wifi.status") == 0) {
         return tool_wifi_status(buffer, buffer_size);
@@ -3289,6 +3466,28 @@ static int tool_execute(
 
     snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"unsupported_tool\"}");
     return -1;
+}
+
+int espclaw_agent_execute_tool(
+    const char *workspace_root,
+    const char *tool_name,
+    const char *arguments_json,
+    bool allow_mutations,
+    char *buffer,
+    size_t buffer_size
+)
+{
+    espclaw_agent_tool_call_t tool_call;
+
+    if (tool_name == NULL || buffer == NULL || buffer_size == 0) {
+        return -1;
+    }
+
+    memset(&tool_call, 0, sizeof(tool_call));
+    snprintf(tool_call.call_id, sizeof(tool_call.call_id), "manual");
+    snprintf(tool_call.name, sizeof(tool_call.name), "%s", tool_name);
+    snprintf(tool_call.arguments_json, sizeof(tool_call.arguments_json), "%s", arguments_json != NULL ? arguments_json : "{}");
+    return tool_execute(workspace_root, &tool_call, allow_mutations, NULL, buffer, buffer_size);
 }
 
 #ifdef ESPCLAW_HOST_LUA
@@ -5248,6 +5447,9 @@ int espclaw_agent_loop_run(
     size_t history_count = 0;
     unsigned int iteration = 0;
     size_t tool_result_stride = 0;
+    bool enforce_app_install = user_message_requests_app_install(user_message);
+    bool saw_app_install_tool = false;
+    unsigned int app_install_retry_count = 0;
 
     if (session_id == NULL || user_message == NULL || result == NULL) {
         return -1;
@@ -5290,11 +5492,11 @@ int espclaw_agent_loop_run(
     }
 #endif
 
-    request_body = (char *)calloc(1, runtime_budget.agent_request_buffer_max);
-    response_body = (char *)calloc(1, runtime_budget.agent_response_buffer_max);
-    history = (espclaw_history_message_t *)calloc(runtime_budget.agent_history_max, sizeof(*history));
-    codex_items_json = (char *)calloc(1, runtime_budget.agent_codex_items_max);
-    instructions = (char *)calloc(1, runtime_budget.agent_instructions_max);
+    request_body = (char *)agent_calloc(1, runtime_budget.agent_request_buffer_max);
+    response_body = (char *)agent_calloc(1, runtime_budget.agent_response_buffer_max);
+    history = (espclaw_history_message_t *)agent_calloc(runtime_budget.agent_history_max, sizeof(*history));
+    codex_items_json = (char *)agent_calloc(1, runtime_budget.agent_codex_items_max);
+    instructions = (char *)agent_calloc(1, runtime_budget.agent_instructions_max);
     if (request_body == NULL || response_body == NULL || history == NULL || codex_items_json == NULL || instructions == NULL) {
         free(instructions);
         free(codex_items_json);
@@ -5307,6 +5509,7 @@ int espclaw_agent_loop_run(
 
     if (load_system_prompt(
             workspace_root,
+            user_message,
             allow_mutations,
             yolo_mode,
             instructions,
@@ -5432,6 +5635,36 @@ int espclaw_agent_loop_run(
         result->iterations = iteration;
 
         if (!has_tools) {
+            if (enforce_app_install && !saw_app_install_tool && app_install_retry_count == 0) {
+                request_body = (char *)agent_calloc(1, runtime_budget.agent_request_buffer_max);
+                if (request_body == NULL) {
+                    free(instructions);
+                    free(codex_items_json);
+                    free(history);
+                    free(response_body);
+                    copy_text(result->final_text, sizeof(result->final_text), "Out of memory retrying app installation request.");
+                    return -1;
+                }
+                if (build_app_install_retry_request_body(
+                        &profile,
+                        workspace_root,
+                        session_id,
+                        instructions,
+                        result->final_text,
+                        request_body,
+                        runtime_budget.agent_request_buffer_max,
+                        runtime_budget.agent_history_max) != 0) {
+                    free(instructions);
+                    free(codex_items_json);
+                    free(history);
+                    free(request_body);
+                    free(response_body);
+                    copy_text(result->final_text, sizeof(result->final_text), "Failed to retry the app installation request.");
+                    return -1;
+                }
+                app_install_retry_count++;
+                continue;
+            }
             result->ok = true;
             if (workspace_root != NULL && workspace_root[0] != '\0') {
                 espclaw_session_append_message(workspace_root, session_id, "assistant", result->final_text);
@@ -5445,7 +5678,7 @@ int espclaw_agent_loop_run(
         }
 
         free(provider_response);
-        provider_response = (espclaw_provider_response_t *)calloc(1, sizeof(*provider_response));
+        provider_response = (espclaw_provider_response_t *)agent_calloc(1, sizeof(*provider_response));
         if (provider_response == NULL || parse_provider_response(response_body, provider_response) != 0) {
             free(provider_response);
             free(instructions);
@@ -5473,8 +5706,8 @@ int espclaw_agent_loop_run(
 
         free(tool_results);
         free(media_refs);
-        tool_results = (char *)calloc(ESPCLAW_AGENT_TOOL_CALL_MAX, tool_result_stride);
-        media_refs = (espclaw_agent_media_ref_t *)calloc(ESPCLAW_AGENT_MEDIA_MAX, sizeof(*media_refs));
+        tool_results = (char *)agent_calloc(ESPCLAW_AGENT_TOOL_CALL_MAX, tool_result_stride);
+        media_refs = (espclaw_agent_media_ref_t *)agent_calloc(ESPCLAW_AGENT_MEDIA_MAX, sizeof(*media_refs));
         if (tool_results == NULL || media_refs == NULL) {
             free(media_refs);
             free(tool_results);
@@ -5492,6 +5725,10 @@ int espclaw_agent_loop_run(
 
         for (tool_index = 0; tool_index < provider_response->tool_call_count; ++tool_index) {
             espclaw_agent_media_ref_t tool_media = {0};
+
+            if (strcmp(provider_response->tool_calls[tool_index].name, "app.install") == 0) {
+                saw_app_install_tool = true;
+            }
 
             tool_execute(
                 workspace_root,
@@ -5514,7 +5751,50 @@ int espclaw_agent_loop_run(
             }
         }
 
-        request_body = (char *)calloc(1, runtime_budget.agent_request_buffer_max);
+        if (enforce_app_install && !saw_app_install_tool && app_install_retry_count == 0) {
+            request_body = (char *)agent_calloc(1, runtime_budget.agent_request_buffer_max);
+            if (request_body == NULL) {
+                free(media_refs);
+                free(tool_results);
+                free(provider_response);
+                free(instructions);
+                free(codex_items_json);
+                free(history);
+                free(response_body);
+                copy_text(result->final_text, sizeof(result->final_text), "Out of memory retrying app installation request.");
+                return -1;
+            }
+            if (build_app_install_retry_request_body(
+                    &profile,
+                    workspace_root,
+                    session_id,
+                    instructions,
+                    NULL,
+                    request_body,
+                    runtime_budget.agent_request_buffer_max,
+                    runtime_budget.agent_history_max) != 0) {
+                free(media_refs);
+                free(tool_results);
+                free(provider_response);
+                free(instructions);
+                free(codex_items_json);
+                free(history);
+                free(request_body);
+                free(response_body);
+                copy_text(result->final_text, sizeof(result->final_text), "Failed to retry the app installation request.");
+                return -1;
+            }
+            app_install_retry_count++;
+            free(media_refs);
+            free(tool_results);
+            free(provider_response);
+            media_refs = NULL;
+            tool_results = NULL;
+            provider_response = NULL;
+            continue;
+        }
+
+        request_body = (char *)agent_calloc(1, runtime_budget.agent_request_buffer_max);
         if (request_body == NULL) {
             free(media_refs);
             free(tool_results);
@@ -5529,7 +5809,7 @@ int espclaw_agent_loop_run(
         if (strcmp(profile.provider_id, "openai_codex") == 0) {
             size_t codex_items_used = strlen(codex_items_json);
 
-            history = (espclaw_history_message_t *)calloc(runtime_budget.agent_history_max, sizeof(*history));
+            history = (espclaw_history_message_t *)agent_calloc(runtime_budget.agent_history_max, sizeof(*history));
             if (history == NULL) {
                 free(media_refs);
                 free(tool_results);

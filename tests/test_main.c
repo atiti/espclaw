@@ -17,9 +17,11 @@
 #include "espclaw/board_profile.h"
 #include "espclaw/channel.h"
 #include "espclaw/config_render.h"
+#include "espclaw/console_chat.h"
 #include "espclaw/control_loop.h"
 #include "espclaw/event_watch.h"
 #include "espclaw/hardware.h"
+#include "espclaw/lua_api_registry.h"
 #include "espclaw/ota_manager.h"
 #include "espclaw/ota_state.h"
 #include "espclaw/provisioning.h"
@@ -32,6 +34,7 @@
 #include "espclaw/task_runtime.h"
 #include "espclaw/telegram_protocol.h"
 #include "espclaw/tool_catalog.h"
+#include "espclaw/web_tools.h"
 #include "espclaw/workspace.h"
 
 #ifndef ESPCLAW_SOURCE_DIR
@@ -94,6 +97,93 @@ static void read_text_file(const char *path, char *buffer, size_t buffer_size)
 typedef struct {
     unsigned int calls;
 } test_agent_adapter_state_t;
+
+static espclaw_runtime_status_t s_console_status;
+static bool s_console_reboot_requested;
+static bool s_console_factory_reset_requested;
+
+static const espclaw_runtime_status_t *console_status_adapter(void)
+{
+    return &s_console_status;
+}
+
+static int console_wifi_scan_adapter(espclaw_wifi_network_t *networks, size_t max_networks, size_t *count_out)
+{
+    if (networks == NULL || max_networks < 2 || count_out == NULL) {
+        return -1;
+    }
+    memset(networks, 0, sizeof(*networks) * max_networks);
+    snprintf(networks[0].ssid, sizeof(networks[0].ssid), "LabNet");
+    networks[0].rssi = -41;
+    networks[0].channel = 6;
+    networks[0].secure = true;
+    snprintf(networks[1].ssid, sizeof(networks[1].ssid), "OpenField");
+    networks[1].rssi = -67;
+    networks[1].channel = 11;
+    networks[1].secure = false;
+    *count_out = 2;
+    return 0;
+}
+
+static int console_wifi_join_adapter(const char *ssid, const char *password, char *message, size_t message_size)
+{
+    assert_true(ssid != NULL, "console wifi join ssid provided");
+    assert_true(strcmp(ssid, "LabNet") == 0, "console wifi join parsed ssid");
+    assert_true(password != NULL, "console wifi join password provided");
+    assert_true(strcmp(password, "secret pass") == 0, "console wifi join parsed password");
+    snprintf(message, message_size, "connecting to %s", ssid);
+    return 0;
+}
+
+static int console_factory_reset_adapter(char *message, size_t message_size)
+{
+    s_console_factory_reset_requested = true;
+    snprintf(message, message_size, "Factory reset requested.");
+    return 0;
+}
+
+static void console_reboot_adapter(void)
+{
+    s_console_reboot_requested = true;
+}
+
+static int web_tool_http_adapter(const char *url, char *response, size_t response_size, void *user_data)
+{
+    (void)user_data;
+
+    if (strstr(url, "/search?") != NULL) {
+        assert_string_contains(url, "ms5611%20datasheet", "search url encodes query");
+        snprintf(
+            response,
+            response_size,
+            "{"
+            "\"query\":\"ms5611 datasheet\","
+            "\"provider\":\"llmproxy\","
+            "\"results\":["
+            "{\"position\":1,\"title\":\"MS5611 datasheet\",\"url\":\"https://example.com/ms5611.pdf\",\"snippet\":\"Pressure sensor PDF\",\"source\":\"vendor\"},"
+            "{\"position\":2,\"title\":\"Altimeter notes\",\"url\":\"https://example.com/notes\",\"snippet\":\"Application note\",\"source\":\"docs\"}"
+            "]"
+            "}"
+        );
+        return 0;
+    }
+    if (strstr(url, "/scrape?") != NULL) {
+        assert_string_contains(url, "https%3A%2F%2Fexample.com%2Fdoc.pdf", "fetch url encodes target");
+        snprintf(
+            response,
+            response_size,
+            "{"
+            "\"url\":\"https://example.com/doc.pdf\","
+            "\"title\":\"MS5611 PDF\","
+            "\"excerpt\":\"Calibration constants and commands.\","
+            "\"markdown\":\"# MS5611\\n\\nPROM read sequence and conversion commands.\""
+            "}"
+        );
+        return 0;
+    }
+
+    return -1;
+}
 
 static int confirmation_http_adapter(
     const char *url,
@@ -189,8 +279,10 @@ static int tool_list_http_adapter(
     assert_string_contains(body, "\"stream\":true", "tool list loop sends stream=true for codex");
     assert_string_contains(body, "Tool Inventory Snapshot", "tool list prompt includes tool inventory snapshot");
     assert_string_contains(body, "hardware.list", "tool list prompt includes hardware tool");
+    assert_string_contains(body, "lua_api.list", "tool list prompt includes lua api tool");
     assert_string_contains(body, "behavior.register", "tool list prompt includes behavior tool");
     assert_string_contains(body, "tool-call compliance test", "tool list prompt includes compliance guidance");
+    assert_string_not_contains(body, "# Lua App Contract", "tool list prompt does not inject lua app snapshot for non-app runs");
 
     if (state != NULL && state->calls > 1) {
         assert_string_contains(body, "\"type\":\"function_call\"", "tool list follow-up retains function call item");
@@ -245,6 +337,10 @@ static int app_install_http_adapter(
     assert_string_contains(body, "Tool Inventory Snapshot", "app install prompt includes tool inventory snapshot");
     assert_string_contains(body, "app.install", "app install prompt includes app install tool");
     assert_string_contains(body, "event.emit", "app install prompt includes event tool");
+    assert_string_contains(body, "lua_api.list", "app install prompt includes lua api tool");
+    assert_string_contains(body, "# Lua App Contract", "app install prompt injects lua app contract");
+    assert_string_contains(body, "espclaw.pwm.setup", "app install prompt includes lua api snapshot");
+    assert_string_contains(body, "function handle(trigger, payload)", "app install prompt includes handler contract");
 
     if (state != NULL && state->calls > 1) {
         assert_string_contains(body, "\"type\":\"function_call_output\"", "app install follow-up includes tool output");
@@ -288,6 +384,129 @@ static int app_install_http_adapter(
         source
     );
     assert_true(written > 0 && (size_t)written < response_size, "app install mock response serialized");
+    return 0;
+}
+
+static int app_install_retry_http_adapter(
+    const char *url,
+    const espclaw_auth_profile_t *profile,
+    const char *body,
+    char *response,
+    size_t response_size,
+    void *user_data
+)
+{
+    test_agent_adapter_state_t *state = (test_agent_adapter_state_t *)user_data;
+
+    (void)url;
+    (void)profile;
+
+    if (state != NULL) {
+        state->calls++;
+    }
+
+    if (state != NULL && state->calls == 1) {
+        assert_string_contains(body, "# Lua App Contract", "app retry initial prompt includes lua contract");
+        snprintf(
+            response,
+            response_size,
+            "{"
+            "\"id\":\"resp_retry_first\","
+            "\"status\":\"completed\","
+            "\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"INSTALLED\"}]}]"
+            "}"
+        );
+        return 0;
+    }
+
+    if (state != NULL && state->calls == 2) {
+        assert_string_contains(body, "must not claim that an app was installed", "retry turn injects correction");
+        snprintf(
+            response,
+            response_size,
+            "{"
+            "\"id\":\"resp_retry_second\","
+            "\"status\":\"completed\","
+            "\"output\":["
+            "{\"type\":\"function_call\",\"call_id\":\"call_install_retry\",\"name\":\"app.install\",\"arguments\":\"{\\\"app_id\\\":\\\"retry_app\\\",\\\"title\\\":\\\"Retry App\\\",\\\"source\\\":\\\"function handle(trigger, payload)\\\\n  return 'retry-ok'\\\\nend\\\\n\\\",\\\"permissions_csv\\\":\\\"fs.read\\\",\\\"triggers_csv\\\":\\\"manual\\\"}\",\"status\":\"completed\"}"
+            "]"
+            "}"
+        );
+        return 0;
+    }
+
+    assert_string_contains(body, "\"type\":\"function_call_output\"", "retry follow-up includes tool output");
+    snprintf(
+        response,
+        response_size,
+        "{"
+        "\"id\":\"resp_retry_final\","
+        "\"status\":\"completed\","
+        "\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"INSTALLED\"}]}]"
+        "}"
+    );
+    return 0;
+}
+
+static int app_install_wrong_tool_retry_http_adapter(
+    const char *url,
+    const espclaw_auth_profile_t *profile,
+    const char *body,
+    char *response,
+    size_t response_size,
+    void *user_data
+)
+{
+    test_agent_adapter_state_t *state = (test_agent_adapter_state_t *)user_data;
+
+    (void)url;
+    (void)profile;
+
+    if (state != NULL) {
+        state->calls++;
+    }
+
+    if (state != NULL && state->calls == 1) {
+        snprintf(
+            response,
+            response_size,
+            "{"
+            "\"id\":\"resp_wrong_tool_first\","
+            "\"status\":\"completed\","
+            "\"output\":["
+            "{\"type\":\"function_call\",\"call_id\":\"call_hw\",\"name\":\"hardware.list\",\"arguments\":\"{}\",\"status\":\"completed\"}"
+            "]"
+            "}"
+        );
+        return 0;
+    }
+
+    if (state != NULL && state->calls == 2) {
+        assert_string_contains(body, "must not claim that an app was installed", "wrong-tool retry injects correction");
+        snprintf(
+            response,
+            response_size,
+            "{"
+            "\"id\":\"resp_wrong_tool_second\","
+            "\"status\":\"completed\","
+            "\"output\":["
+            "{\"type\":\"function_call\",\"call_id\":\"call_install_after_detour\",\"name\":\"app.install\",\"arguments\":\"{\\\"app_id\\\":\\\"retry_after_detour\\\",\\\"title\\\":\\\"Retry After Detour\\\",\\\"source\\\":\\\"function handle(trigger, payload)\\\\n  return 'detour-ok'\\\\nend\\\\n\\\",\\\"permissions_csv\\\":\\\"fs.read\\\",\\\"triggers_csv\\\":\\\"manual\\\"}\",\"status\":\"completed\"}"
+            "]"
+            "}"
+        );
+        return 0;
+    }
+
+    assert_string_contains(body, "\"type\":\"function_call_output\"", "wrong-tool retry final follow-up includes tool output");
+    snprintf(
+        response,
+        response_size,
+        "{"
+        "\"id\":\"resp_wrong_tool_final\","
+        "\"status\":\"completed\","
+        "\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"INSTALLED\"}]}]"
+        "}"
+    );
     return 0;
 }
 
@@ -843,6 +1062,24 @@ static void test_board_profiles(void)
     assert_true(strcmp(cam.runtime_budget.memory_class, "balanced") == 0, "esp32cam uses balanced runtime budget");
 }
 
+static void test_lua_api_registry(void)
+{
+    char json[16384];
+    char markdown[16384];
+    char prompt[16384];
+
+    assert_true(espclaw_lua_api_count() > 10, "lua api registry has entries");
+    assert_true(espclaw_render_lua_api_json(json, sizeof(json)) > 0, "lua api json rendered");
+    assert_string_contains(json, "\"name\":\"espclaw.pwm.setup\"", "lua api json includes pwm setup");
+    assert_string_contains(json, "\"signature\":\"espclaw.i2c.read_reg(port, address, reg, length)\"", "lua api json includes i2c read");
+    assert_true(espclaw_render_lua_api_markdown(markdown, sizeof(markdown)) > 0, "lua api markdown rendered");
+    assert_string_contains(markdown, "# Lua API Reference", "lua api markdown header");
+    assert_string_contains(markdown, "`espclaw.time.sleep_ms(ms)`", "lua api markdown includes time sleep");
+    assert_true(espclaw_render_lua_api_prompt_snapshot(prompt, sizeof(prompt)) > 0, "lua api prompt snapshot rendered");
+    assert_string_contains(prompt, "# Lua App Contract", "lua api prompt includes rules header");
+    assert_string_contains(prompt, "Do not assume external Lua modules like cjson", "lua api prompt includes no-cjson rule");
+}
+
 static void test_board_descriptor_and_task_policy(void)
 {
     char temp_dir[128];
@@ -949,6 +1186,7 @@ static void test_tool_catalog(void)
     assert_true(espclaw_tool_count() >= 25, "tool catalog size");
     assert_true(espclaw_find_tool("tool.list") != NULL, "tool list tool exists");
     assert_true(espclaw_find_tool("hardware.list") != NULL, "hardware list tool exists");
+    assert_true(espclaw_find_tool("lua_api.list") != NULL, "lua api list tool exists");
     assert_true(espclaw_find_tool("behavior.register") != NULL, "behavior register tool exists");
     assert_true(espclaw_find_tool("task.start") != NULL, "task start tool exists");
     assert_true(espclaw_find_tool("event.emit") != NULL, "event emit tool exists");
@@ -1115,8 +1353,8 @@ static void test_ota_manager_host_state_and_partition_layout(void)
     assert_string_contains(csv, "otadata", "partition table includes otadata");
     assert_string_contains(csv, "ota_0", "partition table includes ota_0");
     assert_string_contains(csv, "ota_1", "partition table includes ota_1");
-    assert_string_contains(csv, "0x1A0000", "partition table uses enlarged symmetric ota slots");
-    assert_string_contains(csv, "0x0b0000", "partition table reserves the reduced internal workspace");
+    assert_string_contains(csv, "0x1E0000", "partition table uses enlarged symmetric ota slots");
+    assert_string_contains(csv, "0x030000", "partition table reserves the reduced internal workspace");
 }
 
 static void test_esp32_sdkconfig_defaults_enable_psram_tls(void)
@@ -1128,6 +1366,128 @@ static void test_esp32_sdkconfig_defaults_enable_psram_tls(void)
     read_text_file(path, contents, sizeof(contents));
     assert_string_contains(contents, "CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y", "esp32 defaults enable PSRAM-backed mbedtls alloc");
     assert_string_contains(contents, "CONFIG_MBEDTLS_DYNAMIC_FREE_CONFIG_DATA=y", "esp32 defaults free mbedtls config data after setup");
+}
+
+static void test_camera_uses_reserved_ledc_channel(void)
+{
+    char path[512];
+    char contents[65536];
+
+    snprintf(path, sizeof(path), "%s/firmware/components/espclaw_core/src/hardware.c", ESPCLAW_SOURCE_DIR);
+    read_text_file(path, contents, sizeof(contents));
+    assert_string_contains(contents, "config.ledc_channel = LEDC_CHANNEL_1;", "camera xclk uses reserved ledc channel 1");
+    assert_string_contains(contents, "config.ledc_timer = LEDC_TIMER_1;", "camera xclk uses reserved ledc timer 1");
+}
+
+static void test_task_runtime_uses_portmux_locking(void)
+{
+    char path[512];
+    char contents[32768];
+
+    snprintf(path, sizeof(path), "%s/firmware/components/espclaw_core/src/task_runtime.c", ESPCLAW_SOURCE_DIR);
+    read_text_file(path, contents, sizeof(contents));
+    assert_string_contains(contents, "portMUX_TYPE lock;", "task runtime uses a portMUX lock on device");
+    assert_string_contains(contents, "portMUX_INITIALIZE(&slot->lock);", "task runtime initializes the portMUX");
+    assert_string_contains(contents, "taskENTER_CRITICAL(&slot->lock);", "task runtime enters critical sections");
+    assert_string_contains(contents, "taskEXIT_CRITICAL(&slot->lock);", "task runtime exits critical sections");
+    assert_true(strstr(contents, "xSemaphoreCreateMutex") == NULL, "task runtime no longer uses queue-backed mutexes");
+    assert_string_contains(contents, "#define ESPCLAW_TASK_RUNTIME_STACK_WORDS 16384", "task runtime uses a larger worker stack");
+    assert_string_contains(contents, "ESPCLAW_TASK_RUNTIME_STACK_WORDS", "task runtime worker creation uses the configured stack macro");
+}
+
+static void test_runtime_skips_boot_automation_after_crash_reset(void)
+{
+    char path[512];
+    char contents[65536];
+
+    snprintf(path, sizeof(path), "%s/firmware/components/espclaw_core/src/runtime.c", ESPCLAW_SOURCE_DIR);
+    read_text_file(path, contents, sizeof(contents));
+    assert_string_contains(contents, "should_skip_boot_automation_for_reset_reason", "runtime defines crash-loop boot automation guard");
+    assert_string_contains(contents, "ESP_RST_PANIC", "runtime treats panic resets as crash-loop candidates");
+    assert_string_contains(contents, "ESP_RST_TASK_WDT", "runtime treats task watchdog resets as crash-loop candidates");
+    assert_string_contains(contents, "ESP_RST_BROWNOUT", "runtime treats brownout resets as crash-loop candidates");
+    assert_string_contains(contents, "Skipping boot apps after reset reason", "runtime logs when boot apps are skipped after a crash reset");
+    assert_string_contains(contents, "Skipping autostart behaviors after reset reason", "runtime logs when autostart is skipped after a crash reset");
+    assert_string_contains(contents, "Scheduled delayed behavior autostart", "runtime schedules delayed autostart on clean boots");
+    assert_string_contains(contents, "delayed_behavior_autostart_task", "runtime defines delayed behavior autostart task");
+    assert_string_contains(contents, "#define ESPCLAW_BEHAVIOR_AUTOSTART_DELAY_MS 8000", "runtime delays autostart behaviors after boot");
+    assert_string_contains(contents, "Running delayed behavior autostart", "runtime logs when delayed autostart actually begins");
+    assert_string_contains(contents, "reply = calloc(1, ESPCLAW_AGENT_TEXT_MAX + 64U);", "uart console allocates reply buffer off the task stack");
+    assert_string_contains(contents, "result = calloc(1, sizeof(*result));", "uart console allocates the agent result off the task stack");
+    assert_true(strstr(contents, "espclaw_agent_run_result_t result;") == NULL, "uart console no longer keeps the full agent result on the task stack");
+}
+
+static void test_behavior_runtime_caches_specs_for_embedded_autostart(void)
+{
+    char path[512];
+    char contents[65536];
+
+    snprintf(path, sizeof(path), "%s/firmware/components/espclaw_core/src/behavior_runtime.c", ESPCLAW_SOURCE_DIR);
+    read_text_file(path, contents, sizeof(contents));
+    assert_string_contains(contents, "ESPCLAW_BEHAVIOR_SPEC_KEY_PREFIX", "behavior runtime defines a dedicated spec key prefix");
+    assert_string_contains(contents, "behavior_spec_store_json", "behavior runtime persists full behavior specs");
+    assert_string_contains(contents, "behavior_spec_load_json", "behavior runtime loads behavior specs from the persisted store");
+    assert_string_contains(contents, "behavior_spec_nvs_key", "behavior runtime derives compact NVS keys for behavior specs");
+    assert_string_contains(contents, "behavior_spec_remove_json", "behavior runtime removes persisted behavior specs on delete");
+}
+
+static void test_app_runtime_caches_manifests_for_embedded_control_paths(void)
+{
+    char path[512];
+    char contents[65536];
+
+    snprintf(path, sizeof(path), "%s/firmware/components/espclaw_core/src/app_runtime.c", ESPCLAW_SOURCE_DIR);
+    read_text_file(path, contents, sizeof(contents));
+    assert_string_contains(contents, "ESPCLAW_APP_CACHE_NAMESPACE", "app runtime defines an embedded manifest cache namespace");
+    assert_string_contains(contents, "app_manifest_cache_store_json", "app runtime persists manifest json for embedded use");
+    assert_string_contains(contents, "app_manifest_cache_load_json", "app runtime loads manifests from the embedded cache first");
+    assert_string_contains(contents, "(void)app_manifest_cache_store_json(app_id, manifest_json);", "app scaffold stores manifests in the embedded cache");
+}
+
+static void test_behavior_register_avoids_sd_manifest_validation(void)
+{
+    char path[512];
+    char contents[65536];
+    const char *register_fn = NULL;
+
+    snprintf(path, sizeof(path), "%s/firmware/components/espclaw_core/src/behavior_runtime.c", ESPCLAW_SOURCE_DIR);
+    read_text_file(path, contents, sizeof(contents));
+    register_fn = strstr(contents, "int espclaw_behavior_register(");
+    assert_true(register_fn != NULL, "behavior register implementation present");
+    assert_true(
+        register_fn != NULL && strstr(register_fn, "espclaw_app_load_manifest(") == NULL,
+        "behavior register no longer opens app manifests from the workspace"
+    );
+}
+
+static void test_session_append_avoids_workspace_bootstrap_on_embedded_console_paths(void)
+{
+    char path[512];
+    char contents[16384];
+    const char *append_fn = NULL;
+
+    snprintf(path, sizeof(path), "%s/firmware/components/espclaw_core/src/session_store.c", ESPCLAW_SOURCE_DIR);
+    read_text_file(path, contents, sizeof(contents));
+    append_fn = strstr(contents, "int espclaw_session_append_message(");
+    assert_true(append_fn != NULL, "session append implementation present");
+    assert_true(
+        append_fn != NULL && strstr(append_fn, "espclaw_workspace_bootstrap(") == NULL,
+        "session append no longer re-runs workspace bootstrap on every message"
+    );
+}
+
+static void test_console_chat_skips_embedded_transcript_writes(void)
+{
+    char path[512];
+    char contents[32768];
+    const char *append_fn = NULL;
+
+    snprintf(path, sizeof(path), "%s/firmware/components/espclaw_core/src/console_chat.c", ESPCLAW_SOURCE_DIR);
+    read_text_file(path, contents, sizeof(contents));
+    append_fn = strstr(contents, "static void append_console_exchange(");
+    assert_true(append_fn != NULL, "console exchange helper present");
+    assert_string_contains(append_fn, "#ifdef ESP_PLATFORM", "console transcript helper has embedded guard");
+    assert_string_contains(append_fn, "return;", "console transcript helper can no-op on embedded targets");
 }
 
 static void test_provisioning_descriptor(void)
@@ -1707,16 +2067,26 @@ static void test_app_runtime_manifest_and_scaffold(void)
         espclaw_app_scaffold_lua(temp_dir, "empty_defaults_app", "Empty Defaults App", "", "") == 0,
         "empty csv scaffold falls back to defaults"
     );
+    assert_true(
+        espclaw_app_scaffold_lua(temp_dir, "alias_app", "Alias App", "pwm,gpio,filesystem", "run,start") == 0,
+        "alias scaffold normalizes model shorthand"
+    );
     assert_true(espclaw_app_load_manifest(temp_dir, "hello_app", &manifest) == 0, "scaffold manifest load");
     assert_true(strcmp(manifest.entrypoint, "main.lua") == 0, "entrypoint loaded");
     assert_true(espclaw_app_collect_ids(temp_dir, ids, 4, &count) == 0, "apps collected");
-    assert_true(count == 3, "three apps collected");
+    assert_true(count == 4, "four apps collected");
     assert_true(
-        (strcmp(ids[0], "hello_app") == 0 || strcmp(ids[1], "hello_app") == 0 || strcmp(ids[2], "hello_app") == 0) &&
-            (strcmp(ids[0], "llm_installed_app") == 0 || strcmp(ids[1], "llm_installed_app") == 0 || strcmp(ids[2], "llm_installed_app") == 0) &&
-            (strcmp(ids[0], "empty_defaults_app") == 0 || strcmp(ids[1], "empty_defaults_app") == 0 || strcmp(ids[2], "empty_defaults_app") == 0),
+        (strcmp(ids[0], "hello_app") == 0 || strcmp(ids[1], "hello_app") == 0 || strcmp(ids[2], "hello_app") == 0 || strcmp(ids[3], "hello_app") == 0) &&
+            (strcmp(ids[0], "llm_installed_app") == 0 || strcmp(ids[1], "llm_installed_app") == 0 || strcmp(ids[2], "llm_installed_app") == 0 || strcmp(ids[3], "llm_installed_app") == 0) &&
+            (strcmp(ids[0], "empty_defaults_app") == 0 || strcmp(ids[1], "empty_defaults_app") == 0 || strcmp(ids[2], "empty_defaults_app") == 0 || strcmp(ids[3], "empty_defaults_app") == 0) &&
+            (strcmp(ids[0], "alias_app") == 0 || strcmp(ids[1], "alias_app") == 0 || strcmp(ids[2], "alias_app") == 0 || strcmp(ids[3], "alias_app") == 0),
         "app ids collected"
     );
+    assert_true(espclaw_app_load_manifest(temp_dir, "alias_app", &manifest) == 0, "alias manifest load");
+    assert_true(espclaw_app_has_permission(&manifest, "pwm.write"), "permission alias normalized to pwm.write");
+    assert_true(espclaw_app_has_permission(&manifest, "gpio.write"), "permission alias normalized to gpio.write");
+    assert_true(espclaw_app_has_permission(&manifest, "fs.read"), "permission alias normalized to fs.read");
+    assert_true(espclaw_app_supports_trigger(&manifest, "manual"), "trigger alias normalized to manual");
     assert_true(
         espclaw_workspace_read_file(temp_dir, "apps/hello_app/main.lua", lua_source, sizeof(lua_source)) == 0,
         "lua script readable"
@@ -1820,8 +2190,9 @@ static void test_app_runtime_hardware_bindings(void)
             "  local uart_in = espclaw.uart.read(0, 8)\n"
             "  local uart_written = espclaw.uart.write(0, \"uart:ok\\n\")\n"
             "  local output = espclaw.pid.step(2000, adc, 0, 0, 0.5, 0.1, 0.0, 0.02, 0, 1023)\n"
+            "  local variant_direct = espclaw.board.variant()\n"
             "  local hardware = espclaw.hardware.list()\n"
-            "  return string.format(\"adc=%d temp=%d pin=%d i2c=%d pwm=%d pid=%d uart_in=%s uart_written=%d variant=%s capabilities=%d\", adc, bytes[1] * 256 + bytes[2], pin, #devices, pwm.duty, math.floor(output), uart_in, uart_written, hardware.variant, #hardware.capabilities)\n"
+            "  return string.format(\"adc=%d temp=%d pin=%d i2c=%d pwm=%d pid=%d uart_in=%s uart_written=%d variant=%s variant_direct=%s capabilities=%d\", adc, bytes[1] * 256 + bytes[2], pin, #devices, pwm.duty, math.floor(output), uart_in, uart_written, hardware.variant, variant_direct, #hardware.capabilities)\n"
             "end\n"
         ) == 0,
         "hardware app source updated"
@@ -1846,6 +2217,7 @@ static void test_app_runtime_hardware_bindings(void)
     assert_string_contains(output, "uart_in=host:in", "uart input returned to lua");
     assert_string_contains(output, "uart_written=8", "uart write count returned to lua");
     assert_string_contains(output, "variant=ai_thinker_esp32cam", "hardware list exposed board variant");
+    assert_string_contains(output, "variant_direct=ai_thinker_esp32cam", "board variant helper exposed variant id string");
     assert_true(espclaw_hw_pwm_state(0, &pwm_state) == 0, "pwm state query succeeded");
     assert_true(pwm_state.configured, "pwm channel configured");
     assert_true(pwm_state.duty == 512, "pwm duty tracked");
@@ -1944,9 +2316,9 @@ static void test_app_runtime_vehicle_bindings(void)
             temp_dir,
             "vehicle_app",
             "function handle(trigger, payload)\n"
-            "  local board = espclaw.board.describe()\n"
+            "  local variant = espclaw.board.variant()\n"
             "  local battery = espclaw.board.adc('battery')\n"
-            "  assert(board.variant == 'ai_thinker_esp32cam')\n"
+            "  assert(variant == 'ai_thinker_esp32cam')\n"
             "  assert(espclaw.i2c.begin_board('default'))\n"
             "  assert(espclaw.imu.mpu6050_begin(0, 0x68))\n"
             "  local sample = espclaw.imu.mpu6050_read(0, 0x68)\n"
@@ -2337,6 +2709,8 @@ static void test_behavior_runtime(void)
     char temp_dir[128];
     char output[256];
     char json[2048];
+    char behavior_index[256];
+    char autostart_index[256];
     espclaw_behavior_spec_t spec;
     espclaw_behavior_status_t behaviors[ESPCLAW_TASK_RUNTIME_MAX];
     espclaw_task_status_t tasks[ESPCLAW_TASK_RUNTIME_MAX];
@@ -2394,6 +2768,16 @@ static void test_behavior_runtime(void)
     );
     assert_string_contains(json, "\"behavior_id\":\"avoidance\"", "behavior json includes id");
     assert_string_contains(json, "\"autostart\":true", "behavior json includes autostart");
+    assert_true(
+        espclaw_workspace_read_file(temp_dir, "config/behavior_index.txt", behavior_index, sizeof(behavior_index)) == 0,
+        "behavior index persisted"
+    );
+    assert_true(strcmp(behavior_index, "avoidance") == 0, "behavior index contains saved behavior");
+    assert_true(
+        espclaw_workspace_read_file(temp_dir, "config/behavior_autostart.txt", autostart_index, sizeof(autostart_index)) == 0,
+        "behavior autostart index persisted"
+    );
+    assert_true(strcmp(autostart_index, "avoidance") == 0, "behavior autostart index contains saved behavior");
 
 #ifdef ESPCLAW_HOST_LUA
     assert_true(
@@ -2434,6 +2818,16 @@ static void test_behavior_runtime(void)
         espclaw_behavior_remove(temp_dir, "avoidance", output, sizeof(output)) == 0,
         "behavior removed"
     );
+    assert_true(
+        espclaw_workspace_read_file(temp_dir, "config/behavior_index.txt", behavior_index, sizeof(behavior_index)) == 0,
+        "behavior index still readable after remove"
+    );
+    assert_true(behavior_index[0] == '\0', "behavior index cleared after remove");
+    assert_true(
+        espclaw_workspace_read_file(temp_dir, "config/behavior_autostart.txt", autostart_index, sizeof(autostart_index)) == 0,
+        "behavior autostart index still readable after remove"
+    );
+    assert_true(autostart_index[0] == '\0', "behavior autostart index cleared after remove");
     count = espclaw_behavior_snapshot_all(temp_dir, behaviors, ESPCLAW_TASK_RUNTIME_MAX);
     found = false;
     for (index = 0; index < count; ++index) {
@@ -2689,7 +3083,7 @@ static void test_agent_loop(void)
     );
     assert_true(result.ok, "tool loop result ok");
     assert_true(result.used_tools, "tool loop used tools");
-    assert_true(result.iterations == 2, "tool loop used two response rounds");
+    assert_true(result.iterations >= 2, "tool loop used at least two response rounds");
     assert_string_contains(result.final_text, "listed the installed apps", "tool loop final text");
     assert_true(
         espclaw_session_read_transcript(temp_dir, "chat_tool_loop", transcript, sizeof(transcript)) == 0,
@@ -2807,6 +3201,51 @@ static void test_agent_loop(void)
     assert_string_contains(transcript, "args-first:", "arguments-first app source persisted");
 
     adapter_state.calls = 0;
+    espclaw_agent_set_http_adapter(app_install_retry_http_adapter, &adapter_state);
+    memset(&result, 0, sizeof(result));
+    assert_true(
+        espclaw_agent_loop_run(
+            temp_dir,
+            "chat_install_retry",
+            "Create an app called retry_app, install it, and reply INSTALLED.",
+            true,
+            true,
+            &result) == 0,
+        "app install retry loop succeeded"
+    );
+    espclaw_agent_set_http_adapter(NULL, NULL);
+    assert_true(result.ok, "app install retry result ok");
+    assert_true(result.used_tools, "app install retry used tools");
+    assert_string_contains(result.final_text, "INSTALLED", "app install retry final text returned");
+    assert_true(
+        espclaw_app_read_source(temp_dir, "retry_app", transcript, sizeof(transcript)) == 0,
+        "retry-installed app source readable"
+    );
+    assert_string_contains(transcript, "retry-ok", "retry-installed app source persisted");
+
+    adapter_state.calls = 0;
+    espclaw_agent_set_http_adapter(app_install_wrong_tool_retry_http_adapter, &adapter_state);
+    memset(&result, 0, sizeof(result));
+    assert_true(
+        espclaw_agent_loop_run(
+            temp_dir,
+            "chat_install_retry_after_detour",
+            "Create an app called retry_after_detour, install it, and reply INSTALLED.",
+            true,
+            true,
+            &result) == 0,
+        "app install retry after wrong-tool detour succeeded"
+    );
+    espclaw_agent_set_http_adapter(NULL, NULL);
+    assert_true(result.ok, "app install retry after wrong-tool detour result ok");
+    assert_true(result.used_tools, "app install retry after wrong-tool detour used tools");
+    assert_true(
+        espclaw_app_read_source(temp_dir, "retry_after_detour", transcript, sizeof(transcript)) == 0,
+        "retry-after-detour app source readable"
+    );
+    assert_string_contains(transcript, "detour-ok", "retry-after-detour app source persisted");
+
+    adapter_state.calls = 0;
     espclaw_agent_set_http_adapter(behavior_register_http_adapter, &adapter_state);
     memset(&result, 0, sizeof(result));
     assert_true(
@@ -2860,9 +3299,121 @@ static void test_agent_loop(void)
     assert_string_contains(transcript, "\"role\":\"assistant\",\"content\":\"\"", "empty completion stored blank assistant message");
 }
 
+static void test_console_chat_and_web_tools(void)
+{
+    char temp_dir[128];
+    char transcript[8192];
+    char buffer[2048];
+    char stored_path[128];
+    espclaw_agent_run_result_t result;
+    espclaw_console_runtime_adapter_t adapter = {
+        .status = console_status_adapter,
+        .wifi_scan = console_wifi_scan_adapter,
+        .wifi_join = console_wifi_join_adapter,
+        .factory_reset = console_factory_reset_adapter,
+        .reboot = console_reboot_adapter,
+    };
+
+    make_temp_dir(temp_dir, sizeof(temp_dir));
+    assert_true(espclaw_workspace_bootstrap(temp_dir) == 0, "workspace bootstrap for console chat");
+    assert_true(espclaw_auth_store_init(temp_dir) == 0, "console chat auth store init");
+
+    memset(&s_console_status, 0, sizeof(s_console_status));
+    s_console_status.profile = espclaw_board_profile_for(ESPCLAW_BOARD_PROFILE_ESP32CAM);
+    s_console_status.storage_backend = ESPCLAW_STORAGE_BACKEND_SD_CARD;
+    s_console_status.storage_ready = true;
+    s_console_status.wifi_ready = true;
+    snprintf(s_console_status.workspace_root, sizeof(s_console_status.workspace_root), "%s", temp_dir);
+    snprintf(s_console_status.wifi_ssid, sizeof(s_console_status.wifi_ssid), "LabNet");
+    s_console_reboot_requested = false;
+    s_console_factory_reset_requested = false;
+
+    espclaw_console_set_runtime_adapter(&adapter);
+    espclaw_web_set_http_adapter(web_tool_http_adapter, NULL);
+
+    memset(&result, 0, sizeof(result));
+    assert_true(espclaw_console_run(temp_dir, "console_help", "/help", true, false, &result) == 0, "console help succeeded");
+    assert_true(result.ok, "console help result ok");
+    assert_string_contains(result.final_text, "/tool <name> [json]", "console help lists tool command");
+
+    memset(&result, 0, sizeof(result));
+    assert_true(
+        espclaw_console_run(temp_dir, "console_memory", "/memory", true, false, &result) == 0,
+        "console memory succeeded"
+    );
+    assert_string_contains(result.final_text, "HEARTBEAT.md", "console memory explains heartbeat file");
+    assert_string_contains(result.final_text, "fs.write", "console memory explains update path");
+
+    memset(&result, 0, sizeof(result));
+    assert_true(
+        espclaw_console_run(temp_dir, "console_wifi_scan", "/wifi scan", true, false, &result) == 0,
+        "console wifi scan succeeded"
+    );
+    assert_string_contains(result.final_text, "LabNet", "console wifi scan includes secure network");
+    assert_string_contains(result.final_text, "OpenField", "console wifi scan includes open network");
+
+    memset(&result, 0, sizeof(result));
+    assert_true(
+        espclaw_console_run(temp_dir, "console_wifi_join", "/wifi join \"LabNet\" \"secret pass\"", true, false, &result) == 0,
+        "console wifi join succeeded"
+    );
+    assert_string_contains(result.final_text, "connecting to LabNet", "console wifi join response returned");
+
+    memset(&result, 0, sizeof(result));
+    assert_true(
+        espclaw_console_run(temp_dir, "console_tool_fs", "/tool fs.read {\"path\":\"AGENTS.md\"}", true, false, &result) == 0,
+        "console tool fs.read succeeded"
+    );
+    assert_string_contains(result.final_text, "Agent Instructions", "console tool fs.read returned file contents");
+
+    memset(&result, 0, sizeof(result));
+    assert_true(
+        espclaw_console_run(temp_dir, "console_tool_search", "/tool web.search {\"query\":\"ms5611 datasheet\"}", true, false, &result) == 0,
+        "console tool web.search succeeded"
+    );
+    assert_string_contains(result.final_text, "MS5611 datasheet", "console tool web search returned condensed result");
+
+    memset(&result, 0, sizeof(result));
+    assert_true(
+        espclaw_console_run(temp_dir, "console_tool_fetch", "/tool web.fetch {\"url\":\"https://example.com/doc.pdf\"}", true, false, &result) == 0,
+        "console tool web.fetch succeeded"
+    );
+    assert_true(
+        espclaw_admin_json_string_value(result.final_text, "stored_path", stored_path, sizeof(stored_path)),
+        "web fetch returned stored path"
+    );
+    assert_true(espclaw_workspace_read_file(temp_dir, stored_path, buffer, sizeof(buffer)) == 0, "web fetch stored markdown readable");
+    assert_string_contains(buffer, "PROM read sequence", "web fetch stored markdown content");
+
+    memset(&result, 0, sizeof(result));
+    assert_true(
+        espclaw_console_run(temp_dir, "console_reboot", "/reboot", true, false, &result) == 0,
+        "console reboot command succeeded"
+    );
+    assert_true(s_console_reboot_requested, "console reboot adapter invoked");
+
+    memset(&result, 0, sizeof(result));
+    assert_true(
+        espclaw_console_run(temp_dir, "console_factory", "/factory-reset", true, false, &result) == 0,
+        "console factory reset command succeeded"
+    );
+    assert_true(s_console_factory_reset_requested, "console factory reset adapter invoked");
+
+    assert_true(
+        espclaw_session_read_transcript(temp_dir, "console_tool_fetch", transcript, sizeof(transcript)) == 0,
+        "console transcript readable"
+    );
+    assert_string_contains(transcript, "/tool web.fetch", "console transcript stored user slash command");
+    assert_string_contains(transcript, "stored_path", "console transcript stored command response");
+
+    espclaw_web_set_http_adapter(NULL, NULL);
+    espclaw_console_set_runtime_adapter(NULL);
+}
+
 int main(void)
 {
     test_board_profiles();
+    test_lua_api_registry();
     test_board_descriptor_and_task_policy();
     test_workspace_manifest();
     test_provider_and_channel_registry();
@@ -2872,6 +3423,14 @@ int main(void)
     test_storage_esp32cam_sdmmc_wiring_policy();
     test_ota_manager_host_state_and_partition_layout();
     test_esp32_sdkconfig_defaults_enable_psram_tls();
+    test_camera_uses_reserved_ledc_channel();
+    test_task_runtime_uses_portmux_locking();
+    test_runtime_skips_boot_automation_after_crash_reset();
+    test_behavior_runtime_caches_specs_for_embedded_autostart();
+    test_app_runtime_caches_manifests_for_embedded_control_paths();
+    test_behavior_register_avoids_sd_manifest_validation();
+    test_session_append_avoids_workspace_bootstrap_on_embedded_console_paths();
+    test_console_chat_skips_embedded_transcript_writes();
     test_system_monitor_snapshot_and_json();
     test_camera_status_and_json();
     test_runtime_wifi_boot_deferral_policy();
@@ -2908,6 +3467,7 @@ int main(void)
     test_esp32cam_storage_attempts();
     test_board_boot_defaults_force_flash_led_low();
     test_agent_loop();
+    test_console_chat_and_web_tools();
 
     printf("espclaw core tests passed\n");
     return 0;

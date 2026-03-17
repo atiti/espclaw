@@ -82,10 +82,7 @@ int espclaw_session_append_message(
         return -1;
     }
 
-    if (espclaw_workspace_bootstrap(workspace_root) != 0) {
-        return -1;
-    }
-
+    /* Workspace bootstrap happens during runtime startup; repeating it here is unsafe on SD-backed boards. */
     snprintf(session_relative_path, sizeof(session_relative_path), "sessions/%s.jsonl", session_id);
     if (espclaw_workspace_resolve_path(workspace_root, session_relative_path, session_absolute_path, sizeof(session_absolute_path)) != 0) {
         return -1;

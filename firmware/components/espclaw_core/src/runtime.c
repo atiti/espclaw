@@ -1,5 +1,6 @@
 #include "espclaw/runtime.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/time.h>
@@ -11,6 +12,7 @@
 #include "esp_mac.h"
 #include "esp_netif.h"
 #include "esp_netif_sntp.h"
+#include "esp_system.h"
 #include "esp_wifi.h"
 #include "esp_wifi_default.h"
 #include "freertos/FreeRTOS.h"
@@ -28,6 +30,7 @@
 #include "espclaw/admin_api.h"
 #include "espclaw/admin_server.h"
 #include "espclaw/agent_loop.h"
+#include "espclaw/console_chat.h"
 #include "espclaw/admin_ops.h"
 #include "espclaw/app_runtime.h"
 #include "espclaw/auth_store.h"
@@ -79,6 +82,34 @@ static bool s_sta_connect_enabled;
 static bool s_time_sync_started;
 static bool s_time_sync_completed;
 static esp_sntp_config_t s_sntp_config;
+static bool s_console_yolo_mode;
+
+#ifdef ESP_PLATFORM
+#define ESPCLAW_BEHAVIOR_AUTOSTART_DELAY_MS 8000
+#define ESPCLAW_BEHAVIOR_AUTOSTART_STACK_WORDS 6144
+#endif
+
+static bool should_skip_boot_automation_for_reset_reason(esp_reset_reason_t reason)
+{
+    return reason == ESP_RST_PANIC ||
+           reason == ESP_RST_INT_WDT ||
+           reason == ESP_RST_TASK_WDT ||
+           reason == ESP_RST_WDT ||
+           reason == ESP_RST_BROWNOUT;
+}
+
+static void trim_trailing_whitespace(char *text)
+{
+    size_t length;
+
+    if (text == NULL) {
+        return;
+    }
+    length = strlen(text);
+    while (length > 0 && isspace((unsigned char)text[length - 1])) {
+        text[--length] = '\0';
+    }
+}
 
 bool espclaw_runtime_should_defer_wifi_boot(const espclaw_board_profile_t *profile, bool storage_ready)
 {
@@ -248,6 +279,61 @@ static esp_err_t read_http_response(esp_http_client_handle_t client, char *buffe
     buffer[total_read] = '\0';
     return ESP_OK;
 }
+
+#ifdef ESP_PLATFORM
+static void delayed_behavior_autostart_task(void *arg)
+{
+    char behavior_log[512];
+    EventBits_t bits = 0;
+
+    (void)arg;
+    vTaskDelay(pdMS_TO_TICKS(ESPCLAW_BEHAVIOR_AUTOSTART_DELAY_MS));
+    if (s_runtime_event_group != NULL) {
+        bits = xEventGroupWaitBits(
+            s_runtime_event_group,
+            ESPCLAW_WIFI_CONNECTED_BIT,
+            pdFALSE,
+            pdTRUE,
+            pdMS_TO_TICKS(1000)
+        );
+    }
+    if (!s_runtime_status.storage_ready || s_runtime_status.workspace_root[0] == '\0') {
+        ESP_LOGW(TAG, "Skipping delayed behavior autostart because workspace storage is unavailable");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    ESP_LOGI(
+        TAG,
+        "Running delayed behavior autostart (wifi_ready=%d, bits=0x%02x)",
+        s_runtime_status.wifi_ready ? 1 : 0,
+        (unsigned int)bits
+    );
+
+    if (espclaw_behavior_start_autostart(s_runtime_status.workspace_root, behavior_log, sizeof(behavior_log)) == 0 &&
+        behavior_log[0] != '\0') {
+        ESP_LOGI(TAG, "Autostart behaviors: %s", behavior_log);
+    }
+    vTaskDelete(NULL);
+}
+
+static esp_err_t maybe_start_delayed_behavior_autostart(void)
+{
+    int core = espclaw_task_policy_core_for(ESPCLAW_TASK_KIND_ADMIN);
+
+    if (xTaskCreatePinnedToCore(
+            delayed_behavior_autostart_task,
+            "espclaw_autostart",
+            ESPCLAW_BEHAVIOR_AUTOSTART_STACK_WORDS,
+            NULL,
+            4,
+            NULL,
+            core >= 0 ? core : tskNO_AFFINITY) != pdPASS) {
+        return ESP_FAIL;
+    }
+    return ESP_OK;
+}
+#endif
 
 static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
 {
@@ -582,6 +668,119 @@ static esp_err_t telegram_send_message(const char *token, const char *chat_id, c
     return ESP_OK;
 }
 
+esp_err_t espclaw_runtime_factory_reset(char *message, size_t message_size)
+{
+    if (espclaw_auth_store_clear() != 0) {
+        if (message != NULL && message_size > 0) {
+            snprintf(message, message_size, "failed to clear stored provider auth");
+        }
+        return ESP_FAIL;
+    }
+
+    esp_wifi_disconnect();
+    esp_wifi_stop();
+    esp_wifi_restore();
+    clear_onboarding_state();
+    s_runtime_status.wifi_ready = false;
+    s_runtime_status.wifi_ssid[0] = '\0';
+
+    if (message != NULL && message_size > 0) {
+        snprintf(message, message_size, "Cleared Wi-Fi credentials and auth store. Rebooting. SD workspace is preserved.");
+    }
+    esp_restart();
+    return ESP_OK;
+}
+
+void espclaw_runtime_reboot(void)
+{
+    esp_restart();
+}
+
+static void uart_console_write_text(const char *text)
+{
+    size_t written = 0;
+
+    if (text == NULL || text[0] == '\0') {
+        return;
+    }
+    espclaw_hw_uart_write(0, (const uint8_t *)text, strlen(text), &written);
+}
+
+static void uart_console_prompt(void)
+{
+    uart_console_write_text("\r\nespclaw> ");
+}
+
+static void uart_console_task(void *arg)
+{
+    char line[768];
+    char *reply = NULL;
+    espclaw_agent_run_result_t *result = NULL;
+    size_t line_length = 0;
+
+    (void)arg;
+    reply = calloc(1, ESPCLAW_AGENT_TEXT_MAX + 64U);
+    result = calloc(1, sizeof(*result));
+    if (reply == NULL || result == NULL) {
+        free(result);
+        free(reply);
+        uart_console_write_text("\r\nESPClaw serial chat unavailable: out of memory.");
+        vTaskDelete(NULL);
+        return;
+    }
+    memset(line, 0, sizeof(line));
+    uart_console_write_text("\r\nESPClaw serial chat ready. Use /help for commands.");
+    uart_console_prompt();
+
+    while (true) {
+        uint8_t chunk[64];
+        size_t chunk_length = 0;
+
+        if (espclaw_hw_uart_read(0, chunk, sizeof(chunk), &chunk_length) == 0 && chunk_length > 0) {
+            for (size_t index = 0; index < chunk_length; ++index) {
+                char c = (char)chunk[index];
+
+                if (c == '\r' || c == '\n') {
+                    if (line_length == 0) {
+                        uart_console_prompt();
+                        continue;
+                    }
+                    line[line_length] = '\0';
+                    trim_trailing_whitespace(line);
+                    if (line[0] != '\0') {
+                        memset(result, 0, sizeof(*result));
+                        if (espclaw_console_run(
+                                s_runtime_status.storage_ready ? s_runtime_status.workspace_root : NULL,
+                                "uart0",
+                                line,
+                                true,
+                                s_console_yolo_mode,
+                                result) == 0 || result->ok) {
+                            snprintf(reply, ESPCLAW_AGENT_TEXT_MAX + 64U, "\r\n%s", result->final_text);
+                        } else {
+                            snprintf(reply, ESPCLAW_AGENT_TEXT_MAX + 64U, "\r\n%s", result->final_text);
+                        }
+                        uart_console_write_text(reply);
+                    }
+                    line_length = 0;
+                    line[0] = '\0';
+                    uart_console_prompt();
+                } else if ((c == '\b' || c == 0x7F) && line_length > 0) {
+                    line[--line_length] = '\0';
+                    uart_console_write_text("\b \b");
+                } else if (isprint((unsigned char)c) && line_length + 1 < sizeof(line)) {
+                    size_t written = 0;
+
+                    line[line_length++] = c;
+                    line[line_length] = '\0';
+                    espclaw_hw_uart_write(0, (const uint8_t *)&c, 1, &written);
+                }
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+}
+
 static void build_status_reply(char *buffer, size_t buffer_size)
 {
     espclaw_ota_state_t ota_state = espclaw_ota_state_init();
@@ -900,6 +1099,23 @@ static esp_err_t maybe_start_telegram(void)
 #endif
 }
 
+static esp_err_t maybe_start_uart_console(void)
+{
+    int core = espclaw_task_policy_core_for(ESPCLAW_TASK_KIND_CONSOLE);
+
+    if (xTaskCreatePinnedToCore(
+            uart_console_task,
+            "espclaw_uart",
+            8192,
+            NULL,
+            4,
+            NULL,
+            core >= 0 ? core : tskNO_AFFINITY) != pdPASS) {
+        return ESP_FAIL;
+    }
+    return ESP_OK;
+}
+
 esp_err_t espclaw_runtime_start(espclaw_board_profile_id_t profile_id, espclaw_runtime_status_t *status)
 {
     bool saved_wifi_credentials = false;
@@ -910,6 +1126,7 @@ esp_err_t espclaw_runtime_start(espclaw_board_profile_id_t profile_id, espclaw_r
     s_sta_connect_enabled = false;
     s_time_sync_started = false;
     s_time_sync_completed = false;
+    s_console_yolo_mode = false;
     memset(&s_sntp_config, 0, sizeof(s_sntp_config));
     s_runtime_status.profile = espclaw_board_profile_for(profile_id);
     espclaw_task_policy_select(&s_runtime_status.profile);
@@ -939,20 +1156,36 @@ esp_err_t espclaw_runtime_start(espclaw_board_profile_id_t profile_id, espclaw_r
         ESP_LOGW(TAG, "Continuing without workspace storage");
     } else {
         char boot_log[512];
-        char behavior_log[512];
 
         espclaw_board_configure_current(s_runtime_status.workspace_root, &s_runtime_status.profile);
         if (espclaw_hw_apply_board_boot_defaults() != 0) {
             ESP_LOGW(TAG, "Failed to apply workspace board boot defaults");
         }
         espclaw_auth_store_init(s_runtime_status.workspace_root);
-        if (espclaw_app_run_boot_apps(s_runtime_status.workspace_root, boot_log, sizeof(boot_log)) == 0 &&
-            boot_log[0] != '\0') {
+        if (should_skip_boot_automation_for_reset_reason(esp_reset_reason())) {
+            ESP_LOGW(
+                TAG,
+                "Skipping boot apps after reset reason %d to avoid a crash loop",
+                (int)esp_reset_reason()
+            );
+        } else if (espclaw_app_run_boot_apps(s_runtime_status.workspace_root, boot_log, sizeof(boot_log)) == 0 &&
+                   boot_log[0] != '\0') {
             ESP_LOGI(TAG, "Boot apps: %s", boot_log);
         }
-        if (espclaw_behavior_start_autostart(s_runtime_status.workspace_root, behavior_log, sizeof(behavior_log)) == 0 &&
-            behavior_log[0] != '\0') {
-            ESP_LOGI(TAG, "Autostart behaviors: %s", behavior_log);
+        if (should_skip_boot_automation_for_reset_reason(esp_reset_reason())) {
+            ESP_LOGW(
+                TAG,
+                "Skipping autostart behaviors after reset reason %d to avoid a crash loop",
+                (int)esp_reset_reason()
+            );
+        } else {
+#ifdef ESP_PLATFORM
+            if (maybe_start_delayed_behavior_autostart() != ESP_OK) {
+                ESP_LOGW(TAG, "Failed to schedule delayed behavior autostart");
+            } else {
+                ESP_LOGI(TAG, "Scheduled delayed behavior autostart");
+            }
+#endif
         }
     }
 
@@ -967,6 +1200,7 @@ esp_err_t espclaw_runtime_start(espclaw_board_profile_id_t profile_id, espclaw_r
                 ESP_LOGW(TAG, "Failed to start station boot with saved Wi-Fi credentials during safe-start");
             } else {
                 ESP_ERROR_CHECK(maybe_start_telegram());
+                ESP_ERROR_CHECK(maybe_start_uart_console());
             }
         } else if (espclaw_runtime_should_force_softap_only_boot(
                        &s_runtime_status.profile,
@@ -978,11 +1212,14 @@ esp_err_t espclaw_runtime_start(espclaw_board_profile_id_t profile_id, espclaw_r
             );
             if (start_softap_onboarding(true) != ESP_OK) {
                 ESP_LOGW(TAG, "Failed to start AP-only onboarding during safe-start");
+            } else {
+                ESP_ERROR_CHECK(maybe_start_uart_console());
             }
         }
     } else {
         ESP_ERROR_CHECK(start_wifi_provisioning(&s_runtime_status.profile));
         ESP_ERROR_CHECK(maybe_start_telegram());
+        ESP_ERROR_CHECK(maybe_start_uart_console());
     }
 
     if (status != NULL) {

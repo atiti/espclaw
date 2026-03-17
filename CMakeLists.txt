@@ -36,8 +36,10 @@ add_library(
   firmware/components/espclaw_core/src/channel.c
   firmware/components/espclaw_core/src/control_loop.c
   firmware/components/espclaw_core/src/config_render.c
+  firmware/components/espclaw_core/src/console_chat.c
   firmware/components/espclaw_core/src/event_watch.c
   firmware/components/espclaw_core/src/hardware.c
+  firmware/components/espclaw_core/src/lua_api_registry.c
   firmware/components/espclaw_core/src/ota_manager.c
   firmware/components/espclaw_core/src/ota_state.c
   firmware/components/espclaw_core/src/provisioning.c
@@ -50,6 +52,7 @@ add_library(
   firmware/components/espclaw_core/src/telegram_protocol.c
   firmware/components/espclaw_core/src/task_runtime.c
   firmware/components/espclaw_core/src/tool_catalog.c
+  firmware/components/espclaw_core/src/web_tools.c
   firmware/components/espclaw_core/src/workspace.c
 )
 

@@ -168,6 +168,14 @@ TOOLS_CHAT_SESSION_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/chat/session?ses
 [[ "$TOOLS_CHAT_SESSION_JSON" == *'Requested tools: tool.list'* ]]
 [[ "$TOOLS_CHAT_SESSION_JSON" == *'fs.read'* ]]
 
+HELP_CHAT_JSON="$(curl -sf -X POST "http://127.0.0.1:$PORT/api/chat/run?session_id=sim_help" --data '/help')"
+[[ "$HELP_CHAT_JSON" == *'"ok":true'* ]]
+[[ "$HELP_CHAT_JSON" == *'/wifi join <ssid> [password]'* ]]
+
+TOOL_CHAT_JSON="$(curl -sf -X POST "http://127.0.0.1:$PORT/api/chat/run?session_id=sim_tool_cmd" --data '/tool system.info {}')"
+[[ "$TOOL_CHAT_JSON" == *'"ok":true'* ]]
+[[ "$TOOL_CHAT_JSON" == *'workspace_ready'* ]]
+
 LOOP_START_JSON="$(curl -sf -X POST "http://127.0.0.1:$PORT/api/loops/start?loop_id=demo_loop&app_id=loop_app&trigger=manual&period_ms=10&iterations=3" --data 'tick')"
 [[ "$LOOP_START_JSON" == *'"loop_id":"demo_loop"'* ]]
 

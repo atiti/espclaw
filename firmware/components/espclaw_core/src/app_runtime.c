@@ -3,6 +3,7 @@
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,6 +20,7 @@
 
 #ifdef ESP_PLATFORM
 #include "esp_log.h"
+#include "nvs.h"
 #include "lua.h"
 #include "lauxlib.h"
 #include "lualib.h"
@@ -29,6 +31,8 @@
 #endif
 
 #define ESPCLAW_APP_LIST_BUFFER 512
+#define ESPCLAW_APP_CACHE_NAMESPACE "espclaw_app"
+#define ESPCLAW_APP_MANIFEST_KEY_PREFIX "a_"
 
 static const char *DEFAULT_APP_PERMISSIONS = "fs.read";
 static const char *DEFAULT_APP_TRIGGERS = "boot,telegram,manual";
@@ -53,6 +57,113 @@ struct espclaw_app_vm {
     char workspace_root[512];
     char script_path[512];
 };
+
+static uint32_t app_id_hash(const char *app_id)
+{
+    uint32_t hash = 2166136261u;
+    const unsigned char *cursor = (const unsigned char *)app_id;
+
+    while (cursor != NULL && *cursor != '\0') {
+        hash ^= (uint32_t)(*cursor++);
+        hash *= 16777619u;
+    }
+
+    return hash;
+}
+
+#ifdef ESP_PLATFORM
+static void app_manifest_nvs_key(const char *app_id, char *buffer, size_t buffer_size)
+{
+    if (buffer == NULL || buffer_size == 0) {
+        return;
+    }
+    snprintf(
+        buffer,
+        buffer_size,
+        ESPCLAW_APP_MANIFEST_KEY_PREFIX "%08" PRIx32,
+        app_id_hash(app_id != NULL ? app_id : "")
+    );
+}
+
+static int app_manifest_cache_store_json(const char *app_id, const char *json)
+{
+    char key[15];
+    nvs_handle_t handle;
+
+    if (!espclaw_app_id_is_valid(app_id) || json == NULL) {
+        return -1;
+    }
+    app_manifest_nvs_key(app_id, key, sizeof(key));
+    if (nvs_open(ESPCLAW_APP_CACHE_NAMESPACE, NVS_READWRITE, &handle) != ESP_OK) {
+        return -1;
+    }
+    if (nvs_set_str(handle, key, json) != ESP_OK || nvs_commit(handle) != ESP_OK) {
+        nvs_close(handle);
+        return -1;
+    }
+    nvs_close(handle);
+    return 0;
+}
+
+static int app_manifest_cache_load_json(const char *app_id, char *buffer, size_t buffer_size)
+{
+    char key[15];
+    nvs_handle_t handle;
+    size_t required = buffer_size;
+
+    if (!espclaw_app_id_is_valid(app_id) || buffer == NULL || buffer_size == 0) {
+        return -1;
+    }
+    buffer[0] = '\0';
+    app_manifest_nvs_key(app_id, key, sizeof(key));
+    if (nvs_open(ESPCLAW_APP_CACHE_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) {
+        return -1;
+    }
+    if (nvs_get_str(handle, key, buffer, &required) != ESP_OK) {
+        nvs_close(handle);
+        return -1;
+    }
+    nvs_close(handle);
+    return 0;
+}
+
+static void app_manifest_cache_remove(const char *app_id)
+{
+    char key[15];
+    nvs_handle_t handle;
+
+    if (!espclaw_app_id_is_valid(app_id)) {
+        return;
+    }
+    app_manifest_nvs_key(app_id, key, sizeof(key));
+    if (nvs_open(ESPCLAW_APP_CACHE_NAMESPACE, NVS_READWRITE, &handle) != ESP_OK) {
+        return;
+    }
+    nvs_erase_key(handle, key);
+    nvs_commit(handle);
+    nvs_close(handle);
+}
+#else
+static int app_manifest_cache_store_json(const char *app_id, const char *json)
+{
+    (void)app_id;
+    (void)json;
+    return 0;
+}
+
+static int app_manifest_cache_load_json(const char *app_id, char *buffer, size_t buffer_size)
+{
+    (void)app_id;
+    (void)buffer;
+    (void)buffer_size;
+    return -1;
+}
+
+static void app_manifest_cache_remove(const char *app_id)
+{
+    (void)app_id;
+}
+#endif
 
 static bool copy_json_string_value(const char *start, char *buffer, size_t buffer_size)
 {
@@ -298,6 +409,9 @@ static bool entrypoint_is_safe(const char *entrypoint)
            strstr(entrypoint, "..") == NULL;
 }
 
+static void normalize_permission_alias(char *value, size_t value_size);
+static void normalize_trigger_alias(char *value, size_t value_size);
+
 static size_t append_csv_items(
     char items[][ESPCLAW_APP_PERMISSION_NAME_MAX + 1],
     size_t max_items,
@@ -334,6 +448,7 @@ static size_t append_csv_items(
             }
             memcpy(items[count], token + start, length);
             items[count][length] = '\0';
+            normalize_permission_alias(items[count], item_size);
             count++;
         }
 
@@ -341,6 +456,28 @@ static size_t append_csv_items(
     }
 
     return count;
+}
+
+static void normalize_permission_alias(char *value, size_t value_size)
+{
+    size_t index = 0;
+
+    if (value == NULL || value_size == 0) {
+        return;
+    }
+
+    while (value[index] != '\0') {
+        value[index] = (char)tolower((unsigned char)value[index]);
+        index++;
+    }
+
+    if (strcmp(value, "pwm") == 0) {
+        snprintf(value, value_size, "%s", "pwm.write");
+    } else if (strcmp(value, "gpio") == 0) {
+        snprintf(value, value_size, "%s", "gpio.write");
+    } else if (strcmp(value, "fs") == 0 || strcmp(value, "filesystem") == 0) {
+        snprintf(value, value_size, "%s", "fs.read");
+    }
 }
 
 static size_t append_csv_triggers(
@@ -379,6 +516,7 @@ static size_t append_csv_triggers(
             }
             memcpy(items[count], token + start, length);
             items[count][length] = '\0';
+            normalize_trigger_alias(items[count], item_size);
             count++;
         }
 
@@ -386,6 +524,24 @@ static size_t append_csv_triggers(
     }
 
     return count;
+}
+
+static void normalize_trigger_alias(char *value, size_t value_size)
+{
+    size_t index = 0;
+
+    if (value == NULL || value_size == 0) {
+        return;
+    }
+
+    while (value[index] != '\0') {
+        value[index] = (char)tolower((unsigned char)value[index]);
+        index++;
+    }
+
+    if (strcmp(value, "run") == 0 || strcmp(value, "start") == 0 || strcmp(value, "execute") == 0) {
+        snprintf(value, value_size, "%s", "manual");
+    }
 }
 
 static int build_app_relative_path(
@@ -505,12 +661,18 @@ int espclaw_app_load_manifest(
     char relative_path[192];
     char json[2048];
 
-    if (workspace_root == NULL || manifest == NULL || build_app_relative_path(app_id, "app.json", relative_path, sizeof(relative_path)) != 0) {
+    if (manifest == NULL || !espclaw_app_id_is_valid(app_id)) {
         return -1;
     }
 
-    if (espclaw_workspace_read_file(workspace_root, relative_path, json, sizeof(json)) != 0) {
-        return -1;
+    if (app_manifest_cache_load_json(app_id, json, sizeof(json)) != 0) {
+        if (workspace_root == NULL || build_app_relative_path(app_id, "app.json", relative_path, sizeof(relative_path)) != 0) {
+            return -1;
+        }
+        if (espclaw_workspace_read_file(workspace_root, relative_path, json, sizeof(json)) != 0) {
+            return -1;
+        }
+        (void)app_manifest_cache_store_json(app_id, json);
     }
 
     return espclaw_app_parse_manifest_json(json, manifest);
@@ -682,6 +844,7 @@ int espclaw_app_scaffold_lua(
         espclaw_workspace_write_file(workspace_root, script_relative_path, main_lua) != 0) {
         return -1;
     }
+    (void)app_manifest_cache_store_json(app_id, manifest_json);
 
     return 0;
 }
@@ -787,6 +950,7 @@ int espclaw_app_remove(
         return -1;
     }
 
+    app_manifest_cache_remove(app_id);
     return remove_directory_tree(app_dir);
 }
 
@@ -1033,13 +1197,7 @@ static int lua_espclaw_board_variant(lua_State *state)
         return 1;
     }
 
-    lua_newtable(state);
     lua_pushstring(state, board->variant_id);
-    lua_setfield(state, -2, "variant");
-    lua_pushstring(state, board->display_name);
-    lua_setfield(state, -2, "display_name");
-    lua_pushstring(state, board->source);
-    lua_setfield(state, -2, "source");
     return 1;
 }
 
@@ -1117,6 +1275,12 @@ static void lua_push_board_descriptor(lua_State *state, const espclaw_board_desc
         lua_seti(state, -2, (lua_Integer)(index + 1));
     }
     lua_setfield(state, -2, "adc_channels");
+}
+
+static int lua_espclaw_board_describe(lua_State *state)
+{
+    lua_push_board_descriptor(state, espclaw_board_current());
+    return 1;
 }
 
 static int lua_espclaw_hardware_list(lua_State *state)
@@ -2183,6 +2347,8 @@ static void register_lua_bindings(lua_State *state, espclaw_lua_context_t *conte
 
     lua_newtable(state);
     lua_pushcfunction(state, lua_espclaw_board_variant);
+    lua_setfield(state, -2, "variant");
+    lua_pushcfunction(state, lua_espclaw_board_describe);
     lua_setfield(state, -2, "describe");
     lua_pushcfunction(state, lua_espclaw_board_pin);
     lua_setfield(state, -2, "pin");
