@@ -1030,17 +1030,22 @@ static void test_camera_status_and_json(void)
         "host camera capture succeeded"
     );
     assert_true(capture.ok, "host camera capture marked ok");
+    assert_true(
+        espclaw_hw_camera_capture(temp_dir, "media/prefixed_capture.jpg", &capture) == 0,
+        "host camera capture tolerates media-prefixed filename"
+    );
+    assert_true(strcmp(capture.relative_path, "media/prefixed_capture.jpg") == 0, "camera capture normalizes media prefix");
     assert_true(espclaw_hw_camera_status(&status) == 0, "camera status snapshot succeeded");
     assert_true(status.supported, "camera status reports supported");
     assert_true(status.last_capture_ok, "camera status reports last capture success");
-    assert_true(strcmp(status.last_relative_path, "media/admin_capture.jpg") == 0, "camera status tracks last capture path");
+    assert_true(strcmp(status.last_relative_path, "media/prefixed_capture.jpg") == 0, "camera status tracks last capture path");
     assert_true(
         espclaw_render_camera_status_json(&status, json, sizeof(json)) > 0,
         "camera status json rendered"
     );
     assert_string_contains(json, "\"supported\":true", "camera status json support flag");
     assert_string_contains(json, "\"last_capture_ok\":true", "camera status json success flag");
-    assert_string_contains(json, "\"last_relative_path\":\"media/admin_capture.jpg\"", "camera status json capture path");
+    assert_string_contains(json, "\"last_relative_path\":\"media/prefixed_capture.jpg\"", "camera status json capture path");
 }
 
 static void test_runtime_wifi_boot_deferral_policy(void)

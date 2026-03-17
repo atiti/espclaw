@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fixed ESP32-CAM camera capture consistency by normalizing `media/...` filenames before workspace resolution, resetting the camera runtime after capture failures, and retrying camera initialization at smaller frame sizes when the original DMA allocation cannot fit in fragmented internal RAM.
 - Added direct `/media/<relative-path>` serving from the workspace so admin camera captures can be opened directly instead of returning a 404 after a successful save.
 - Added `YOLO mode` to the local admin chat and simulator chat APIs, letting trusted operator runs ask the model to execute permitted tools immediately without another approval hop.
 - Expanded the real-device bench with `tool_matrix_full` and `large_lua_app` stages so the AI Thinker board now has explicit real-LLM coverage for per-tool auditing and large Lua app generation attempts.

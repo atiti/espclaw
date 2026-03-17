@@ -183,6 +183,29 @@ static void camera_set_success(const espclaw_hw_camera_capture_t *capture)
     s_camera_last_error[0] = '\0';
 }
 
+static void camera_reset_runtime(void)
+{
+#ifdef ESP_PLATFORM
+    if (s_camera_initialized) {
+        esp_camera_deinit();
+    }
+#endif
+    s_camera_initialized = false;
+}
+
+static const char *normalize_capture_filename(const char *filename)
+{
+    const char *normalized = filename != NULL ? filename : "";
+
+    while (*normalized == '/') {
+        normalized++;
+    }
+    if (strncmp(normalized, "media/", 6) == 0) {
+        normalized += 6;
+    }
+    return normalized;
+}
+
 int espclaw_hw_apply_board_boot_defaults(void)
 {
     const espclaw_board_descriptor_t *board = espclaw_board_current();
@@ -1239,6 +1262,9 @@ static framesize_t camera_framesize_for_profile(const espclaw_board_profile_t *p
 static int camera_init_for_board(const espclaw_board_descriptor_t *board, const espclaw_board_profile_t *profile)
 {
     camera_config_t config;
+    framesize_t attempts[4];
+    size_t attempt_count = 0;
+    size_t index;
     esp_err_t err;
 
     if (board == NULL || profile == NULL) {
@@ -1281,16 +1307,39 @@ static int camera_init_for_board(const espclaw_board_descriptor_t *board, const 
     config.grab_mode = CAMERA_GRAB_LATEST;
     config.fb_location = CAMERA_FB_IN_PSRAM;
 
-    err = esp_camera_init(&config);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "esp_camera_init failed: %s", esp_err_to_name(err));
-        snprintf(s_camera_last_error, sizeof(s_camera_last_error), "esp_camera_init failed: %s", esp_err_to_name(err));
-        return -1;
+    attempts[attempt_count++] = config.frame_size;
+    if (config.frame_size != FRAMESIZE_VGA) {
+        attempts[attempt_count++] = FRAMESIZE_VGA;
+    }
+    if (config.frame_size != FRAMESIZE_CIF && FRAMESIZE_VGA != FRAMESIZE_CIF) {
+        attempts[attempt_count++] = FRAMESIZE_CIF;
+    }
+    if (config.frame_size != FRAMESIZE_QVGA &&
+        FRAMESIZE_VGA != FRAMESIZE_QVGA &&
+        FRAMESIZE_CIF != FRAMESIZE_QVGA) {
+        attempts[attempt_count++] = FRAMESIZE_QVGA;
     }
 
-    s_camera_initialized = true;
-    ESP_LOGI(TAG, "camera initialized for board=%s", board->variant_id);
-    return 0;
+    for (index = 0; index < attempt_count; ++index) {
+        config.frame_size = attempts[index];
+        err = esp_camera_init(&config);
+        if (err == ESP_OK) {
+            s_camera_initialized = true;
+            ESP_LOGI(TAG, "camera initialized for board=%s framesize=%d", board->variant_id, (int)config.frame_size);
+            return 0;
+        }
+        ESP_LOGW(TAG, "esp_camera_init failed for framesize=%d: %s", (int)config.frame_size, esp_err_to_name(err));
+        snprintf(
+            s_camera_last_error,
+            sizeof(s_camera_last_error),
+            "esp_camera_init failed: %s (framesize=%d)",
+            esp_err_to_name(err),
+            (int)config.frame_size
+        );
+        camera_reset_runtime();
+    }
+
+    return -1;
 }
 #endif
 
@@ -1322,8 +1371,8 @@ int espclaw_hw_camera_capture(
     }
 
     now_ms = espclaw_hw_ticks_ms();
-    if (filename != NULL && filename[0] != '\0') {
-        snprintf(relative_path, sizeof(relative_path), "media/%s", filename);
+    if (filename != NULL && normalize_capture_filename(filename)[0] != '\0') {
+        snprintf(relative_path, sizeof(relative_path), "media/%s", normalize_capture_filename(filename));
     } else {
         snprintf(relative_path, sizeof(relative_path), "media/capture_%llu.jpg", (unsigned long long)now_ms);
     }
@@ -1343,18 +1392,21 @@ int espclaw_hw_camera_capture(
     frame = esp_camera_fb_get();
     if (frame == NULL) {
         ESP_LOGE(TAG, "camera frame capture failed");
+        camera_reset_runtime();
         camera_set_error(capture_out, "camera frame capture failed");
         return -1;
     }
     if (frame->format != PIXFORMAT_JPEG || frame->buf == NULL || frame->len == 0) {
         ESP_LOGE(TAG, "camera frame is not a valid JPEG");
         esp_camera_fb_return(frame);
+        camera_reset_runtime();
         camera_set_error(capture_out, "camera frame is not a valid JPEG");
         return -1;
     }
     if (write_binary_file(absolute_path, frame->buf, frame->len) != 0) {
         ESP_LOGE(TAG, "failed to persist camera frame to %s", absolute_path);
         esp_camera_fb_return(frame);
+        camera_reset_runtime();
         camera_set_error(capture_out, "failed to persist captured JPEG to the workspace");
         return -1;
     }
