@@ -141,6 +141,7 @@ static int parse_provider_text_response(
     size_t text_size,
     bool *has_tools_out
 );
+static bool extract_json_string_from(const char *json, const char *key, const char *after, char *buffer, size_t buffer_size);
 
 static bool is_completed_terminal_response_without_output(
     const char *json,
@@ -260,6 +261,31 @@ static const char *codex_transport_mode_name(int mode)
     }
 }
 
+static void log_tool_call_summary(const espclaw_agent_tool_call_t *tool_call, const char *source)
+{
+#ifndef ESPCLAW_HOST_LUA
+    size_t args_len = 0;
+
+    if (tool_call == NULL) {
+        return;
+    }
+    if (tool_call->arguments_json[0] != '\0') {
+        args_len = strlen(tool_call->arguments_json);
+    }
+    ESP_LOGI(
+        TAG,
+        "tool call source=%s name=%s call_id=%s args_bytes=%u",
+        source != NULL ? source : "unknown",
+        tool_call->name[0] != '\0' ? tool_call->name : "(none)",
+        tool_call->call_id[0] != '\0' ? tool_call->call_id : "(none)",
+        (unsigned int)args_len
+    );
+#else
+    (void)tool_call;
+    (void)source;
+#endif
+}
+
 static size_t append_tls_flag_name(char *buffer, size_t buffer_size, size_t used, bool *first, int flags, int bit, const char *name)
 {
     if ((flags & bit) == 0 || buffer == NULL || buffer_size == 0) {
@@ -344,6 +370,28 @@ static void copy_text(char *buffer, size_t buffer_size, const char *value)
     }
 
     snprintf(buffer, buffer_size, "%s", value != NULL ? value : "");
+}
+
+static bool history_role_is_supported(const char *role)
+{
+    return role != NULL &&
+           (strcmp(role, "assistant") == 0 ||
+            strcmp(role, "system") == 0 ||
+            strcmp(role, "developer") == 0 ||
+            strcmp(role, "user") == 0 ||
+            strcmp(role, "tool") == 0);
+}
+
+static bool extract_history_message(const char *line, espclaw_history_message_t *message)
+{
+    if (line == NULL || message == NULL) {
+        return false;
+    }
+    if (!extract_json_string_from(line, "role", NULL, message->role, sizeof(message->role)) ||
+        !extract_json_string_from(line, "content", NULL, message->content, sizeof(message->content))) {
+        return false;
+    }
+    return history_role_is_supported(message->role);
 }
 
 static bool append_buffer_full(size_t used, size_t buffer_size)
@@ -972,6 +1020,107 @@ static bool user_message_requests_web_search_and_fetch(const char *user_message)
     return wants_search && wants_fetch;
 }
 
+static bool user_message_is_short_affirmative_tool_followup(const char *user_message)
+{
+    if (user_message == NULL || user_message[0] == '\0' || strlen(user_message) > 64U) {
+        return false;
+    }
+
+    return contains_case_insensitive_text(user_message, "yes") ||
+           contains_case_insensitive_text(user_message, "ok") ||
+           contains_case_insensitive_text(user_message, "okay") ||
+           contains_case_insensitive_text(user_message, "sure") ||
+           contains_case_insensitive_text(user_message, "do it") ||
+           contains_case_insensitive_text(user_message, "go ahead") ||
+           contains_case_insensitive_text(user_message, "you can") ||
+           contains_case_insensitive_text(user_message, "run it") ||
+           contains_case_insensitive_text(user_message, "run the tool") ||
+           contains_case_insensitive_text(user_message, "please do");
+}
+
+static bool add_required_tool_name(
+    char names[][ESPCLAW_AGENT_TOOL_NAME_MAX + 1],
+    size_t *count_io,
+    size_t max_count,
+    const char *tool_name
+)
+{
+    size_t index;
+
+    if (names == NULL || count_io == NULL || tool_name == NULL || tool_name[0] == '\0') {
+        return false;
+    }
+
+    for (index = 0; index < *count_io; ++index) {
+        if (strcmp(names[index], tool_name) == 0) {
+            return true;
+        }
+    }
+    if (*count_io >= max_count) {
+        return false;
+    }
+
+    copy_text(names[*count_io], ESPCLAW_AGENT_TOOL_NAME_MAX + 1U, tool_name);
+    (*count_io)++;
+    return true;
+}
+
+static size_t collect_required_tool_names_from_text(
+    const char *text,
+    char names[][ESPCLAW_AGENT_TOOL_NAME_MAX + 1],
+    size_t max_count
+)
+{
+    size_t index;
+    size_t count = 0;
+
+    if (text == NULL || text[0] == '\0' || names == NULL || max_count == 0U) {
+        return 0;
+    }
+
+    for (index = 0; index < espclaw_tool_count(); ++index) {
+        const espclaw_tool_descriptor_t *tool = espclaw_tool_at(index);
+
+        if (tool == NULL || tool->name[0] == '\0') {
+            continue;
+        }
+        if (contains_case_insensitive_text(text, tool->name)) {
+            add_required_tool_name(names, &count, max_count, tool->name);
+        }
+    }
+
+    return count;
+}
+
+static size_t collect_required_tool_names(
+    const char *user_message,
+    const espclaw_history_message_t *history,
+    size_t history_count,
+    char names[][ESPCLAW_AGENT_TOOL_NAME_MAX + 1],
+    size_t max_count
+)
+{
+    size_t count = 0;
+    size_t index;
+
+    if (names == NULL || max_count == 0U) {
+        return 0;
+    }
+
+    count = collect_required_tool_names_from_text(user_message, names, max_count);
+    if (count > 0 || !user_message_is_short_affirmative_tool_followup(user_message) || history == NULL || history_count == 0U) {
+        return count;
+    }
+
+    for (index = history_count; index > 0; --index) {
+        if (strcmp(history[index - 1].role, "assistant") == 0) {
+            return collect_required_tool_names_from_text(history[index - 1].content, names, max_count);
+        }
+    }
+
+    return 0;
+}
+
 static void history_append_message(
     espclaw_history_message_t *history,
     size_t max_messages,
@@ -1067,6 +1216,69 @@ static int build_web_search_fetch_retry_request_body(
         need_fetch ? " web.fetch" : "",
         (need_search && need_fetch) ? "s" : "",
         (need_search && need_fetch) ? "s" : ""
+    );
+
+    history = (espclaw_history_message_t *)agent_calloc(history_max, sizeof(*history));
+    if (history == NULL) {
+        return -1;
+    }
+
+    if (workspace_root != NULL && workspace_root[0] != '\0') {
+        load_history(workspace_root, session_id, history, history_max, &history_count);
+    }
+    if (assistant_reply != NULL && assistant_reply[0] != '\0') {
+        history_append_message(history, history_max, &history_count, "assistant", assistant_reply);
+    }
+    history_append_message(history, history_max, &history_count, "user", retry_user_message);
+    status = build_initial_request_body(profile, instructions, history, history_count, buffer, buffer_size);
+    free(history);
+    return status;
+}
+
+static int build_explicit_tool_retry_request_body(
+    const espclaw_auth_profile_t *profile,
+    const char *workspace_root,
+    const char *session_id,
+    const char *instructions,
+    const char *assistant_reply,
+    char missing_tools[][ESPCLAW_AGENT_TOOL_NAME_MAX + 1],
+    size_t missing_count,
+    char *buffer,
+    size_t buffer_size,
+    size_t history_max
+)
+{
+    char retry_user_message[512];
+    espclaw_history_message_t *history = NULL;
+    size_t history_count = 0;
+    size_t used = 0;
+    size_t index;
+    int status;
+
+    if (profile == NULL || instructions == NULL || missing_tools == NULL || missing_count == 0U ||
+        buffer == NULL || buffer_size == 0 || history_max == 0U) {
+        return -1;
+    }
+
+    used += (size_t)snprintf(
+        retry_user_message + used,
+        sizeof(retry_user_message) - used,
+        "The operator explicitly told you to call these tools in this turn: "
+    );
+    for (index = 0; index < missing_count && used + 8 < sizeof(retry_user_message); ++index) {
+        used += (size_t)snprintf(
+            retry_user_message + used,
+            sizeof(retry_user_message) - used,
+            "%s%s",
+            index == 0 ? "" : ", ",
+            missing_tools[index]
+        );
+    }
+    used += (size_t)snprintf(
+        retry_user_message + used,
+        sizeof(retry_user_message) - used,
+        ". Call the missing tool%s now instead of describing what you still need, then answer concisely with the actual result.",
+        missing_count == 1U ? "" : "s"
     );
 
     history = (espclaw_history_message_t *)agent_calloc(history_max, sizeof(*history));
@@ -1215,6 +1427,8 @@ static int load_system_prompt(
         buffer_size - used,
         "\nUse hardware.list when board-specific pins, buses, or capabilities matter.\n"
         "Use lua_api.list when generating or debugging Lua apps and you need exact espclaw.* signatures or handler rules.\n"
+        "If the operator explicitly tells you to run a tool by name, call that tool in this turn instead of asking them to paste its output.\n"
+        "If your previous reply said a named tool still needs to be run and the next operator turn is an approval like yes/ok/do it/go ahead, treat that as approval to call the named tool immediately.\n"
         "If the user says this is a tool-call compliance test, says the transcript is audited, or explicitly lists tools you must use, call every applicable listed tool before replying, even if some of those tool calls fail.\n"
     );
     if (user_message_requests_lua_app_contract(user_message)) {
@@ -1269,14 +1483,12 @@ static int load_history(const char *workspace_root, const char *session_id, espc
         line[line_len] = '\0';
 
         if (count < max_messages) {
-            if (extract_json_string_from(line, "role", NULL, messages[count].role, sizeof(messages[count].role)) &&
-                extract_json_string_from(line, "content", NULL, messages[count].content, sizeof(messages[count].content))) {
+            if (extract_history_message(line, &messages[count])) {
                 count++;
             }
         } else {
             memmove(messages, messages + 1, (max_messages - 1) * sizeof(messages[0]));
-            if (extract_json_string_from(line, "role", NULL, messages[max_messages - 1].role, sizeof(messages[max_messages - 1].role)) &&
-                extract_json_string_from(line, "content", NULL, messages[max_messages - 1].content, sizeof(messages[max_messages - 1].content))) {
+            if (extract_history_message(line, &messages[max_messages - 1])) {
                 count = max_messages;
             }
         }
@@ -1335,6 +1547,10 @@ static size_t append_history_items(
     for (index = 0; index < count; ++index) {
         const char *role = messages[index].role;
         char content[1152];
+
+        if (!history_role_is_supported(role)) {
+            continue;
+        }
 
         if (index > 0) {
             used += (size_t)snprintf(buffer + used, buffer_size - used, ",");
@@ -3600,6 +3816,7 @@ int espclaw_agent_execute_tool(
     snprintf(tool_call.call_id, sizeof(tool_call.call_id), "manual");
     snprintf(tool_call.name, sizeof(tool_call.name), "%s", tool_name);
     snprintf(tool_call.arguments_json, sizeof(tool_call.arguments_json), "%s", arguments_json != NULL ? arguments_json : "{}");
+    log_tool_call_summary(&tool_call, "manual");
     return tool_execute(workspace_root, &tool_call, allow_mutations, NULL, buffer, buffer_size);
 }
 
@@ -4947,7 +5164,7 @@ static int raw_codex_http_post(
             goto cleanup;
         }
     }
-    ESP_LOGI(TAG, "raw Codex TLS handshake complete for %s", path);
+    ESP_LOGD(TAG, "raw Codex TLS handshake complete for %s", path);
 
     peer_cert = mbedtls_ssl_get_peer_cert(&ssl);
     if (peer_cert == NULL || !cert_chain_contains_sha256(peer_cert, CHATGPT_LE_E7_SHA256, sizeof(CHATGPT_LE_E7_SHA256))) {
@@ -5011,7 +5228,7 @@ static int raw_codex_http_post(
             goto cleanup;
         }
     }
-    ESP_LOGI(
+    ESP_LOGD(
         TAG,
         "raw Codex request sent body_bytes=%u writes=%u",
         (unsigned int)strlen(body),
@@ -5030,7 +5247,7 @@ static int raw_codex_http_post(
             read_count++;
             read_buffer[ret] = '\0';
             if (read_count == 1) {
-                ESP_LOGI(TAG, "raw Codex first bytes received count=%d", ret);
+                ESP_LOGD(TAG, "raw Codex first bytes received count=%d", ret);
             }
             if (!header_consumed) {
                 feed_result = codex_sse_feed_http_headers(
@@ -5048,7 +5265,7 @@ static int raw_codex_http_post(
                     continue;
                 }
                 header_consumed = true;
-                ESP_LOGI(TAG, "raw Codex headers parsed status=%d chunked=%d", parser->status_code, parser->is_chunked ? 1 : 0);
+                ESP_LOGD(TAG, "raw Codex headers parsed status=%d chunked=%d", parser->status_code, parser->is_chunked ? 1 : 0);
             }
 
             if ((size_t)ret > consumed) {
@@ -5073,7 +5290,7 @@ static int raw_codex_http_post(
                     goto cleanup;
                 }
                 if (feed_result > 0) {
-                    ESP_LOGI(TAG, "raw Codex completed after %u reads and %u bytes", read_count, (unsigned int)total_read);
+                    ESP_LOGD(TAG, "raw Codex completed after %u reads and %u bytes", read_count, (unsigned int)total_read);
                     result = 0;
                     goto cleanup;
                 }
@@ -5082,14 +5299,14 @@ static int raw_codex_http_post(
         }
         if (ret == 0 || ret == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) {
             if (codex_sse_finish_stream(parser, response, response_size, error_text, error_text_size) == 0) {
-                ESP_LOGI(TAG, "raw Codex stream closed after %u reads and %u bytes", read_count, (unsigned int)total_read);
+                ESP_LOGD(TAG, "raw Codex stream closed after %u reads and %u bytes", read_count, (unsigned int)total_read);
                 result = 0;
             }
             goto cleanup;
         }
         if (ret == MBEDTLS_ERR_SSL_TIMEOUT) {
             if (codex_sse_finish_stream(parser, response, response_size, error_text, error_text_size) == 0) {
-                ESP_LOGI(TAG, "raw Codex timed out after %u reads and %u bytes but produced a terminal response", read_count, (unsigned int)total_read);
+                ESP_LOGD(TAG, "raw Codex timed out after %u reads and %u bytes but produced a terminal response", read_count, (unsigned int)total_read);
                 result = 0;
             } else if (error_text[0] == '\0') {
                 copy_text(error_text, error_text_size, "Provider SSE read timed out before response.completed.");
@@ -5585,6 +5802,10 @@ int espclaw_agent_loop_run(
     bool saw_web_search_success = false;
     bool saw_web_fetch_success = false;
     unsigned int web_search_fetch_retry_count = 0;
+    char explicit_required_tools[ESPCLAW_AGENT_TOOL_CALL_MAX][ESPCLAW_AGENT_TOOL_NAME_MAX + 1];
+    bool explicit_required_tool_called[ESPCLAW_AGENT_TOOL_CALL_MAX] = {0};
+    size_t explicit_required_tool_count = 0;
+    unsigned int explicit_tool_retry_count = 0;
 
     if (session_id == NULL || user_message == NULL || result == NULL) {
         return -1;
@@ -5622,7 +5843,7 @@ int espclaw_agent_loop_run(
     tool_result_stride = runtime_budget.agent_tool_result_max + 1U;
 
 #ifdef ESP_PLATFORM
-    ESP_LOGI(
+    ESP_LOGD(
         TAG,
         "agent alloc preflight free=%u largest=%u req=%u resp=%u hist=%u items=%u instr=%u",
         (unsigned int)heap_caps_get_free_size(MALLOC_CAP_8BIT),
@@ -5681,6 +5902,13 @@ int espclaw_agent_loop_run(
         copy_text(history[0].content, sizeof(history[0].content), user_message);
         history_count = 1;
     }
+    explicit_required_tool_count = collect_required_tool_names(
+        user_message,
+        history,
+        history_count,
+        explicit_required_tools,
+        ESPCLAW_AGENT_TOOL_CALL_MAX
+    );
     if (build_initial_request_body(profile, instructions, history, history_count, request_body, runtime_budget.agent_request_buffer_max) != 0) {
         free(media_refs);
         free(tool_results);
@@ -5823,6 +6051,55 @@ int espclaw_agent_loop_run(
                 web_search_fetch_retry_count++;
                 continue;
             }
+            if (explicit_required_tool_count > 0U && explicit_tool_retry_count == 0U) {
+                size_t missing_count = 0;
+                char missing_tools[ESPCLAW_AGENT_TOOL_CALL_MAX][ESPCLAW_AGENT_TOOL_NAME_MAX + 1];
+
+                for (tool_index = 0; tool_index < explicit_required_tool_count; ++tool_index) {
+                    if (!explicit_required_tool_called[tool_index]) {
+                        copy_text(
+                            missing_tools[missing_count],
+                            sizeof(missing_tools[missing_count]),
+                            explicit_required_tools[tool_index]
+                        );
+                        missing_count++;
+                    }
+                }
+                if (missing_count > 0U) {
+                    request_body = (char *)agent_calloc(1, runtime_budget.agent_request_buffer_max);
+                    if (request_body == NULL) {
+                        free(instructions);
+                        free(codex_items_json);
+                        free(history);
+                        free(response_body);
+                        free_embedded_auth_profile(profile);
+                        copy_text(result->final_text, sizeof(result->final_text), "Out of memory retrying explicit tool request.");
+                        return -1;
+                    }
+                    if (build_explicit_tool_retry_request_body(
+                            profile,
+                            workspace_root,
+                            session_id,
+                            instructions,
+                            result->final_text,
+                            missing_tools,
+                            missing_count,
+                            request_body,
+                            runtime_budget.agent_request_buffer_max,
+                            runtime_budget.agent_history_max) != 0) {
+                        free(instructions);
+                        free(codex_items_json);
+                        free(history);
+                        free(request_body);
+                        free(response_body);
+                        free_embedded_auth_profile(profile);
+                        copy_text(result->final_text, sizeof(result->final_text), "Failed to retry the explicit tool request.");
+                        return -1;
+                    }
+                    explicit_tool_retry_count++;
+                    continue;
+                }
+            }
             if (enforce_app_install && !saw_app_install_tool && app_install_retry_count == 0) {
                 request_body = (char *)agent_calloc(1, runtime_budget.agent_request_buffer_max);
                 if (request_body == NULL) {
@@ -5919,11 +6196,18 @@ int espclaw_agent_loop_run(
         for (tool_index = 0; tool_index < provider_response->tool_call_count; ++tool_index) {
             espclaw_agent_media_ref_t tool_media = {0};
             char *tool_result_buffer = tool_result_at(tool_results, tool_result_stride, tool_index);
+            size_t required_index;
 
             if (strcmp(provider_response->tool_calls[tool_index].name, "app.install") == 0) {
                 saw_app_install_tool = true;
             }
+            for (required_index = 0; required_index < explicit_required_tool_count; ++required_index) {
+                if (strcmp(provider_response->tool_calls[tool_index].name, explicit_required_tools[required_index]) == 0) {
+                    explicit_required_tool_called[required_index] = true;
+                }
+            }
 
+            log_tool_call_summary(&provider_response->tool_calls[tool_index], "model");
             tool_execute(
                 workspace_root,
                 &provider_response->tool_calls[tool_index],

@@ -214,6 +214,7 @@ static int confirmation_http_adapter(
     assert_string_contains(body, "task.start", "system prompt includes task tool");
     assert_string_contains(body, "Mutating tools require explicit confirmation", "read-only runs preserve confirmation policy");
     assert_string_contains(body, "tool-call compliance test", "system prompt includes compliance guidance");
+    assert_string_contains(body, "explicitly tells you to run a tool by name", "system prompt includes explicit tool execution guidance");
 
     if (state != NULL && state->calls > 1) {
         assert_string_contains(body, "\"instructions\":", "follow-up codex requests retain instructions");
@@ -282,6 +283,7 @@ static int tool_list_http_adapter(
     assert_string_contains(body, "lua_api.list", "tool list prompt includes lua api tool");
     assert_string_contains(body, "behavior.register", "tool list prompt includes behavior tool");
     assert_string_contains(body, "tool-call compliance test", "tool list prompt includes compliance guidance");
+    assert_string_contains(body, "explicitly tells you to run a tool by name", "tool list prompt includes explicit tool execution guidance");
     assert_string_not_contains(body, "# Lua App Contract", "tool list prompt does not inject lua app snapshot for non-app runs");
 
     if (state != NULL && state->calls > 1) {
@@ -846,9 +848,19 @@ static void test_esp32cam_storage_attempts(void)
     espclaw_esp32cam_sd_attempt_t attempt;
 
     assert_true(espclaw_storage_esp32cam_attempt_count() == 2U, "esp32cam exposes sd retry attempts");
-    assert_true(espclaw_storage_get_esp32cam_attempt(0, &attempt), "esp32cam sdmmc attempt available");
-    assert_true(strcmp(attempt.label, "sdmmc-1bit") == 0, "esp32cam first attempt is sdmmc");
-    assert_true(attempt.mode == ESPCLAW_ESP32CAM_SD_MODE_SDMMC, "esp32cam first attempt uses sdmmc");
+    assert_true(espclaw_storage_get_esp32cam_attempt(0, &attempt), "esp32cam sdspi attempt available");
+    assert_true(strcmp(attempt.label, "sdspi") == 0, "esp32cam first attempt is sdspi");
+    assert_true(attempt.mode == ESPCLAW_ESP32CAM_SD_MODE_SDSPI, "esp32cam first attempt uses sdspi");
+    assert_true(attempt.clk_gpio == 14, "esp32cam sdspi clock pin matches board");
+    assert_true(attempt.cmd_mosi_gpio == 15, "esp32cam sdspi mosi pin matches board");
+    assert_true(attempt.d0_miso_gpio == 2, "esp32cam sdspi miso pin matches board");
+    assert_true(attempt.d1_gpio == -1, "esp32cam sdspi leaves led/data1 pin unused");
+    assert_true(attempt.d2_gpio == -1, "esp32cam sdspi leaves data2 pin unused");
+    assert_true(attempt.d3_cs_gpio == 13, "esp32cam sdspi cs pin matches board");
+
+    assert_true(espclaw_storage_get_esp32cam_attempt(1, &attempt), "esp32cam sdmmc attempt available");
+    assert_true(strcmp(attempt.label, "sdmmc-1bit") == 0, "esp32cam second attempt is sdmmc");
+    assert_true(attempt.mode == ESPCLAW_ESP32CAM_SD_MODE_SDMMC, "esp32cam second attempt uses sdmmc");
     assert_true(attempt.width == 1U, "esp32cam sdmmc attempt uses 1-bit mode");
     assert_true(attempt.clk_gpio == 14, "esp32cam sdmmc clock pin matches board");
     assert_true(attempt.cmd_mosi_gpio == 15, "esp32cam sdmmc command pin matches board");
@@ -856,16 +868,6 @@ static void test_esp32cam_storage_attempts(void)
     assert_true(attempt.d1_gpio == -1, "esp32cam sdmmc leaves led/data1 pin unused");
     assert_true(attempt.d2_gpio == -1, "esp32cam sdmmc leaves data2 pin unused");
     assert_true(attempt.d3_cs_gpio == -1, "esp32cam sdmmc leaves data3 pin unused");
-
-    assert_true(espclaw_storage_get_esp32cam_attempt(1, &attempt), "esp32cam sdspi attempt available");
-    assert_true(strcmp(attempt.label, "sdspi") == 0, "esp32cam second attempt is sdspi");
-    assert_true(attempt.mode == ESPCLAW_ESP32CAM_SD_MODE_SDSPI, "esp32cam second attempt uses sdspi");
-    assert_true(attempt.clk_gpio == 14, "esp32cam sdspi clock pin matches board");
-    assert_true(attempt.cmd_mosi_gpio == 15, "esp32cam sdspi mosi pin matches board");
-    assert_true(attempt.d0_miso_gpio == 2, "esp32cam sdspi miso pin matches board");
-    assert_true(attempt.d1_gpio == -1, "esp32cam sdspi leaves led/data1 pin unused");
-    assert_true(attempt.d2_gpio == -1, "esp32cam sdspi leaves data2 pin unused");
-    assert_true(attempt.d3_cs_gpio == 13, "esp32cam sdspi cs pin matches board");
 
     assert_true(!espclaw_storage_get_esp32cam_attempt(2, &attempt), "esp32cam has no third storage attempt");
 }
@@ -1168,6 +1170,100 @@ static int empty_completion_http_adapter(
         "\"output\":["
         "{\"type\":\"function_call\",\"call_id\":\"call_tool_list\",\"name\":\"tool.list\",\"arguments\":\"{}\",\"status\":\"completed\"}"
         "]"
+        "}"
+    );
+    return 0;
+}
+
+static int malformed_role_history_http_adapter(
+    const char *url,
+    const espclaw_auth_profile_t *profile,
+    const char *body,
+    char *response,
+    size_t response_size,
+    void *user_data
+)
+{
+    test_agent_adapter_state_t *state = (test_agent_adapter_state_t *)user_data;
+
+    (void)url;
+    (void)profile;
+
+    if (state != NULL) {
+        state->calls++;
+    }
+
+    assert_string_not_contains(body, "\"role\":\"\"", "malformed empty history role omitted from request");
+
+    snprintf(
+        response,
+        response_size,
+        "{"
+        "\"id\":\"resp_malformed_role_ok\","
+        "\"status\":\"completed\","
+        "\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"History normalization worked.\"}]}]"
+        "}"
+    );
+    return 0;
+}
+
+static int explicit_tool_retry_http_adapter(
+    const char *url,
+    const espclaw_auth_profile_t *profile,
+    const char *body,
+    char *response,
+    size_t response_size,
+    void *user_data
+)
+{
+    test_agent_adapter_state_t *state = (test_agent_adapter_state_t *)user_data;
+
+    (void)url;
+    (void)profile;
+
+    if (state != NULL) {
+        state->calls++;
+    }
+
+    if (state != NULL && state->calls == 1U) {
+        assert_string_contains(body, "yes do", "explicit tool retry first turn keeps user approval");
+        snprintf(
+            response,
+            response_size,
+            "{"
+            "\"id\":\"resp_explicit_retry_1\","
+            "\"status\":\"completed\","
+            "\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"I still need task.list.\"}]}]"
+            "}"
+        );
+        return 0;
+    }
+
+    if (state != NULL && state->calls == 2U) {
+        assert_string_contains(body, "explicitly told you to call these tools", "explicit tool retry corrective prompt included");
+        assert_string_contains(body, "task.list", "explicit tool retry names missing tool");
+        snprintf(
+            response,
+            response_size,
+            "{"
+            "\"id\":\"resp_explicit_retry_2\","
+            "\"status\":\"completed\","
+            "\"output\":["
+            "{\"type\":\"function_call\",\"call_id\":\"call_task_list_retry\",\"name\":\"task_x2E_list\",\"arguments\":\"{}\",\"status\":\"completed\"}"
+            "]"
+            "}"
+        );
+        return 0;
+    }
+
+    assert_string_contains(body, "\"type\":\"function_call_output\"", "explicit tool retry follow-up includes tool output");
+    snprintf(
+        response,
+        response_size,
+        "{"
+        "\"id\":\"resp_explicit_retry_final\","
+        "\"status\":\"completed\","
+        "\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Called task.list and confirmed the result.\"}]}]"
         "}"
     );
     return 0;
@@ -3500,6 +3596,54 @@ static void test_agent_loop(void)
     assert_string_contains(transcript, "\"role\":\"assistant\",\"content\":\"\"", "empty completion stored blank assistant message");
 
     {
+        char malformed_session_path[256];
+        FILE *malformed_session = NULL;
+
+        snprintf(malformed_session_path, sizeof(malformed_session_path), "%s/sessions/%s.jsonl", temp_dir, "chat_malformed_role");
+        malformed_session = fopen(malformed_session_path, "w");
+        assert_true(malformed_session != NULL, "malformed session file opened");
+        fputs("{\"role\":\"assistant\",\"content\":\"Earlier reply\"}\n", malformed_session);
+        fputs("{\"role\":\"\",\"content\":\"Broken row\"}\n", malformed_session);
+        fputs("{\"role\":\"user\",\"content\":\"Current question\"}\n", malformed_session);
+        fclose(malformed_session);
+    }
+
+    adapter_state.calls = 0;
+    espclaw_agent_set_http_adapter(malformed_role_history_http_adapter, &adapter_state);
+    memset(&result, 0, sizeof(result));
+    assert_true(
+        espclaw_agent_loop_run(temp_dir, "chat_malformed_role", "Please continue.", false, false, &result) == 0,
+        "malformed history role loop succeeded"
+    );
+    espclaw_agent_set_http_adapter(NULL, NULL);
+    assert_true(result.ok, "malformed history role result ok");
+    assert_string_contains(result.final_text, "History normalization worked.", "malformed history role final text returned");
+
+    {
+        char explicit_retry_session_path[256];
+        FILE *explicit_retry_session = NULL;
+
+        snprintf(explicit_retry_session_path, sizeof(explicit_retry_session_path), "%s/sessions/%s.jsonl", temp_dir, "chat_explicit_tool_retry");
+        explicit_retry_session = fopen(explicit_retry_session_path, "w");
+        assert_true(explicit_retry_session != NULL, "explicit tool retry session file opened");
+        fputs("{\"role\":\"assistant\",\"content\":\"Please run task.list and share the output.\"}\n", explicit_retry_session);
+        fclose(explicit_retry_session);
+    }
+
+    adapter_state.calls = 0;
+    espclaw_agent_set_http_adapter(explicit_tool_retry_http_adapter, &adapter_state);
+    memset(&result, 0, sizeof(result));
+    assert_true(
+        espclaw_agent_loop_run(temp_dir, "chat_explicit_tool_retry", "yes do", true, true, &result) == 0,
+        "explicit tool retry loop succeeded"
+    );
+    espclaw_agent_set_http_adapter(NULL, NULL);
+    assert_true(result.ok, "explicit tool retry result ok");
+    assert_true(result.used_tools, "explicit tool retry used tools");
+    assert_true(adapter_state.calls == 3U, "explicit tool retry used corrective second turn");
+    assert_string_contains(result.final_text, "Called task.list", "explicit tool retry final text returned");
+
+    {
         espclaw_esp32cam_sd_attempt_t attempt = {0};
 
         assert_true(espclaw_storage_get_esp32cam_attempt(0, &attempt), "esp32cam first sd attempt available");
@@ -3611,6 +3755,18 @@ static void test_console_chat_and_web_tools(void)
     assert_string_contains(transcript, "esp_log_level_set(\"wifi\", ESP_LOG_WARN)", "uart console suppresses noisy wifi info logs");
     assert_string_contains(transcript, "esp_log_level_set(\"esp_netif_handlers\", ESP_LOG_WARN)", "uart console suppresses noisy netif info logs");
     assert_string_contains(transcript, "uart_console_write_raw(\"\\r\\n\")", "uart console emits newline before running commands");
+
+    read_text_file(
+        ESPCLAW_SOURCE_DIR "/firmware/components/espclaw_core/src/agent_loop.c",
+        transcript,
+        sizeof(transcript)
+    );
+    assert_string_contains(transcript, "ESP_LOGD(", "agent loop uses debug logging");
+    assert_string_contains(transcript, "agent alloc preflight free=%u largest=%u req=%u resp=%u hist=%u items=%u instr=%u", "agent alloc preflight message retained");
+    assert_string_contains(transcript, "ESP_LOGD(TAG, \"raw Codex TLS handshake complete", "raw codex handshake log moved to debug");
+    assert_string_contains(transcript, "ESP_LOGD(TAG, \"raw Codex headers parsed status=", "raw codex header log moved to debug");
+    assert_string_contains(transcript, "log_tool_call_summary(&provider_response->tool_calls[tool_index], \"model\")", "model tool calls log summary");
+    assert_string_contains(transcript, "log_tool_call_summary(&tool_call, \"manual\")", "manual tool calls log summary");
 
     memset(&result, 0, sizeof(result));
     assert_true(

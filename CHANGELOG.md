@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Hardened transcript history loading so malformed or stale rows with missing/invalid roles are ignored instead of poisoning future Codex requests with `role:""`.
+- Added explicit-tool request enforcement for local operator chat: if the user names a tool directly, or approves a previously requested named tool with a short `yes/ok/do it` follow-up, the runtime now retries until the model actually calls the missing tool.
+- Moved the `agent alloc preflight` heap budget line to debug level so normal UART sessions keep the high-signal operational logs.
+- Reduced ESP32-CAM serial chat noise by moving verbose raw Codex transport progress logs to debug level while keeping transport failures visible at normal log levels.
+- Added compact info-level `tool call` logs so UART and web operators can see each model or manual tool invocation without the full transport trace.
+- Switched ESP32-CAM storage probing back to `sdspi`-first ordering, matching the stable live-board path and avoiding the noisy broken `sdmmc-1bit` first attempt on every boot.
 - Added a shared console executor across UART0, the simulator console, and the admin web chat so slash commands and normal LLM turns now behave consistently on every local operator surface.
 - Added slash commands for local operator workflows, including `/status`, `/tools`, `/tool`, `/wifi status`, `/wifi scan`, `/wifi join`, `/memory`, `/reboot`, and `/factory-reset`.
 - Added proxy-backed `web.search` and `web.fetch` tools plus a generic HTTP adapter layer, with `web.fetch` persisting larger scraped markdown into the workspace under `memory/web_fetch_<hash>.md`.
