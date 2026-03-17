@@ -729,6 +729,38 @@ static void test_incremental_sse_stream_uses_output_text_done_when_completed_lac
     assert_string_contains(reduced, "A workbench with electronics parts.", "vision fallback retained streamed output text");
 }
 
+static void test_incremental_sse_stream_uses_output_text_delta_when_completed_lacks_text(void)
+{
+    char payload[4096];
+    char reduced[2048];
+    char error_text[256];
+
+    snprintf(
+        payload,
+        sizeof(payload),
+        "HTTP/1.1 200 OK\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+        "event: response.created\n"
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_delta\"}}\n\n"
+        "event: response.output_text.delta\n"
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ESPCLAW_\"}\n\n"
+        "event: response.output_text.delta\n"
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"DELTA\"}\n\n"
+        "event: response.completed\n"
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_delta\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"refusal\",\"refusal\":\"\"}]}]}}\n\n"
+    );
+    memset(error_text, 0, sizeof(error_text));
+
+    assert_true(
+        espclaw_agent_reduce_sse_stream_to_response_json(payload, reduced, sizeof(reduced), error_text, sizeof(error_text)) == 0,
+        "incremental sse reduction uses streamed output_text deltas when completed lacks inline text"
+    );
+    assert_string_contains(reduced, "\"id\":\"resp_delta\"", "delta fallback retained response id");
+    assert_string_contains(reduced, "\"type\":\"output_text\"", "delta fallback synthesized output text");
+    assert_string_contains(reduced, "ESPCLAW_DELTA", "delta fallback retained streamed output text");
+}
+
 static void test_terminal_response_storage_handles_overlap(void)
 {
     char buffer[256];
@@ -888,6 +920,41 @@ static int sse_stream_http_adapter(
         "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_sse_stream\",\"status\":\"in_progress\"}}\n\n"
         "event: response.output_text.done\n"
         "data: {\"type\":\"response.output_text.done\",\"text\":\"ESPCLAW_BENCH_HI\"}\n\n"
+    );
+    return 0;
+}
+
+static int long_output_text_http_adapter(
+    const char *url,
+    const espclaw_auth_profile_t *profile,
+    const char *body,
+    char *response,
+    size_t response_size,
+    void *user_data
+)
+{
+    char long_text[2048];
+    size_t index = 0;
+
+    (void)url;
+    (void)profile;
+    (void)body;
+    (void)user_data;
+
+    for (index = 0; index < sizeof(long_text) - 1; ++index) {
+        long_text[index] = (char)('a' + (index % 26));
+    }
+    long_text[sizeof(long_text) - 1] = '\0';
+
+    snprintf(
+        response,
+        response_size,
+        "{"
+        "\"id\":\"resp_long_text\","
+        "\"status\":\"completed\","
+        "\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"%s\"}]}]"
+        "}",
+        long_text
     );
     return 0;
 }
@@ -1060,6 +1127,7 @@ static void test_board_profiles(void)
     assert_true(cam.default_storage_backend == ESPCLAW_STORAGE_BACKEND_SD_CARD, "esp32cam defaults to sd storage");
     assert_true(!cam.supports_ble_provisioning, "esp32cam does not expose BLE provisioning");
     assert_true(strcmp(cam.runtime_budget.memory_class, "balanced") == 0, "esp32cam uses balanced runtime budget");
+    assert_true(cam.runtime_budget.agent_response_buffer_max == 131072U, "esp32cam uses a larger PSRAM-backed response buffer");
 }
 
 static void test_lua_api_registry(void)
@@ -1514,6 +1582,17 @@ static void test_embedded_console_and_agent_paths_heap_allocate_auth_profiles(vo
     read_text_file(path, contents, sizeof(contents));
     assert_string_contains(contents, "profile = (espclaw_auth_profile_t *)calloc(1, sizeof(*profile));", "agent loop heap allocates auth profile on embedded");
     assert_string_contains(contents, "free_embedded_auth_profile(profile);", "agent loop frees embedded auth profiles through helper");
+}
+
+static void test_uart_console_normalizes_newlines_for_serial_terminals(void)
+{
+    char path[512];
+    char contents[65536];
+
+    snprintf(path, sizeof(path), "%s/firmware/components/espclaw_core/src/runtime.c", ESPCLAW_SOURCE_DIR);
+    read_text_file(path, contents, sizeof(contents));
+    assert_string_contains(contents, "if (*cursor == '\\n' && (cursor == text || cursor[-1] != '\\r'))", "uart console writer detects bare newlines");
+    assert_string_contains(contents, "espclaw_hw_uart_write(0, (const uint8_t *)\"\\r\\n\", 2, &written);", "uart console writer emits CRLF for bare newlines");
 }
 
 static void test_provisioning_descriptor(void)
@@ -3145,6 +3224,19 @@ static void test_agent_loop(void)
     assert_string_contains(result.response_id, "resp_sse_stream", "sse stream fallback response id parsed");
     assert_true(strcmp(result.final_text, "ESPCLAW_BENCH_HI") == 0, "sse stream fallback final text parsed");
 
+    adapter_state.calls = 0;
+    espclaw_agent_set_http_adapter(long_output_text_http_adapter, &adapter_state);
+    memset(&result, 0, sizeof(result));
+    assert_true(
+        espclaw_agent_loop_run(temp_dir, "chat_long_output_text", "Give me a long answer.", false, false, &result) == 0,
+        "long output-text loop succeeded"
+    );
+    espclaw_agent_set_http_adapter(NULL, NULL);
+    assert_true(result.ok, "long output-text result ok");
+    assert_true(!result.used_tools, "long output-text result did not use tools");
+    assert_string_contains(result.response_id, "resp_long_text", "long output-text response id parsed");
+    assert_true(strlen(result.final_text) > 256U, "long output-text final text preserved more than a tiny prefix");
+
     snprintf(profile.base_url, sizeof(profile.base_url), "mock://fs-read");
     assert_true(espclaw_auth_store_save(&profile) == 0, "fs read auth profile saved");
     memset(&result, 0, sizeof(result));
@@ -3459,6 +3551,7 @@ int main(void)
     test_console_chat_skips_embedded_transcript_writes();
     test_runtime_uses_larger_uart_console_stack();
     test_embedded_console_and_agent_paths_heap_allocate_auth_profiles();
+    test_uart_console_normalizes_newlines_for_serial_terminals();
     test_system_monitor_snapshot_and_json();
     test_camera_status_and_json();
     test_runtime_wifi_boot_deferral_policy();
@@ -3491,6 +3584,7 @@ int main(void)
     test_incremental_sse_stream_fallback_text();
     test_incremental_sse_stream_handles_long_completed_line();
     test_incremental_sse_stream_uses_output_text_done_when_completed_lacks_text();
+    test_incremental_sse_stream_uses_output_text_delta_when_completed_lacks_text();
     test_terminal_response_storage_handles_overlap();
     test_esp32cam_storage_attempts();
     test_board_boot_defaults_force_flash_led_low();

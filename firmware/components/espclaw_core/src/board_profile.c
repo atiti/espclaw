@@ -22,7 +22,7 @@ static espclaw_runtime_budget_t esp32cam_runtime_budget(void)
         .memory_class = "balanced",
         .agent_history_max = 12,
         .agent_request_buffer_max = 65536,
-        .agent_response_buffer_max = 49152,
+        .agent_response_buffer_max = 131072,
         .agent_codex_items_max = 16384,
         .agent_instructions_max = 6144,
         .agent_tool_result_max = 1023,

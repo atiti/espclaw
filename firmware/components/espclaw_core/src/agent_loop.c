@@ -663,6 +663,7 @@ static bool extract_json_string_from(const char *json, const char *key, const ch
 {
     const char *cursor = find_json_key_after(json, key, after);
     size_t used = 0;
+    bool truncated = false;
 
     if (cursor == NULL || buffer == NULL || buffer_size == 0) {
         if (buffer != NULL && buffer_size > 0) {
@@ -686,25 +687,33 @@ static bool extract_json_string_from(const char *json, const char *key, const ch
     }
     cursor++;
 
-    while (*cursor != '\0' && *cursor != '"' && used + 1 < buffer_size) {
+    while (*cursor != '\0' && *cursor != '"') {
+        char decoded = '\0';
+
         if (*cursor == '\\' && cursor[1] != '\0') {
             cursor++;
             switch (*cursor) {
             case 'n':
-                buffer[used++] = '\n';
+                decoded = '\n';
                 break;
             case 'r':
-                buffer[used++] = '\r';
+                decoded = '\r';
                 break;
             case 't':
-                buffer[used++] = '\t';
+                decoded = '\t';
                 break;
             default:
-                buffer[used++] = *cursor;
+                decoded = *cursor;
                 break;
             }
         } else {
-            buffer[used++] = *cursor;
+            decoded = *cursor;
+        }
+
+        if (used + 1 < buffer_size) {
+            buffer[used++] = decoded;
+        } else {
+            truncated = true;
         }
         cursor++;
     }
@@ -713,6 +722,7 @@ static bool extract_json_string_from(const char *json, const char *key, const ch
         return false;
     }
     buffer[used] = '\0';
+    (void)truncated;
     return true;
 }
 
@@ -1521,20 +1531,28 @@ static void append_text_segment(char *buffer, size_t buffer_size, const char *va
     snprintf(buffer + used, buffer_size - used, "%s", value != NULL ? value : "");
 }
 
-static void append_sse_output_text_done_segments(const char *payload, char *buffer, size_t buffer_size)
+static void append_sse_output_text_segments(const char *payload, char *buffer, size_t buffer_size)
 {
     const char *cursor = payload;
+    bool saw_delta = false;
 
     if (payload == NULL || buffer == NULL || buffer_size == 0) {
         return;
     }
 
-    while ((cursor = strstr(cursor, "event: response.output_text.done")) != NULL) {
+    while ((cursor = strstr(cursor, "event: response.output_text.")) != NULL) {
         const char *data = strstr(cursor, "\ndata: ");
         const char *event_end;
         char line[1536];
         char segment[1024];
         size_t line_len;
+        bool is_delta = strncmp(cursor, "event: response.output_text.delta", strlen("event: response.output_text.delta")) == 0;
+        bool is_done = strncmp(cursor, "event: response.output_text.done", strlen("event: response.output_text.done")) == 0;
+
+        if (!is_delta && !is_done) {
+            cursor += strlen("event: response.output_text.");
+            continue;
+        }
 
         if (data == NULL) {
             break;
@@ -1550,7 +1568,10 @@ static void append_sse_output_text_done_segments(const char *payload, char *buff
         }
         memcpy(line, data, line_len);
         line[line_len] = '\0';
-        if (extract_json_string_from(line, "text", NULL, segment, sizeof(segment))) {
+        if (is_delta && extract_json_string_from(line, "delta", NULL, segment, sizeof(segment))) {
+            append_text_segment(buffer, buffer_size, segment);
+            saw_delta = true;
+        } else if (is_done && !saw_delta && extract_json_string_from(line, "text", NULL, segment, sizeof(segment))) {
             append_text_segment(buffer, buffer_size, segment);
         }
         cursor = event_end;
@@ -1641,7 +1662,7 @@ static int parse_provider_response(const char *json, espclaw_provider_response_t
         cursor += strlen("\"type\":\"output_text\"");
     }
     if (response->text[0] == '\0') {
-        append_sse_output_text_done_segments(json, response->text, sizeof(response->text));
+        append_sse_output_text_segments(json, response->text, sizeof(response->text));
     }
 
     cursor = json;
@@ -1705,7 +1726,7 @@ static int parse_provider_text_response(
         cursor += strlen("\"type\":\"output_text\"");
     }
     if (text[0] == '\0') {
-        append_sse_output_text_done_segments(json, text, text_size);
+        append_sse_output_text_segments(json, text, text_size);
     }
 
     if (response_id[0] != '\0' && (text[0] != '\0' || (has_tools_out != NULL && *has_tools_out))) {
@@ -3931,7 +3952,7 @@ int espclaw_agent_reduce_sse_stream_to_response_json(
         if (parse_provider_text_response(buffer, response_id, sizeof(response_id), text, sizeof(text), &has_tools) != 0 &&
             !has_tools) {
             streamed_text[0] = '\0';
-            append_sse_output_text_done_segments(http_buffer, streamed_text, sizeof(streamed_text));
+            append_sse_output_text_segments(http_buffer, streamed_text, sizeof(streamed_text));
             if (streamed_text[0] != '\0') {
                 synthesize_text_response_json(response_id, streamed_text, buffer, buffer_size);
             }
@@ -4161,6 +4182,7 @@ typedef struct {
     bool headers_done;
     bool is_chunked;
     bool saw_completed;
+    bool saw_output_text_delta;
     bool chunk_needs_crlf;
     bool chunk_trailer;
     bool line_has_content;
@@ -4316,10 +4338,22 @@ static int codex_sse_finalize_event(
         extract_json_string_from(parser->data, "id", NULL, parser->response_id, sizeof(parser->response_id));
     }
 
+    if (strcmp(parser->event, "response.output_text.delta") == 0) {
+        char segment[1024];
+
+        if (extract_json_string_from(parser->data, "delta", NULL, segment, sizeof(segment))) {
+            append_text_segment(parser->output_text, sizeof(parser->output_text), segment);
+            parser->saw_output_text_delta = true;
+        }
+        codex_sse_reset_event(parser);
+        return 0;
+    }
+
     if (strcmp(parser->event, "response.output_text.done") == 0) {
         char segment[1024];
 
-        if (extract_json_string_from(parser->data, "text", NULL, segment, sizeof(segment))) {
+        if (!parser->saw_output_text_delta &&
+            extract_json_string_from(parser->data, "text", NULL, segment, sizeof(segment))) {
             append_text_segment(parser->output_text, sizeof(parser->output_text), segment);
         }
         codex_sse_reset_event(parser);

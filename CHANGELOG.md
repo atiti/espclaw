@@ -169,3 +169,6 @@
 - fix(console): skip embedded console transcript file writes on the ESP32-CAM runtime so slash commands stay reliable on the shared SD workspace
 - fix(console): increase the UART console task stack to 32 KB so real LLM turns over serial have enough headroom for embedded model startup
 - fix(console): heap-allocate embedded auth profiles in the UART/web console and agent loop so auth loading no longer burns several kilobytes of task stack on ESP32-CAM
+- fix(agent): raise the ESP32-CAM balanced-profile response buffer to 128 KB so longer plain-text Codex replies no longer truncate into parse failures on UART chat
+- fix(agent): accumulate streamed `response.output_text.delta` segments on embedded Codex runs so long plain-text replies still synthesize correctly when `response.completed` lacks inline output text
+- fix(console): normalize UART console output to CRLF so `screen` and ESP-IDF logger output render consistently on serial terminals

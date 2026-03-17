@@ -701,11 +701,29 @@ void espclaw_runtime_reboot(void)
 static void uart_console_write_text(const char *text)
 {
     size_t written = 0;
+    const char *cursor = text;
+    const char *chunk_start = text;
 
     if (text == NULL || text[0] == '\0') {
         return;
     }
-    espclaw_hw_uart_write(0, (const uint8_t *)text, strlen(text), &written);
+
+    while (*cursor != '\0') {
+        if (*cursor == '\n' && (cursor == text || cursor[-1] != '\r')) {
+            if (cursor > chunk_start) {
+                espclaw_hw_uart_write(0, (const uint8_t *)chunk_start, (size_t)(cursor - chunk_start), &written);
+            }
+            espclaw_hw_uart_write(0, (const uint8_t *)"\r\n", 2, &written);
+            cursor++;
+            chunk_start = cursor;
+            continue;
+        }
+        cursor++;
+    }
+
+    if (cursor > chunk_start) {
+        espclaw_hw_uart_write(0, (const uint8_t *)chunk_start, (size_t)(cursor - chunk_start), &written);
+    }
 }
 
 static void uart_console_prompt(void)
