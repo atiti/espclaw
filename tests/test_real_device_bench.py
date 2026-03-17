@@ -406,26 +406,26 @@ class RealDeviceBenchTests(unittest.TestCase):
 
     def test_large_lua_app_stage_records_largest_success(self):
         responses = {
-            "/api/apps/detail?app_id=bench_large_1500": HttpResult(200, "", {"app": {"id": "bench_large_1500", "source": "a" * 1600}}),
-            "/api/chat/session?session_id=bench_large_1500": HttpResult(200, "", {"transcript": "{\"role\":\"assistant\",\"content\":\"Requested tools: app.install\"}\n"}),
-            ("POST", "/api/apps/run?app_id=bench_large_1500&trigger=manual", "payload"): HttpResult(200, "", {"result": "LARGE_APP_OK_1500"}),
-            "/api/apps?app_id=bench_large_1500": HttpResult(200, "", {"ok": True}),
-            "/api/apps/detail?app_id=bench_large_2500": HttpResult(200, "", {"app": {"id": "bench_large_2500", "source": "b" * 2600}}),
-            "/api/chat/session?session_id=bench_large_2500": HttpResult(200, "", {"transcript": "{\"role\":\"assistant\",\"content\":\"Requested tools: app.install\"}\n"}),
-            ("POST", "/api/apps/run?app_id=bench_large_2500&trigger=manual", "payload"): HttpResult(200, "", {"result": "LARGE_APP_OK_2500"}),
-            "/api/apps?app_id=bench_large_2500": HttpResult(200, "", {"ok": True}),
-            "/api/apps/detail?app_id=bench_large_3200": HttpResult(200, "", {"app": {"id": "bench_large_3200", "source": "c" * 1800}}),
-            "/api/chat/session?session_id=bench_large_3200": HttpResult(200, "", {"transcript": "{\"role\":\"assistant\",\"content\":\"Requested tools: app.install\"}\n"}),
-            ("POST", "/api/apps/run?app_id=bench_large_3200&trigger=manual", "payload"): HttpResult(200, "", {"result": "wrong"}),
+            "/api/apps/detail?app_id=bench_large_1200": HttpResult(200, "", {"app": {"id": "bench_large_1200", "source": "a" * 1300}}),
+            "/api/chat/session?session_id=bench_large_1200": HttpResult(200, "", {"transcript": "{\"role\":\"assistant\",\"content\":\"Requested tools: app.install\"}\n"}),
+            ("POST", "/api/apps/run?app_id=bench_large_1200&trigger=manual", "payload"): HttpResult(200, "", {"result": "LARGE_APP_OK_1200"}),
+            "/api/apps?app_id=bench_large_1200": HttpResult(200, "", {"ok": True}),
+            "/api/apps/detail?app_id=bench_large_1800": HttpResult(200, "", {"app": {"id": "bench_large_1800", "source": "b" * 1900}}),
+            "/api/chat/session?session_id=bench_large_1800": HttpResult(200, "", {"transcript": "{\"role\":\"assistant\",\"content\":\"Requested tools: app.install\"}\n"}),
+            ("POST", "/api/apps/run?app_id=bench_large_1800&trigger=manual", "payload"): HttpResult(200, "", {"result": "LARGE_APP_OK_1800"}),
+            "/api/apps?app_id=bench_large_1800": HttpResult(200, "", {"ok": True}),
+            "/api/apps/detail?app_id=bench_large_2400": HttpResult(200, "", {"app": {"id": "bench_large_2400", "source": "c" * 1800}}),
+            "/api/chat/session?session_id=bench_large_2400": HttpResult(200, "", {"transcript": "{\"role\":\"assistant\",\"content\":\"Requested tools: app.install\"}\n"}),
+            ("POST", "/api/apps/run?app_id=bench_large_2400&trigger=manual", "payload"): HttpResult(200, "", {"result": "wrong"}),
         }
 
         class LargeClient(FakeClient):
             def post_text(self, path, body):
-                if path == "/api/chat/run?session_id=bench_large_1500&yolo=1":
+                if path == "/api/chat/run?session_id=bench_large_1200&yolo=1":
                     return HttpResult(200, "", {"ok": True, "final_text": ""})
-                if path == "/api/chat/run?session_id=bench_large_2500&yolo=1":
+                if path == "/api/chat/run?session_id=bench_large_1800&yolo=1":
                     return HttpResult(200, "", {"ok": True, "final_text": "INSTALLED"})
-                if path == "/api/chat/run?session_id=bench_large_3200&yolo=1":
+                if path == "/api/chat/run?session_id=bench_large_2400&yolo=1":
                     return HttpResult(200, "", {"ok": False, "final_text": "too large"})
                 for key, value in self.responses.items():
                     if isinstance(key, tuple) and key[0] == "POST" and key[1] == path:
@@ -434,7 +434,7 @@ class RealDeviceBenchTests(unittest.TestCase):
 
         result = run_stages(LargeClient(responses), "bench", ["large_lua_app"], continue_on_failure=False)
         self.assertTrue(result["stages"][0]["ok"])
-        self.assertEqual(result["stages"][0]["details"]["largest_success_bytes"], 2600)
+        self.assertEqual(result["stages"][0]["details"]["largest_success_bytes"], 1900)
 
 
 if __name__ == "__main__":

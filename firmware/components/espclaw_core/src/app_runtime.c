@@ -46,6 +46,7 @@ typedef struct {
 struct espclaw_app_vm {
 #if defined(ESP_PLATFORM) || defined(ESPCLAW_HOST_LUA)
     lua_State *state;
+    int module_ref;
 #endif
     espclaw_app_manifest_t manifest;
     espclaw_lua_context_t context;
@@ -2357,6 +2358,7 @@ static int run_lua_handle(
 )
 {
     char handler_name[64];
+    char module_handler_name[64];
     const char *result = NULL;
 
     if (vm == NULL || vm->state == NULL || trigger == NULL || buffer == NULL || buffer_size == 0) {
@@ -2379,6 +2381,7 @@ static int run_lua_handle(
             handler_name[used] = '\0';
         }
     }
+    snprintf(module_handler_name, sizeof(module_handler_name), "%s", handler_name + 3);
 
     lua_getglobal(vm->state, handler_name);
     if (lua_isfunction(vm->state, -1)) {
@@ -2402,22 +2405,95 @@ static int run_lua_handle(
         } else {
             lua_pop(vm->state, 1);
             lua_getglobal(vm->state, "handle");
-            if (!lua_isfunction(vm->state, -1)) {
+            if (lua_isfunction(vm->state, -1)) {
+                lua_pushstring(vm->state, trigger);
+                lua_pushstring(vm->state, payload != NULL ? payload : "");
+                if (lua_pcall(vm->state, 2, 1, 0) != LUA_OK) {
+                    snprintf(buffer, buffer_size, "lua runtime failed: %s", lua_tostring(vm->state, -1));
+                    lua_pop(vm->state, 1);
+                    return -1;
+                }
+            } else if (vm->module_ref != LUA_NOREF && vm->module_ref != LUA_REFNIL) {
+                lua_pop(vm->state, 1);
+                lua_rawgeti(vm->state, LUA_REGISTRYINDEX, vm->module_ref);
+                if (!lua_istable(vm->state, -1)) {
+                    lua_pop(vm->state, 1);
+                    snprintf(
+                        buffer,
+                        buffer_size,
+                        "app %s missing %s(payload), on_event(trigger, payload), handle(trigger, payload), or module handlers",
+                        vm->manifest.app_id,
+                        handler_name
+                    );
+                    return -1;
+                }
+
+                lua_getfield(vm->state, -1, handler_name);
+                if (lua_isfunction(vm->state, -1)) {
+                    lua_remove(vm->state, -2);
+                    lua_pushstring(vm->state, payload != NULL ? payload : "");
+                    if (lua_pcall(vm->state, 1, 1, 0) != LUA_OK) {
+                        snprintf(buffer, buffer_size, "lua runtime failed: %s", lua_tostring(vm->state, -1));
+                        lua_pop(vm->state, 1);
+                        return -1;
+                    }
+                } else {
+                    lua_pop(vm->state, 1);
+                    lua_getfield(vm->state, -1, module_handler_name);
+                    if (lua_isfunction(vm->state, -1)) {
+                        lua_remove(vm->state, -2);
+                        lua_pushstring(vm->state, payload != NULL ? payload : "");
+                        if (lua_pcall(vm->state, 1, 1, 0) != LUA_OK) {
+                            snprintf(buffer, buffer_size, "lua runtime failed: %s", lua_tostring(vm->state, -1));
+                            lua_pop(vm->state, 1);
+                            return -1;
+                        }
+                    } else {
+                        lua_pop(vm->state, 1);
+                        lua_getfield(vm->state, -1, "on_event");
+                        if (lua_isfunction(vm->state, -1)) {
+                            lua_remove(vm->state, -2);
+                            lua_pushstring(vm->state, trigger);
+                            lua_pushstring(vm->state, payload != NULL ? payload : "");
+                            if (lua_pcall(vm->state, 2, 1, 0) != LUA_OK) {
+                                snprintf(buffer, buffer_size, "lua runtime failed: %s", lua_tostring(vm->state, -1));
+                                lua_pop(vm->state, 1);
+                                return -1;
+                            }
+                        } else {
+                            lua_pop(vm->state, 1);
+                            lua_getfield(vm->state, -1, "handle");
+                            if (!lua_isfunction(vm->state, -1)) {
+                                snprintf(
+                                    buffer,
+                                    buffer_size,
+                                    "app %s missing %s(payload), on_event(trigger, payload), handle(trigger, payload), or module handlers",
+                                    vm->manifest.app_id,
+                                    handler_name
+                                );
+                                lua_pop(vm->state, 2);
+                                return -1;
+                            }
+
+                            lua_remove(vm->state, -2);
+                            lua_pushstring(vm->state, trigger);
+                            lua_pushstring(vm->state, payload != NULL ? payload : "");
+                            if (lua_pcall(vm->state, 2, 1, 0) != LUA_OK) {
+                                snprintf(buffer, buffer_size, "lua runtime failed: %s", lua_tostring(vm->state, -1));
+                                lua_pop(vm->state, 1);
+                                return -1;
+                            }
+                        }
+                    }
+                }
+            } else {
                 snprintf(
                     buffer,
                     buffer_size,
-                    "app %s missing %s(payload), on_event(trigger, payload), or handle(trigger, payload)",
+                    "app %s missing %s(payload), on_event(trigger, payload), handle(trigger, payload), or module handlers",
                     vm->manifest.app_id,
                     handler_name
                 );
-                lua_pop(vm->state, 1);
-                return -1;
-            }
-
-            lua_pushstring(vm->state, trigger);
-            lua_pushstring(vm->state, payload != NULL ? payload : "");
-            if (lua_pcall(vm->state, 2, 1, 0) != LUA_OK) {
-                snprintf(buffer, buffer_size, "lua runtime failed: %s", lua_tostring(vm->state, -1));
                 lua_pop(vm->state, 1);
                 return -1;
             }
@@ -2473,6 +2549,7 @@ int espclaw_app_vm_open(
     vm->context.workspace_root = vm->workspace_root;
     vm->context.manifest = &vm->manifest;
     vm->context.app_id = vm->manifest.app_id;
+    vm->module_ref = LUA_NOREF;
     vm->state = luaL_newstate();
     if (vm->state == NULL) {
         free(vm);
@@ -2489,13 +2566,18 @@ int espclaw_app_vm_open(
         return -1;
     }
     register_lua_bindings(vm->state, &vm->context);
-    if (luaL_loadfile(vm->state, vm->script_path) != LUA_OK || lua_pcall(vm->state, 0, 0, 0) != LUA_OK) {
+    if (luaL_loadfile(vm->state, vm->script_path) != LUA_OK || lua_pcall(vm->state, 0, 1, 0) != LUA_OK) {
         if (buffer != NULL && buffer_size > 0) {
             snprintf(buffer, buffer_size, "lua load failed: %s", lua_tostring(vm->state, -1));
         }
         lua_close(vm->state);
         free(vm);
         return -1;
+    }
+    if (lua_istable(vm->state, -1)) {
+        vm->module_ref = luaL_ref(vm->state, LUA_REGISTRYINDEX);
+    } else {
+        lua_pop(vm->state, 1);
     }
 
     *vm_out = vm;
@@ -2536,6 +2618,9 @@ void espclaw_app_vm_close(espclaw_app_vm_t *vm)
 
 #if defined(ESP_PLATFORM) || defined(ESPCLAW_HOST_LUA)
     if (vm->state != NULL) {
+        if (vm->module_ref != LUA_NOREF && vm->module_ref != LUA_REFNIL) {
+            luaL_unref(vm->state, LUA_REGISTRYINDEX, vm->module_ref);
+        }
         lua_close(vm->state);
     }
 #endif

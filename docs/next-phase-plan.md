@@ -75,6 +75,7 @@ This proves the current baseline on hardware:
 
 - `tool_matrix_full` is now implemented and running on the real AI Thinker board.
 - The executor surface has been expanded to cover the missing hardware / filesystem / network / compute tools, and the matrix now probes them mostly one-by-one so real tool compliance is measurable instead of being masked by grouped prompts.
-- The remaining matrix work is to finish a full real-device run and tighten any tool-specific prompts that still let the model stop after a partial success.
+- The last concrete matrix gap from the previous full run was `task.start`; a targeted live probe now passes after preconditioning the task app and forbidding `app.list`/`app.install` detours. The remaining matrix work is bench pacing, not executor coverage.
 - `large_lua_app` now reliably reaches a real `app.install` call on hardware. The current blocker is the generated Lua contract on `app.run`, where the model tends to return module-style `M.manual(...)` code instead of the runtime's supported `on_manual(...)`, `on_event(...)`, or `handle(...)` entrypoints.
-- The next fix should either teach the bench prompt to require `handle(trigger, payload)` explicitly or extend the Lua runtime to accept module-return entrypoints for model-generated apps.
+- The runtime now accepts module-return entrypoints as well, and the simplified large-app prompt has proven a real `2581` byte installed-and-running Lua app on `esp32cam`.
+- The next large-app step is to reduce model-side `app.install` emission failures above that threshold, likely by allowing multi-file apps through `fs.write` in addition to a single giant inline source payload.

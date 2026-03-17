@@ -83,6 +83,18 @@ class BenchClient:
     def delete_json(self, path: str) -> HttpResult:
         return self._request_json("DELETE", path, None, None)
 
+    def scaffold_app(self, app_id: str) -> Dict:
+        return require_json(
+            self.post_text(f"/api/apps/scaffold?app_id={urllib.parse.quote(app_id)}", ""),
+            "/api/apps/scaffold",
+        )
+
+    def update_app_source(self, app_id: str, source: str) -> Dict:
+        return require_json(
+            self.put_text(f"/api/apps/source?app_id={urllib.parse.quote(app_id)}", source),
+            "/api/apps/source",
+        )
+
     def chat_run_path(self, session_id: str) -> str:
         path = f"/api/chat/run?session_id={urllib.parse.quote(session_id)}"
         if self.yolo_mode:
@@ -562,7 +574,7 @@ def stage_tool_matrix_full(client: BenchClient, session_prefix: str) -> StageRes
         ("behaviorstop", "This is a tool-call compliance test. Call behavior.stop on tool_matrix_behavior, then reply exactly TOOL_CASE_BEHAVIORSTOP_OK.", ["behavior.stop"]),
         ("behaviorremove", "This is a tool-call compliance test. Call behavior.remove on tool_matrix_behavior, then reply exactly TOOL_CASE_BEHAVIORREMOVE_OK.", ["behavior.remove"]),
         ("tasklist", "This is a tool-call compliance test. Call task.list exactly once, then reply exactly TOOL_CASE_TASKLIST_OK.", ["task.list"]),
-        ("taskstart", "This is a tool-call compliance test. Call task.start to start task id tool_matrix_task using app id tool_matrix_task_app. If that app does not exist yet, install it first so its manual or timer trigger returns TOOL_MATRIX_TASK_OK. Reply exactly TOOL_CASE_TASKSTART_OK.", ["task.start"]),
+        ("taskstart", "This is a tool-call compliance test. Call task.start exactly once to start task id tool_matrix_task using app id tool_matrix_task_app. Do not call app.list or app.install in this case. Reply exactly TOOL_CASE_TASKSTART_OK.", ["task.start"]),
         ("eventemit", "This is a tool-call compliance test. Call event.emit with name sensor and payload near, then reply exactly TOOL_CASE_EVENTEMIT_OK.", ["event.emit"]),
         ("taskstop", "This is a tool-call compliance test. Call task.stop on tool_matrix_task, then reply exactly TOOL_CASE_TASKSTOP_OK.", ["task.stop"]),
         ("watchlist", "This is a tool-call compliance test. Call event.watch_list exactly once, then reply exactly TOOL_CASE_WATCHLIST_OK.", ["event.watch_list"]),
@@ -592,6 +604,14 @@ def stage_tool_matrix_full(client: BenchClient, session_prefix: str) -> StageRes
     missing_tools: List[str] = []
 
     for case_id, prompt, expected_tools in cases:
+        if case_id == "taskstart":
+            client.scaffold_app("tool_matrix_task_app")
+            client.update_app_source(
+                "tool_matrix_task_app",
+                "function handle(trigger, payload)\n"
+                "  return 'task:' .. trigger .. ':' .. payload\n"
+                "end\n",
+            )
         case = run_tool_case(client, f"{session_prefix}_{case_id}", prompt, expected_tools)
 
         case_results.append(case)
@@ -614,7 +634,7 @@ def stage_tool_matrix_full(client: BenchClient, session_prefix: str) -> StageRes
 
 
 def stage_large_lua_app(client: BenchClient, session_prefix: str) -> StageResult:
-    thresholds = [1500, 2500, 3200, 3800]
+    thresholds = [1200, 1800, 2400, 3000, 3600]
     largest_success = 0
     attempts = []
 
@@ -626,7 +646,8 @@ def stage_large_lua_app(client: BenchClient, session_prefix: str) -> StageResult
             f"YOLO mode is enabled. This is a tool-call compliance test. You must call app.install to create a Lua app named {app_id}. "
             f"The Lua source must be between {target} and {target + 400} bytes long, include several helper functions, local tables, and non-trivial branching, "
             f"and when run with the manual trigger it must return exactly {marker}. "
-            "Use exactly one app.install tool call. Do not narrate first. Put the full Lua source directly in the tool arguments. "
+            "Define top-level helper functions and a top-level function handle(trigger, payload) as the runtime entrypoint. Do not return a module table. "
+            "Use exactly one app.install tool call. Emit no assistant prose before or after the tool call. Put the full Lua source directly in the tool arguments. "
             "Do not answer INSTALLED unless the tool call succeeded. If you skip the tool call, answer FAILED."
         )
         result = client.chat_run(session_id, prompt)

@@ -2485,6 +2485,48 @@ static void test_app_runtime_event_handlers(void)
 #endif
 }
 
+static void test_app_runtime_module_entrypoints(void)
+{
+    char temp_dir[128];
+    char output[256];
+
+    make_temp_dir(temp_dir, sizeof(temp_dir));
+    assert_true(
+        espclaw_app_scaffold_lua(temp_dir, "module_entry_app", "Module Entry App", "fs.read", "manual,event") == 0,
+        "module entry app scaffolded"
+    );
+    assert_true(
+        espclaw_app_update_source(
+            temp_dir,
+            "module_entry_app",
+            "local M = {}\n"
+            "function M.manual(payload)\n"
+            "  return 'module-manual:' .. payload\n"
+            "end\n"
+            "function M.handle(trigger, payload)\n"
+            "  return 'module-handle:' .. trigger .. ':' .. payload\n"
+            "end\n"
+            "return M\n"
+        ) == 0,
+        "module entry app source updated"
+    );
+
+#ifdef ESPCLAW_HOST_LUA
+    assert_true(
+        espclaw_app_run(temp_dir, "module_entry_app", "manual", "payload", output, sizeof(output)) == 0,
+        "module entry app manual trigger ran"
+    );
+    assert_string_contains(output, "module-manual:payload", "module manual handler selected");
+    assert_true(
+        espclaw_app_run(temp_dir, "module_entry_app", "event", "near", output, sizeof(output)) == 0,
+        "module entry app generic handle ran"
+    );
+    assert_string_contains(output, "module-handle:event:near", "module handle fallback selected");
+#else
+    assert_true(true, "module entrypoint test is host-only");
+#endif
+}
+
 static void test_lua_module_require_paths(void)
 {
     char temp_dir[128];
@@ -2846,6 +2888,7 @@ int main(void)
     test_app_runtime_manifest_and_scaffold();
     test_app_runtime_hardware_bindings();
     test_app_runtime_event_handlers();
+    test_app_runtime_module_entrypoints();
     test_app_runtime_vehicle_bindings();
     test_app_vm_and_control_loops();
     test_task_runtime();

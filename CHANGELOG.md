@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Extended the Lua runtime to accept module-return entrypoints as well as global handlers, so model-generated apps that return a table with `manual`, `on_event`, or `handle` functions now execute without needing the model to match only one Lua style.
+- Tightened the real-device `task.start` tool-matrix case by pre-scaffolding the app through the admin API and forbidding `app.list`/`app.install` detours, which restores a truthful live probe of the actual `task.start` tool call.
+- Simplified the `large_lua_app` benchmark prompt to require a top-level `handle(trigger, payload)` entrypoint and no returned module table, which moved the first real ESP32-CAM success to a 2,581-byte model-generated Lua app installed and run entirely on-device.
+- Confirmed that the remaining `large_lua_app` failure above that threshold is still model-side `app.install` emission (`Requested tools:` with no usable tool payload), not a proven ESP32-CAM runtime or memory ceiling.
 - Expanded the model tool executor to cover the broader advertised hardware/runtime surface, including `fs.write`, `fs.delete`, `wifi.status`, `wifi.scan`, `ble.scan`, `gpio.read/write`, `pwm.write`, `ppm.write`, `adc.read`, `i2c.scan/read/write`, `temperature.read`, `imu.read`, `buzzer.play`, `pid.compute`, `control.mix`, `spi.transfer`, and `ota.check`.
 - Tightened the system prompt for audited tool-compliance runs so the model is explicitly instructed to call every applicable listed tool when the user marks the run as a tool-call compliance test or says the transcript is being audited.
 - Fixed function-call parsing for large tool payloads by extracting the exact `function_call` JSON object span before decoding `call_id`, `name`, and `arguments`, which prevents large `app.install` envelopes from losing their tool name on real hardware.

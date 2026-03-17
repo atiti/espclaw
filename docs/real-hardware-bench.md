@@ -33,7 +33,8 @@ Additional stress and audit stages are available:
 - `large_lua_app`
   - asks the live model to build progressively larger Lua apps through `app.install`
   - verifies the installed source size and the app's runtime behavior
-  - currently reaches real `app.install` calls on `esp32cam`, but the remaining failure is the generated app contract rather than a proven device RAM ceiling
+  - currently proves a real `2581` byte model-generated Lua app install/run on the AI Thinker `esp32cam`
+  - the next failure still occurs in model-side `app.install` emission rather than at a proven device RAM ceiling
 
 ## Usage
 
@@ -113,7 +114,8 @@ python3 scripts/real_device_bench.py \
 - `large_lua_app`
   - the bench asks the live model to install progressively larger Lua apps
   - each threshold validates the saved source length plus a real `app.run` result
-  - failures currently indicate generated Lua entrypoint mismatches or tool-call compliance issues before a confirmed embedded RAM ceiling
+  - the current prompt requires top-level helper functions and a top-level `handle(trigger, payload)` entrypoint
+  - failures still indicate tool-call emission limits before a confirmed embedded RAM ceiling
 
 ## Current Bring-Up Note
 
