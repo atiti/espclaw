@@ -3235,7 +3235,7 @@ static void test_agent_loop(void)
     assert_true(result.ok, "long output-text result ok");
     assert_true(!result.used_tools, "long output-text result did not use tools");
     assert_string_contains(result.response_id, "resp_long_text", "long output-text response id parsed");
-    assert_true(strlen(result.final_text) > 256U, "long output-text final text preserved more than a tiny prefix");
+    assert_true(strlen(result.final_text) > 1500U, "long output-text final text preserved beyond the old tiny parser segment");
 
     snprintf(profile.base_url, sizeof(profile.base_url), "mock://fs-read");
     assert_true(espclaw_auth_store_save(&profile) == 0, "fs read auth profile saved");

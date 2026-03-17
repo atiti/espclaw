@@ -172,3 +172,4 @@
 - fix(agent): raise the ESP32-CAM balanced-profile response buffer to 128 KB so longer plain-text Codex replies no longer truncate into parse failures on UART chat
 - fix(agent): accumulate streamed `response.output_text.delta` segments on embedded Codex runs so long plain-text replies still synthesize correctly when `response.completed` lacks inline output text
 - fix(console): normalize UART console output to CRLF so `screen` and ESP-IDF logger output render consistently on serial terminals
+- fix(agent): remove the small per-segment output-text parser cap so a single large `output_text` block no longer truncates mid-reply on UART chat

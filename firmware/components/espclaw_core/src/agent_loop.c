@@ -1644,6 +1644,7 @@ int espclaw_agent_store_terminal_response_json(
 static int parse_provider_response(const char *json, espclaw_provider_response_t *response)
 {
     const char *cursor;
+    char *text_segment = NULL;
 
     if (json == NULL || response == NULL) {
         return -1;
@@ -1651,13 +1652,15 @@ static int parse_provider_response(const char *json, espclaw_provider_response_t
 
     memset(response, 0, sizeof(*response));
     extract_json_string_from(json, "id", NULL, response->id, sizeof(response->id));
+    text_segment = (char *)calloc(1, sizeof(response->text));
+    if (text_segment == NULL) {
+        return -1;
+    }
 
     cursor = json;
     while ((cursor = strstr(cursor, "\"type\":\"output_text\"")) != NULL) {
-        char text[1024];
-
-        if (extract_json_string_from(json, "text", cursor, text, sizeof(text))) {
-            append_text_segment(response->text, sizeof(response->text), text);
+        if (extract_json_string_from(json, "text", cursor, text_segment, sizeof(response->text))) {
+            append_text_segment(response->text, sizeof(response->text), text_segment);
         }
         cursor += strlen("\"type\":\"output_text\"");
     }
@@ -1691,6 +1694,7 @@ static int parse_provider_response(const char *json, espclaw_provider_response_t
         cursor += strlen("\"type\":\"function_call\"");
     }
 
+    free(text_segment);
     return response->id[0] != '\0' ? 0 : -1;
 }
 
@@ -1704,6 +1708,7 @@ static int parse_provider_text_response(
 )
 {
     const char *cursor;
+    char *segment = NULL;
 
     if (json == NULL || response_id == NULL || response_id_size == 0 || text == NULL || text_size == 0) {
         return -1;
@@ -1715,12 +1720,14 @@ static int parse_provider_text_response(
         *has_tools_out = strstr(json, "\"type\":\"function_call\"") != NULL;
     }
     extract_json_string_from(json, "id", NULL, response_id, response_id_size);
+    segment = (char *)calloc(1, text_size);
+    if (segment == NULL) {
+        return -1;
+    }
 
     cursor = json;
     while ((cursor = strstr(cursor, "\"type\":\"output_text\"")) != NULL) {
-        char segment[512];
-
-        if (extract_json_string_from(json, "text", cursor, segment, sizeof(segment))) {
+        if (extract_json_string_from(json, "text", cursor, segment, text_size)) {
             append_text_segment(text, text_size, segment);
         }
         cursor += strlen("\"type\":\"output_text\"");
@@ -1730,11 +1737,14 @@ static int parse_provider_text_response(
     }
 
     if (response_id[0] != '\0' && (text[0] != '\0' || (has_tools_out != NULL && *has_tools_out))) {
+        free(segment);
         return 0;
     }
     if (text[0] != '\0' && (has_tools_out == NULL || !*has_tools_out)) {
+        free(segment);
         return 0;
     }
+    free(segment);
     return -1;
 }
 
