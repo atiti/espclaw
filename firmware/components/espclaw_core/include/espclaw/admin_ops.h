@@ -41,6 +41,13 @@ size_t espclaw_admin_render_run_result_json(
     char *buffer,
     size_t buffer_size
 );
+int espclaw_admin_scaffold_app(
+    const char *workspace_root,
+    const char *app_id,
+    const char *title,
+    const char *permissions_csv,
+    const char *triggers_csv
+);
 int espclaw_admin_scaffold_default_app(
     const char *workspace_root,
     const char *app_id

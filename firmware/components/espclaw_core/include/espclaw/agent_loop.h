@@ -13,10 +13,10 @@
 
 #ifdef ESP_PLATFORM
 #define ESPCLAW_AGENT_TEXT_MAX 8191
-#define ESPCLAW_AGENT_TOOL_ARGS_MAX 1023
+#define ESPCLAW_AGENT_TOOL_ARGS_MAX 4095
 #else
 #define ESPCLAW_AGENT_TEXT_MAX 8191
-#define ESPCLAW_AGENT_TOOL_ARGS_MAX 1023
+#define ESPCLAW_AGENT_TOOL_ARGS_MAX 4095
 #endif
 
 typedef struct {
@@ -80,6 +80,13 @@ int espclaw_agent_reduce_sse_stream_to_response_json(
     size_t buffer_size,
     char *error_text,
     size_t error_text_size
+);
+
+int espclaw_agent_store_terminal_response_json(
+    const char *source_json,
+    size_t source_len,
+    char *buffer,
+    size_t buffer_size
 );
 
 #endif

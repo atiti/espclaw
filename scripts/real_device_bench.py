@@ -71,6 +71,17 @@ class BenchClient:
             {"Content-Type": "application/json"},
         )
 
+    def put_text(self, path: str, body: str) -> HttpResult:
+        return self._request_json(
+            "PUT",
+            path,
+            body.encode("utf-8"),
+            {"Content-Type": "text/plain; charset=utf-8"},
+        )
+
+    def delete_json(self, path: str) -> HttpResult:
+        return self._request_json("DELETE", path, None, None)
+
     def _request_json(
         self,
         method: str,
@@ -93,12 +104,85 @@ class BenchClient:
             return HttpResult(error.code, body, parse_json_body(body))
         except urllib.error.URLError as error:
             raise BenchError(f"{method} {path} failed: {error}") from error
+        except TimeoutError as error:
+            raise BenchError(f"{method} {path} timed out") from error
 
 
 def require_json(result: HttpResult, path: str) -> Dict:
     if result.json_body is None:
         raise BenchError(f"{path} did not return JSON: {result.body[:200]}")
     return result.json_body
+
+
+def task_event_runtime_attempt(
+    client: BenchClient,
+    app_id: str,
+    task_id: str,
+    scaffold_path: str,
+    source: str,
+    run_trigger: str,
+    event_trigger: str,
+    event_name: str,
+    run_payload: str,
+) -> Dict:
+    details = {
+        "scaffold": require_json(client.post_text(scaffold_path, ""), "/api/apps/scaffold"),
+        "update": require_json(
+            client.put_text(f"/api/apps/source?app_id={urllib.parse.quote(app_id)}", source),
+            "/api/apps/source",
+        ),
+        "start": require_json(
+            client.post_text(
+                f"/api/tasks/start?task_id={urllib.parse.quote(task_id)}&app_id={urllib.parse.quote(app_id)}"
+                f"&schedule=event&trigger={urllib.parse.quote(event_trigger)}&iterations=0",
+                "",
+            ),
+            "/api/tasks/start",
+        ),
+    }
+    details["tasks_running"] = require_json(client.get_json("/api/tasks"), "/api/tasks")
+    details["emit"] = require_json(
+        client.post_text(f"/api/events/emit?name={urllib.parse.quote(event_name)}", "near"),
+        "/api/events/emit",
+    )
+    time.sleep(0.5)
+    details["run"] = require_json(
+        client.post_text(
+            f"/api/apps/run?app_id={urllib.parse.quote(app_id)}&trigger={urllib.parse.quote(run_trigger)}",
+            run_payload,
+        ),
+        "/api/apps/run",
+    )
+    details["stop"] = require_json(
+        client.post_text(f"/api/tasks/stop?task_id={urllib.parse.quote(task_id)}", ""),
+        "/api/tasks/stop",
+    )
+    details["tasks_after"] = require_json(client.get_json("/api/tasks"), "/api/tasks")
+    client.delete_json(f"/api/apps?app_id={urllib.parse.quote(app_id)}")
+    return details
+
+
+def task_event_runtime_ok(details: Dict, task_id: str) -> bool:
+    task_ids_running = [str(item.get("task_id", "")) for item in details.get("tasks_running", {}).get("tasks", []) if isinstance(item, dict)]
+    task_after_ok = False
+
+    for item in details.get("tasks_after", {}).get("tasks", []):
+        if not isinstance(item, dict) or str(item.get("task_id", "")) != task_id:
+            continue
+        task_after_ok = (not bool(item.get("active"))) and bool(item.get("completed")) and bool(item.get("stop_requested"))
+        break
+    else:
+        task_after_ok = True
+
+    return (
+        bool(details.get("scaffold", {}).get("ok"))
+        and bool(details.get("update", {}).get("ok"))
+        and task_id in task_ids_running
+        and bool(details.get("emit", {}).get("ok"))
+        and details.get("run", {}).get("result") == "near"
+        and bool(details.get("stop", {}).get("ok"))
+        and task_after_ok
+    )
 
 
 def stage_preflight(client: BenchClient, session_prefix: str) -> StageResult:
@@ -111,6 +195,37 @@ def stage_preflight(client: BenchClient, session_prefix: str) -> StageResult:
         ok=ok,
         summary=summary,
         details={"status": status_result, "auth": auth_result, "session_prefix": session_prefix},
+    )
+
+
+def stage_inventory(client: BenchClient, session_prefix: str) -> StageResult:
+    tools_result = require_json(client.get_json("/api/tools"), "/api/tools")
+    hardware_result = require_json(client.get_json("/api/hardware"), "/api/hardware")
+    workspace_result = require_json(client.get_json("/api/workspace/files"), "/api/workspace/files")
+    tool_names = [str(item.get("name", "")) for item in tools_result.get("tools", []) if isinstance(item, dict)]
+    workspace_files = workspace_result.get("files", [])
+    workspace_paths = [str(item.get("path", "")) for item in workspace_files if isinstance(item, dict)]
+    board_pins = hardware_result.get("pins", [])
+    ok = (
+        "tool.list" in tool_names
+        and "hardware.list" in tool_names
+        and "app.install" in tool_names
+        and "task.start" in tool_names
+        and "event.emit" in tool_names
+        and any(path == "HEARTBEAT.md" for path in workspace_paths)
+        and any(path == "memory/MEMORY.md" for path in workspace_paths)
+        and isinstance(board_pins, list)
+    )
+    return StageResult(
+        name="inventory",
+        ok=ok,
+        summary="tool, hardware, and workspace inventory verified" if ok else "inventory surface validation failed",
+        details={
+            "session_prefix": session_prefix,
+            "tools": tools_result,
+            "hardware": hardware_result,
+            "workspace": workspace_result,
+        },
     )
 
 
@@ -173,37 +288,89 @@ def stage_generate_echo_app(client: BenchClient, session_prefix: str) -> StageRe
     )
 
 
-def stage_generate_battery_app(client: BenchClient, session_prefix: str) -> StageResult:
-    app_id = f"{session_prefix}_battery"
-    session_id = f"{session_prefix}_battery_chat"
-    prompt = (
-        f"Create a Lua app with app.install named {app_id}. "
-        "Use espclaw.hardware.list() to inspect the board and then create a manual-trigger app that reads the named "
-        "battery ADC channel and returns a string like BATTERY_MV=<number>. "
-        "After installing it, answer briefly."
+def stage_task_event_runtime(client: BenchClient, session_prefix: str) -> StageResult:
+    app_id = f"{session_prefix}_event_app"
+    task_id = f"{session_prefix}_sensor_task"
+    scaffold_path = (
+        f"/api/apps/scaffold?app_id={urllib.parse.quote(app_id)}"
+        "&permissions=fs.read%2Cfs.write"
+        "&triggers=manual%2Csensor"
     )
-    result = require_json(client.post_text(f"/api/chat/run?session_id={urllib.parse.quote(session_id)}", prompt), "/api/chat/run")
-    detail = require_json(client.get_json(f"/api/apps/detail?app_id={urllib.parse.quote(app_id)}"), "/api/apps/detail")
-    run = require_json(
-        client.post_text(f"/api/apps/run?app_id={urllib.parse.quote(app_id)}&trigger=manual", ""),
-        "/api/apps/run",
+    source = (
+        "function on_sensor(payload)\n"
+        "  espclaw.fs.write('memory/bench_event.txt', payload)\n"
+        "  return 'EVENT:' .. payload\n"
+        "end\n"
+        "\n"
+        "function handle(trigger, payload)\n"
+        "  local text = espclaw.fs.read('memory/bench_event.txt')\n"
+        "  if text == nil or text == '' then\n"
+        "    return 'NONE'\n"
+        "  end\n"
+        "  return text\n"
+        "end\n"
     )
-    run_result = str(run.get("result", ""))
-    ok = bool(result.get("ok")) and detail.get("app", {}).get("id") == app_id and run_result.startswith("BATTERY_MV=")
+    details = task_event_runtime_attempt(
+        client,
+        app_id,
+        task_id,
+        scaffold_path,
+        source,
+        "manual",
+        "sensor",
+        "sensor",
+        "",
+    )
+    ok = task_event_runtime_ok(details, task_id)
+    contract = "modern"
+
+    if not ok:
+        last_result = ""
+        for item in details.get("tasks_after", {}).get("tasks", []):
+            if isinstance(item, dict) and str(item.get("task_id", "")) == task_id:
+                last_result = str(item.get("last_result", ""))
+                break
+        run_result = str(details.get("run", {}).get("result", ""))
+        if "field 'fs'" in run_result or "does not accept trigger sensor" in last_result:
+            details = task_event_runtime_attempt(
+                client,
+                app_id,
+                task_id,
+                f"/api/apps/scaffold?app_id={urllib.parse.quote(app_id)}",
+                (
+                    "function handle(trigger, payload)\n"
+                    "  espclaw.write_file('memory/bench_event.txt', payload)\n"
+                    "  return espclaw.read_file('memory/bench_event.txt')\n"
+                    "end\n"
+                ),
+                "manual",
+                "manual",
+                "manual",
+                "near",
+            )
+            ok = task_event_runtime_ok(details, task_id)
+            contract = "legacy"
+
     return StageResult(
-        name="generate_battery_app",
+        name="task_event_runtime",
         ok=ok,
-        summary="LLM-generated hardware app executed on real ADC path" if ok else "battery hardware app validation failed",
-        details={"session_id": session_id, "prompt": prompt, "result": result, "detail": detail, "run": run},
+        summary="event-driven task runtime validated on-device" if ok else "task/event runtime validation failed",
+        details={
+            "contract": contract,
+            "app_id": app_id,
+            "task_id": task_id,
+            **details,
+        },
     )
 
 
 STAGES: Dict[str, Callable[[BenchClient, str], StageResult]] = {
     "preflight": stage_preflight,
+    "inventory": stage_inventory,
     "hello": stage_hello,
     "tool_reasoning": stage_tool_reasoning,
     "generate_echo_app": stage_generate_echo_app,
-    "generate_battery_app": stage_generate_battery_app,
+    "task_event_runtime": stage_task_event_runtime,
 }
 
 
@@ -236,7 +403,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default="http://192.168.1.253:8080", help="Base URL of the ESPClaw device.")
     parser.add_argument(
         "--stages",
-        default="preflight,hello,tool_reasoning,generate_echo_app,generate_battery_app",
+        default="preflight,inventory,hello,tool_reasoning,generate_echo_app,task_event_runtime",
         help="Comma-separated stage list.",
     )
     parser.add_argument("--session-prefix", default="bench", help="Prefix for generated session/app ids.")

@@ -5,12 +5,13 @@
 The default stage order is:
 
 1. `preflight`
-2. `hello`
-3. `tool_reasoning`
-4. `generate_echo_app`
-5. `generate_battery_app`
+2. `inventory`
+3. `hello`
+4. `tool_reasoning`
+5. `generate_echo_app`
+6. `task_event_runtime`
 
-The intent is to move from a minimal model reply toward LLM-generated Lua and real hardware use.
+The intent is to move from simple reachability toward live tool inventory, model reasoning, persistent Lua behavior generation, and local autonomous task execution.
 
 ## Usage
 
@@ -47,6 +48,10 @@ python3 scripts/real_device_bench.py --stages preflight,hello,tool_reasoning
   - device is reachable
   - workspace storage is ready
   - provider auth is configured
+- `inventory`
+  - `/api/tools` exposes the core model tool surface
+  - `/api/hardware` exposes the current board descriptor
+  - `/api/workspace/files` confirms the control files exist on the live workspace
 - `hello`
   - the live LLM loop returns the exact marker `ESPCLAW_BENCH_HI`
 - `tool_reasoning`
@@ -55,10 +60,11 @@ python3 scripts/real_device_bench.py --stages preflight,hello,tool_reasoning
   - the model uses `app.install`
   - the generated Lua app is persisted
   - the app can be executed locally through `/api/apps/run`
-- `generate_battery_app`
-  - the model inspects hardware
-  - the generated Lua app reads the named `battery` ADC channel
-  - the result is validated from a real app run
+- `task_event_runtime`
+  - a Lua app is installed directly through the admin API with explicit `permissions` and `triggers`
+  - an event-driven task is started locally on-device
+  - `event.emit` triggers the task without another LLM round-trip
+  - the app persists the event payload into the workspace through `espclaw.fs.write(...)` and reads it back through `espclaw.fs.read(...)`
 
 ## Current Bring-Up Note
 

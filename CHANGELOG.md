@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Forced the AI Thinker `esp32cam` `flash_led` alias on GPIO4 low during board bootstrap so SD/storage bring-up no longer leaves the camera flash LED stuck on after boot.
+- Fixed `app.install` on real hardware by increasing the model tool-argument budget, rejecting truncated JSON strings, accepting `name` / `lua` / `permissions` / `triggers` aliases, and normalizing human-friendly app names into valid app ids.
+- Fixed Lua app scaffolding to treat empty permission/trigger CSV values as defaults instead of zero-length manifests, which unblocked model-generated app installation from live Codex runs.
+- Completed the staged real-device bench on the AI Thinker `esp32cam`; `preflight`, `inventory`, `hello`, `tool_reasoning`, `generate_echo_app`, and `task_event_runtime` now pass on real hardware over OTA.
+- Added an `espclaw.fs.read/write` Lua namespace alias and configurable admin app scaffolding with explicit `permissions` and `triggers`, so event-driven apps can be installed with the correct manifest contract for the real-device bench and local autonomy flows.
+- Added a legacy fallback path in the real-device task/event bench so live boards on older app-runtime firmware can still validate local event-driven autonomy while the flashed image catches up.
+- Increased the admin HTTP server task stack for PSRAM-capable `esp32cam` builds so longer on-device Codex runs do not overflow the `httpd` task during chat endpoints.
+- Rebalanced the `esp32cam` OTA partition table again to use two symmetric `0x190000` app slots, which restores OTA viability for the current PSRAM-enabled image while keeping an internal fallback workspace partition.
+- Added a broader staged real-device bench with inventory and task/event runtime checks, plus a repo-local next-phase plan that prioritizes hardware validation, broader tool access, and real camera-to-LLM support.
+- Rebalanced the 4 MB `esp32cam` partition layout to enlarge the OTA app slots and shrink the internal fallback workspace, which better matches the SD-backed runtime and makes room for PSRAM-enabled firmware builds.
+- Added a real AI Thinker `esp32cam` SD bring-up sequence that enables explicit pull-ups, retries the socket as `sdmmc-1bit`, and falls back to `sdspi` on the same socket pins with per-attempt error logging instead of a single opaque mount failure.
+- Fixed the embedded direct-Codex parser to preserve `response.completed` JSON when the SSE event scratch buffer aliases the final response buffer, which was causing real ESP32-CAM `Hi` runs to fail with an empty parse body after a successful streamed response.
 - Added real HTTP firmware OTA uploads with inactive-slot streaming writes, boot-partition switching, scheduled reboot, and boot confirmation on the next startup.
 - Switched the firmware partition layout to an OTA-capable `otadata` + `ota_0` + `ota_1` scheme, which requires one final serial migration flash on existing boards.
 - Fixed AI Thinker `esp32cam` SD initialization by using the board’s real slot-1 SDMMC pin map (`CLK=14`, `CMD=15`, `D0=2`) instead of the ESP32 flash-slot defaults from `SDMMC_SLOT_CONFIG_DEFAULT()`.
@@ -107,3 +119,4 @@
 - fix(runtime): start SNTP after Wi-Fi connect and gate live provider calls on a sane wall clock so TLS certificate validation can succeed on freshly booted devices
 - fix(runtime): use a single supported SNTP server on the ESP32-C3 build so time sync actually starts instead of failing on CONFIG_LWIP_SNTP_MAX_SERVERS
 - fix(test): restore simulator API tool-listing expectations in the host Codex mock
+- fix(runtime): allow direct LLM app installs to scaffold large manifests on-device and correct the real-board event-task bench to use matching sensor triggers

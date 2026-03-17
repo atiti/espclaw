@@ -331,6 +331,30 @@ size_t espclaw_admin_render_run_result_json(
     return used >= buffer_size ? buffer_size - 1 : used;
 }
 
+int espclaw_admin_scaffold_app(
+    const char *workspace_root,
+    const char *app_id,
+    const char *title,
+    const char *permissions_csv,
+    const char *triggers_csv
+)
+{
+    char app_title[ESPCLAW_APP_TITLE_MAX + 1];
+
+    if (workspace_root == NULL || !espclaw_app_id_is_valid(app_id)) {
+        return -1;
+    }
+
+    snprintf(app_title, sizeof(app_title), "%s", title != NULL && title[0] != '\0' ? title : app_id);
+    return espclaw_app_scaffold_lua(
+        workspace_root,
+        app_id,
+        app_title,
+        permissions_csv != NULL && permissions_csv[0] != '\0' ? permissions_csv : "fs.read,fs.write",
+        triggers_csv != NULL && triggers_csv[0] != '\0' ? triggers_csv : "boot,telegram,manual"
+    );
+}
+
 int espclaw_admin_scaffold_default_app(
     const char *workspace_root,
     const char *app_id
@@ -343,7 +367,7 @@ int espclaw_admin_scaffold_default_app(
     }
 
     snprintf(app_title, sizeof(app_title), "%s app", app_id);
-    return espclaw_app_scaffold_lua(
+    return espclaw_admin_scaffold_app(
         workspace_root,
         app_id,
         app_title,

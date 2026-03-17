@@ -53,6 +53,8 @@ typedef struct {
     char mime_type[24];
 } espclaw_hw_camera_capture_t;
 
+int espclaw_hw_apply_board_boot_defaults(void);
+
 int espclaw_hw_gpio_write(int pin, int level);
 int espclaw_hw_gpio_read(int pin, int *level_out);
 

@@ -131,6 +131,24 @@ static bool uart_port_valid(int port)
     return port >= 0 && port < ESPCLAW_HW_UART_PORT_MAX;
 }
 
+int espclaw_hw_apply_board_boot_defaults(void)
+{
+    const espclaw_board_descriptor_t *board = espclaw_board_current();
+    int flash_led_pin;
+
+    if (board == NULL) {
+        return 0;
+    }
+
+    /* AI Thinker ESP32-CAM exposes the camera flash LED on GPIO4. Drive it low
+       explicitly so board bring-up and SD probing do not leave it lit. */
+    if (espclaw_board_resolve_pin_alias("flash_led", &flash_led_pin) == 0) {
+        return espclaw_hw_gpio_write(flash_led_pin, 0);
+    }
+
+    return 0;
+}
+
 static size_t uart_buffer_append(uint8_t *buffer, size_t *length, const uint8_t *data, size_t data_length)
 {
     size_t writable;

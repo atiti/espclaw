@@ -27,7 +27,13 @@
 
 static const char *TAG = "espclaw_admin";
 static httpd_handle_t s_admin_server;
-static const size_t ESPCLAW_ADMIN_HTTPD_STACK_SIZE = 16384;
+/*
+ * Long interactive chat runs execute inside the httpd worker task, so the
+ * default ESP-IDF stack is too small once the handler, JSON rendering, and
+ * agent loop all overlap. The ESP32-CAM now has PSRAM available, so we can
+ * afford a larger admin stack to keep real model runs stable.
+ */
+static const size_t ESPCLAW_ADMIN_HTTPD_STACK_SIZE = 32768;
 
 #ifndef CONFIG_ESPCLAW_ADMIN_PORT
 #define CONFIG_ESPCLAW_ADMIN_PORT 8080
@@ -880,6 +886,9 @@ static esp_err_t app_detail_get_handler(httpd_req_t *req)
 static esp_err_t app_scaffold_post_handler(httpd_req_t *req)
 {
     char app_id[ESPCLAW_APP_ID_MAX + 1];
+    char title[ESPCLAW_APP_TITLE_MAX + 1];
+    char permissions[256];
+    char triggers[256];
     char buffer[256];
     const espclaw_runtime_status_t *status = espclaw_runtime_status();
 
@@ -891,8 +900,14 @@ static esp_err_t app_scaffold_post_handler(httpd_req_t *req)
         espclaw_admin_render_result_json(false, "missing app_id query parameter", buffer, sizeof(buffer));
         return send_json_status(req, buffer, 400, "Bad Request");
     }
+    title[0] = '\0';
+    permissions[0] = '\0';
+    triggers[0] = '\0';
+    load_query_value(req, "title", title, sizeof(title));
+    load_query_value(req, "permissions", permissions, sizeof(permissions));
+    load_query_value(req, "triggers", triggers, sizeof(triggers));
 
-    if (espclaw_admin_scaffold_default_app(status->workspace_root, app_id) == 0) {
+    if (espclaw_admin_scaffold_app(status->workspace_root, app_id, title, permissions, triggers) == 0) {
         espclaw_admin_render_result_json(true, "app scaffolded", buffer, sizeof(buffer));
         return send_json(req, buffer);
     }

@@ -34,6 +34,7 @@
 #include "espclaw/behavior_runtime.h"
 #include "espclaw/board_config.h"
 #include "espclaw/event_watch.h"
+#include "espclaw/hardware.h"
 #include "espclaw/board_profile.h"
 #include "espclaw/session_store.h"
 #include "espclaw/storage.h"
@@ -912,6 +913,9 @@ esp_err_t espclaw_runtime_start(espclaw_board_profile_id_t profile_id, espclaw_r
     s_runtime_status.profile = espclaw_board_profile_for(profile_id);
     espclaw_task_policy_select(&s_runtime_status.profile);
     espclaw_board_configure_current(NULL, &s_runtime_status.profile);
+    if (espclaw_hw_apply_board_boot_defaults() != 0) {
+        ESP_LOGW(TAG, "Failed to apply board boot defaults");
+    }
     if (espclaw_system_monitor_init(&s_runtime_status.profile) != 0) {
         return ESP_FAIL;
     }
@@ -937,6 +941,9 @@ esp_err_t espclaw_runtime_start(espclaw_board_profile_id_t profile_id, espclaw_r
         char behavior_log[512];
 
         espclaw_board_configure_current(s_runtime_status.workspace_root, &s_runtime_status.profile);
+        if (espclaw_hw_apply_board_boot_defaults() != 0) {
+            ESP_LOGW(TAG, "Failed to apply workspace board boot defaults");
+        }
         espclaw_auth_store_init(s_runtime_status.workspace_root);
         if (espclaw_app_run_boot_apps(s_runtime_status.workspace_root, boot_log, sizeof(boot_log)) == 0 &&
             boot_log[0] != '\0') {

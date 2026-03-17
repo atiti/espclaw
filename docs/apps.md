@@ -107,6 +107,8 @@ The firmware currently injects a global `espclaw` table with:
 - `espclaw.has_permission(permission_name)`
 - `espclaw.read_file(relative_path)` requiring `fs.read`
 - `espclaw.write_file(relative_path, content)` requiring `fs.write`
+- `espclaw.fs.read(relative_path)` requiring `fs.read`
+- `espclaw.fs.write(relative_path, content)` requiring `fs.write`
 - `espclaw.list_apps()`
 - `espclaw.hardware.list()`
 - `espclaw.gpio.read(pin)` requiring `gpio.read`
@@ -239,7 +241,7 @@ The firmware and host simulator now expose the same app-management API:
 
 - `GET /api/apps`
 - `GET /api/apps/detail?app_id=<id>`
-- `POST /api/apps/scaffold?app_id=<id>`
+- `POST /api/apps/scaffold?app_id=<id>[&title=<title>&permissions=<csv>&triggers=<csv>]`
 - `PUT /api/apps/source?app_id=<id>`
 - `POST /api/apps/run?app_id=<id>&trigger=<name>`
 - `DELETE /api/apps?app_id=<id>`

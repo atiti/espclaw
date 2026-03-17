@@ -193,7 +193,7 @@ Current routes:
 
 - `GET /api/apps`
 - `GET /api/apps/detail?app_id=<id>`
-- `POST /api/apps/scaffold?app_id=<id>`
+- `POST /api/apps/scaffold?app_id=<id>[&title=<title>&permissions=<csv>&triggers=<csv>]`
 - `PUT /api/apps/source?app_id=<id>`
 - `POST /api/apps/run?app_id=<id>&trigger=<name>`
 - `DELETE /api/apps?app_id=<id>`

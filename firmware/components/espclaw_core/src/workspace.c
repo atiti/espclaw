@@ -7,6 +7,11 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
+#ifdef ESP_PLATFORM
+#include "esp_log.h"
+static const char *TAG = "espclaw_workspace";
+#endif
+
 static const espclaw_workspace_file_t WORKSPACE_FILES[] = {
     {
         "AGENTS.md",
@@ -136,6 +141,9 @@ static int ensure_directory(const char *path)
     if (mkdir(path, 0x1ED) == 0 || errno == EEXIST) {
         return 0;
     }
+#ifdef ESP_PLATFORM
+    ESP_LOGE(TAG, "mkdir failed for %s errno=%d", path, errno);
+#endif
     return -1;
 }
 
@@ -160,6 +168,9 @@ static int bootstrap_file(const char *workspace_root, const espclaw_workspace_fi
 
     handle = fopen(path, "w");
     if (handle == NULL) {
+#ifdef ESP_PLATFORM
+        ESP_LOGE(TAG, "fopen write failed for %s errno=%d", path, errno);
+#endif
         return -1;
     }
 

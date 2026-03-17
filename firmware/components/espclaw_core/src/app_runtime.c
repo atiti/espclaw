@@ -558,7 +558,11 @@ int espclaw_app_scaffold_lua(
     char app_dir[512];
     char manifest_relative_path[192];
     char script_relative_path[192];
-    char manifest_json[1024];
+    /* The default LLM-installable app permissions/triggers no longer fit in a
+     * tiny manifest buffer on-device, especially once titles and app ids get
+     * longer. Keep this comfortably above the current default manifest size so
+     * app.install can scaffold directly on hardware. */
+    char manifest_json[2048];
     char main_lua[1024];
     char permissions[ESPCLAW_APP_PERMISSION_MAX][ESPCLAW_APP_PERMISSION_NAME_MAX + 1] = {{0}};
     char triggers[ESPCLAW_APP_TRIGGER_MAX][ESPCLAW_APP_TRIGGER_NAME_MAX + 1] = {{0}};
@@ -579,13 +583,13 @@ int espclaw_app_scaffold_lua(
         permissions,
         ESPCLAW_APP_PERMISSION_MAX,
         sizeof(permissions[0]),
-        permissions_csv != NULL ? permissions_csv : DEFAULT_APP_PERMISSIONS
+        permissions_csv != NULL && permissions_csv[0] != '\0' ? permissions_csv : DEFAULT_APP_PERMISSIONS
     );
     trigger_count = append_csv_triggers(
         triggers,
         ESPCLAW_APP_TRIGGER_MAX,
         sizeof(triggers[0]),
-        triggers_csv != NULL ? triggers_csv : DEFAULT_APP_TRIGGERS
+        triggers_csv != NULL && triggers_csv[0] != '\0' ? triggers_csv : DEFAULT_APP_TRIGGERS
     );
 
     if (permission_count == 0 || trigger_count == 0 ||
@@ -2169,6 +2173,12 @@ static void register_lua_bindings(lua_State *state, espclaw_lua_context_t *conte
     register_lua_context_fn(state, context, lua_espclaw_read_file, "read_file");
     register_lua_context_fn(state, context, lua_espclaw_write_file, "write_file");
     register_lua_context_fn(state, context, lua_espclaw_list_apps, "list_apps");
+
+    /* Keep file access namespaced for apps while preserving the older top-level helpers. */
+    lua_newtable(state);
+    register_lua_context_fn(state, context, lua_espclaw_read_file, "read");
+    register_lua_context_fn(state, context, lua_espclaw_write_file, "write");
+    register_lua_table(state, "fs");
 
     lua_newtable(state);
     lua_pushcfunction(state, lua_espclaw_board_variant);

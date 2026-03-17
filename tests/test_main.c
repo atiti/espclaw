@@ -105,6 +105,9 @@ static int confirmation_http_adapter(
 )
 {
     test_agent_adapter_state_t *state = (test_agent_adapter_state_t *)user_data;
+    char source[2048];
+    size_t used = 0;
+    int written = 0;
 
     (void)url;
     (void)profile;
@@ -162,6 +165,16 @@ static int tool_list_http_adapter(
 )
 {
     test_agent_adapter_state_t *state = (test_agent_adapter_state_t *)user_data;
+    const char *source =
+        "function on_sensor(payload)\\\\n"
+        "  local banner = 'LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL"
+        "LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL'\\\\n"
+        "  return 'sensor:' .. payload\\\\n"
+        "end\\\\n"
+        "function handle(trigger, payload)\\\\n"
+        "  return 'ready'\\\\n"
+        "end\\\\n";
+    int written = 0;
 
     (void)url;
     (void)profile;
@@ -215,6 +228,9 @@ static int app_install_http_adapter(
 )
 {
     test_agent_adapter_state_t *state = (test_agent_adapter_state_t *)user_data;
+    char source[2048];
+    char banner[1400];
+    int written = 0;
 
     (void)url;
     (void)profile;
@@ -241,17 +257,34 @@ static int app_install_http_adapter(
         return 0;
     }
 
-    snprintf(
+    memset(banner, 'L', sizeof(banner) - 1);
+    banner[sizeof(banner) - 1] = '\0';
+    written = snprintf(
+        source,
+        sizeof(source),
+        "function on_sensor(payload)\\\\n"
+        "  local banner = '%s'\\\\n"
+        "  return 'sensor:' .. payload\\\\n"
+        "end\\\\n"
+        "function handle(trigger, payload)\\\\n"
+        "  return 'ready'\\\\n"
+        "end\\\\n",
+        banner
+    );
+    assert_true(written > 1023, "app install source exceeds legacy tool args budget");
+    written = snprintf(
         response,
         response_size,
         "{"
         "\"id\":\"resp_install_first\","
         "\"status\":\"completed\","
         "\"output\":["
-        "{\"type\":\"function_call\",\"call_id\":\"call_install\",\"name\":\"app.install\",\"arguments\":\"{\\\"app_id\\\":\\\"sensor_agent\\\",\\\"title\\\":\\\"Sensor Agent\\\",\\\"permissions_csv\\\":\\\"task.control,uart.read,uart.write\\\",\\\"triggers_csv\\\":\\\"manual,sensor\\\",\\\"source\\\":\\\"function on_sensor(payload)\\\\n  return 'sensor:' .. payload\\\\nend\\\\nfunction handle(trigger, payload)\\\\n  return 'ready'\\\\nend\\\\n\\\"}\",\"status\":\"completed\"}"
+        "{\"type\":\"function_call\",\"call_id\":\"call_install\",\"name\":\"app.install\",\"arguments\":\"{\\\"name\\\":\\\"Sensor Agent\\\",\\\"permissions\\\":\\\"task.control,uart.read,uart.write\\\",\\\"triggers\\\":\\\"manual,sensor\\\",\\\"lua\\\":\\\"%s\\\"}\",\"status\":\"completed\"}"
         "]"
-        "}"
+        "}",
+        source
     );
+    assert_true(written > 0 && (size_t)written < response_size, "app install mock response serialized");
     return 0;
 }
 
@@ -442,6 +475,68 @@ static void test_incremental_sse_stream_handles_long_completed_line(void)
 
     free(reduced);
     free(payload);
+}
+
+static void test_terminal_response_storage_handles_overlap(void)
+{
+    char buffer[256];
+
+    snprintf(
+        buffer,
+        sizeof(buffer),
+        "{\"id\":\"resp_overlap\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"ESPCLAW_BENCH_HI\"}]}]}"
+    );
+
+    assert_true(
+        espclaw_agent_store_terminal_response_json(buffer, strlen(buffer), buffer, sizeof(buffer)) == 0,
+        "terminal response storage handles overlap"
+    );
+    assert_string_contains(buffer, "\"id\":\"resp_overlap\"", "overlap storage preserved response id");
+    assert_string_contains(buffer, "\"text\":\"ESPCLAW_BENCH_HI\"", "overlap storage preserved output text");
+}
+
+static void test_esp32cam_storage_attempts(void)
+{
+    espclaw_esp32cam_sd_attempt_t attempt;
+
+    assert_true(espclaw_storage_esp32cam_attempt_count() == 2U, "esp32cam exposes sd retry attempts");
+    assert_true(espclaw_storage_get_esp32cam_attempt(0, &attempt), "esp32cam sdmmc attempt available");
+    assert_true(strcmp(attempt.label, "sdmmc-1bit") == 0, "esp32cam first attempt is sdmmc");
+    assert_true(attempt.mode == ESPCLAW_ESP32CAM_SD_MODE_SDMMC, "esp32cam first attempt uses sdmmc");
+    assert_true(attempt.width == 1U, "esp32cam sdmmc attempt uses 1-bit mode");
+    assert_true(attempt.clk_gpio == 14, "esp32cam sdmmc clock pin matches board");
+    assert_true(attempt.cmd_mosi_gpio == 15, "esp32cam sdmmc command pin matches board");
+    assert_true(attempt.d0_miso_gpio == 2, "esp32cam sdmmc data0 pin matches board");
+    assert_true(attempt.d1_gpio == -1, "esp32cam sdmmc leaves led/data1 pin unused");
+    assert_true(attempt.d2_gpio == -1, "esp32cam sdmmc leaves data2 pin unused");
+    assert_true(attempt.d3_cs_gpio == -1, "esp32cam sdmmc leaves data3 pin unused");
+
+    assert_true(espclaw_storage_get_esp32cam_attempt(1, &attempt), "esp32cam sdspi attempt available");
+    assert_true(strcmp(attempt.label, "sdspi") == 0, "esp32cam second attempt is sdspi");
+    assert_true(attempt.mode == ESPCLAW_ESP32CAM_SD_MODE_SDSPI, "esp32cam second attempt uses sdspi");
+    assert_true(attempt.clk_gpio == 14, "esp32cam sdspi clock pin matches board");
+    assert_true(attempt.cmd_mosi_gpio == 15, "esp32cam sdspi mosi pin matches board");
+    assert_true(attempt.d0_miso_gpio == 2, "esp32cam sdspi miso pin matches board");
+    assert_true(attempt.d1_gpio == -1, "esp32cam sdspi leaves led/data1 pin unused");
+    assert_true(attempt.d2_gpio == -1, "esp32cam sdspi leaves data2 pin unused");
+    assert_true(attempt.d3_cs_gpio == 13, "esp32cam sdspi cs pin matches board");
+
+    assert_true(!espclaw_storage_get_esp32cam_attempt(2, &attempt), "esp32cam has no third storage attempt");
+}
+
+static void test_board_boot_defaults_force_flash_led_low(void)
+{
+    char temp_dir[64];
+    espclaw_board_profile_t cam = espclaw_board_profile_for(ESPCLAW_BOARD_PROFILE_ESP32CAM);
+    int level = 1;
+
+    make_temp_dir(temp_dir, sizeof(temp_dir));
+    espclaw_hw_sim_reset();
+    assert_true(espclaw_board_configure_current(temp_dir, &cam) == 0, "board descriptor configured for boot defaults");
+    assert_true(espclaw_hw_gpio_write(4, 1) == 0, "flash led preset high");
+    assert_true(espclaw_hw_apply_board_boot_defaults() == 0, "board boot defaults applied");
+    assert_true(espclaw_hw_gpio_read(4, &level) == 0, "flash led level readable");
+    assert_true(level == 0, "flash led forced low by board boot defaults");
 }
 
 static int sse_wrapped_http_adapter(
@@ -855,6 +950,8 @@ static void test_ota_manager_host_state_and_partition_layout(void)
     assert_string_contains(csv, "otadata", "partition table includes otadata");
     assert_string_contains(csv, "ota_0", "partition table includes ota_0");
     assert_string_contains(csv, "ota_1", "partition table includes ota_1");
+    assert_string_contains(csv, "0x190000", "partition table uses enlarged symmetric ota slots");
+    assert_string_contains(csv, "0x0d0000", "partition table reserves the reduced internal workspace");
 }
 
 static void test_provisioning_descriptor(void)
@@ -1414,11 +1511,30 @@ static void test_app_runtime_manifest_and_scaffold(void)
         espclaw_app_scaffold_lua(temp_dir, "hello_app", "Hello App", "fs.read,fs.write", "boot,telegram") == 0,
         "lua app scaffolded"
     );
+    assert_true(
+        espclaw_app_scaffold_lua(
+            temp_dir,
+            "llm_installed_app",
+            "LLM Installed App",
+            "fs.read,fs.write,gpio.read,gpio.write,pwm.write,adc.read,i2c.read,i2c.write,uart.read,uart.write,camera.capture,temperature.read,imu.read,buzzer.play,ppm.write,task.control",
+            "manual,boot,timer,uart,sensor"
+        ) == 0,
+        "large default app scaffolded"
+    );
+    assert_true(
+        espclaw_app_scaffold_lua(temp_dir, "empty_defaults_app", "Empty Defaults App", "", "") == 0,
+        "empty csv scaffold falls back to defaults"
+    );
     assert_true(espclaw_app_load_manifest(temp_dir, "hello_app", &manifest) == 0, "scaffold manifest load");
     assert_true(strcmp(manifest.entrypoint, "main.lua") == 0, "entrypoint loaded");
     assert_true(espclaw_app_collect_ids(temp_dir, ids, 4, &count) == 0, "apps collected");
-    assert_true(count == 1, "one app collected");
-    assert_true(strcmp(ids[0], "hello_app") == 0, "app id collected");
+    assert_true(count == 3, "three apps collected");
+    assert_true(
+        (strcmp(ids[0], "hello_app") == 0 || strcmp(ids[1], "hello_app") == 0 || strcmp(ids[2], "hello_app") == 0) &&
+            (strcmp(ids[0], "llm_installed_app") == 0 || strcmp(ids[1], "llm_installed_app") == 0 || strcmp(ids[2], "llm_installed_app") == 0) &&
+            (strcmp(ids[0], "empty_defaults_app") == 0 || strcmp(ids[1], "empty_defaults_app") == 0 || strcmp(ids[2], "empty_defaults_app") == 0),
+        "app ids collected"
+    );
     assert_true(
         espclaw_workspace_read_file(temp_dir, "apps/hello_app/main.lua", lua_source, sizeof(lua_source)) == 0,
         "lua script readable"
@@ -2258,6 +2374,64 @@ static void test_lua_module_require_paths(void)
 #endif
 }
 
+static void test_app_runtime_fs_alias(void)
+{
+    char temp_dir[128];
+    char output[256];
+
+    make_temp_dir(temp_dir, sizeof(temp_dir));
+    assert_true(
+        espclaw_app_scaffold_lua(temp_dir, "fs_alias_app", "FS Alias App", "fs.read,fs.write", "manual") == 0,
+        "fs alias app scaffolded"
+    );
+    assert_true(
+        espclaw_app_update_source(
+            temp_dir,
+            "fs_alias_app",
+            "function handle(trigger, payload)\n"
+            "  espclaw.fs.write('memory/fs_alias.txt', payload)\n"
+            "  return espclaw.fs.read('memory/fs_alias.txt')\n"
+            "end\n"
+        ) == 0,
+        "fs alias app source updated"
+    );
+
+#ifdef ESPCLAW_HOST_LUA
+    assert_true(
+        espclaw_app_run(temp_dir, "fs_alias_app", "manual", "alias-ok", output, sizeof(output)) == 0,
+        "fs alias app ran"
+    );
+    assert_string_contains(output, "alias-ok", "fs alias read/write succeeded");
+#else
+    assert_true(true, "fs alias test is host-only");
+#endif
+}
+
+static void test_admin_scaffold_app_custom_triggers(void)
+{
+    char temp_dir[128];
+    char manifest[1024];
+
+    make_temp_dir(temp_dir, sizeof(temp_dir));
+    assert_true(
+        espclaw_admin_scaffold_app(
+            temp_dir,
+            "sensor_app",
+            "Sensor App",
+            "fs.read,fs.write",
+            "manual,sensor"
+        ) == 0,
+        "custom scaffold app created"
+    );
+    assert_true(
+        espclaw_workspace_read_file(temp_dir, "apps/sensor_app/app.json", manifest, sizeof(manifest)) == 0,
+        "custom scaffold manifest readable"
+    );
+    assert_string_contains(manifest, "\"manual\"", "custom scaffold kept manual trigger");
+    assert_string_contains(manifest, "\"sensor\"", "custom scaffold added sensor trigger");
+    assert_string_contains(manifest, "\"fs.write\"", "custom scaffold kept permissions");
+}
+
 static void test_agent_loop(void)
 {
     char temp_dir[128];
@@ -2460,12 +2634,17 @@ int main(void)
     test_event_watch_runtime();
     test_behavior_runtime();
     test_lua_module_require_paths();
+    test_app_runtime_fs_alias();
+    test_admin_scaffold_app_custom_triggers();
     test_transport_error_formatting();
     test_sse_completed_extraction_in_place();
     test_http_chunked_body_extraction();
     test_incremental_sse_stream_reduction();
     test_incremental_sse_stream_fallback_text();
     test_incremental_sse_stream_handles_long_completed_line();
+    test_terminal_response_storage_handles_overlap();
+    test_esp32cam_storage_attempts();
+    test_board_boot_defaults_force_flash_led_low();
     test_agent_loop();
 
     printf("espclaw core tests passed\n");

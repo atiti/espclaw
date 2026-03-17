@@ -636,6 +636,10 @@ static bool extract_json_string_from(const char *json, const char *key, const ch
         }
         cursor++;
     }
+    if (*cursor != '"') {
+        buffer[0] = '\0';
+        return false;
+    }
     buffer[used] = '\0';
     return true;
 }
@@ -1202,6 +1206,38 @@ static void append_sse_output_text_done_segments(const char *payload, char *buff
     }
 }
 
+int espclaw_agent_store_terminal_response_json(
+    const char *source_json,
+    size_t source_len,
+    char *buffer,
+    size_t buffer_size
+)
+{
+    char *temp = NULL;
+
+    if (source_json == NULL || buffer == NULL || buffer_size == 0) {
+        return -1;
+    }
+    if (source_len + 1 > buffer_size) {
+        return -1;
+    }
+    if (source_json == buffer) {
+        temp = calloc(1, source_len + 1);
+        if (temp == NULL) {
+            return -1;
+        }
+        memcpy(temp, source_json, source_len);
+        temp[source_len] = '\0';
+        memcpy(buffer, temp, source_len + 1);
+        free(temp);
+        return 0;
+    }
+
+    memcpy(buffer, source_json, source_len);
+    buffer[source_len] = '\0';
+    return 0;
+}
+
 static int parse_provider_response(const char *json, espclaw_provider_response_t *response)
 {
     const char *cursor;
@@ -1293,6 +1329,30 @@ static bool json_argument_string(const char *arguments_json, const char *key, ch
     return extract_json_string_from(arguments_json, key, NULL, buffer, buffer_size);
 }
 
+static bool json_argument_string_any(
+    const char *arguments_json,
+    const char *const *keys,
+    size_t key_count,
+    char *buffer,
+    size_t buffer_size
+)
+{
+    size_t index;
+
+    if (buffer != NULL && buffer_size > 0) {
+        buffer[0] = '\0';
+    }
+    if (keys == NULL) {
+        return false;
+    }
+    for (index = 0; index < key_count; ++index) {
+        if (json_argument_string(arguments_json, keys[index], buffer, buffer_size)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool json_argument_int(const char *arguments_json, const char *key, int *value_out)
 {
     const char *cursor = find_json_key_after(arguments_json, key, NULL);
@@ -1347,6 +1407,40 @@ static bool json_argument_bool(const char *arguments_json, const char *key, bool
         return true;
     }
     return false;
+}
+
+static bool normalize_app_id_text(const char *input, char *buffer, size_t buffer_size)
+{
+    size_t used = 0;
+    bool last_was_separator = false;
+
+    if (buffer == NULL || buffer_size == 0) {
+        return false;
+    }
+    buffer[0] = '\0';
+    if (input == NULL || input[0] == '\0') {
+        return false;
+    }
+
+    for (; *input != '\0' && used + 1 < buffer_size; ++input) {
+        unsigned char c = (unsigned char)*input;
+
+        if (isalnum(c)) {
+            buffer[used++] = (char)tolower(c);
+            last_was_separator = false;
+            continue;
+        }
+        if ((c == '-' || c == '_' || isspace(c)) && used > 0 && !last_was_separator) {
+            buffer[used++] = '_';
+            last_was_separator = true;
+        }
+    }
+
+    while (used > 0 && buffer[used - 1] == '_') {
+        used--;
+    }
+    buffer[used] = '\0';
+    return used > 0 && strlen(buffer) <= ESPCLAW_APP_ID_MAX;
 }
 
 static int tool_fs_read(const char *workspace_root, const char *arguments_json, char *buffer, size_t buffer_size)
@@ -1484,6 +1578,7 @@ static int tool_app_run(const char *workspace_root, const char *arguments_json, 
 static int tool_app_install(const char *workspace_root, const char *arguments_json, char *buffer, size_t buffer_size)
 {
     char app_id[ESPCLAW_APP_ID_MAX + 1];
+    char raw_name[ESPCLAW_APP_TITLE_MAX + 1];
     char source[3072];
     char title[ESPCLAW_APP_TITLE_MAX + 1];
     char permissions[256];
@@ -1492,32 +1587,62 @@ static int tool_app_install(const char *workspace_root, const char *arguments_js
     char existing[64];
     bool app_exists = false;
 
-    if (!json_argument_string(arguments_json, "app_id", app_id, sizeof(app_id))) {
+    raw_name[0] = '\0';
+    if (!json_argument_string_any(arguments_json, (const char *[]){"app_id", "name", "title"}, 3, raw_name, sizeof(raw_name))) {
         snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"missing app_id\"}");
         return -1;
     }
-    if (!json_argument_string(arguments_json, "source", source, sizeof(source))) {
+    if (!espclaw_app_id_is_valid(raw_name)) {
+        if (!normalize_app_id_text(raw_name, app_id, sizeof(app_id))) {
+            snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"invalid app_id\"}");
+            return -1;
+        }
+    } else {
+        copy_text(app_id, sizeof(app_id), raw_name);
+    }
+    if (!json_argument_string_any(arguments_json, (const char *[]){"source", "lua", "code"}, 3, source, sizeof(source))) {
         snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"missing source\"}");
         return -1;
     }
-    if (!json_argument_string(arguments_json, "title", title, sizeof(title))) {
-        copy_text(title, sizeof(title), app_id);
+    if (!json_argument_string_any(arguments_json, (const char *[]){"title", "name", "app_id"}, 3, title, sizeof(title))) {
+        copy_text(title, sizeof(title), raw_name);
     }
-    if (!json_argument_string(arguments_json, "permissions_csv", permissions, sizeof(permissions))) {
+    if (!json_argument_string_any(arguments_json, (const char *[]){"permissions_csv", "permissions"}, 2, permissions, sizeof(permissions))) {
         copy_text(
             permissions,
             sizeof(permissions),
             "fs.read,fs.write,gpio.read,gpio.write,pwm.write,adc.read,i2c.read,i2c.write,uart.read,uart.write,camera.capture,temperature.read,imu.read,buzzer.play,ppm.write,task.control"
         );
     }
-    if (!json_argument_string(arguments_json, "triggers_csv", triggers, sizeof(triggers))) {
+    if (!json_argument_string_any(arguments_json, (const char *[]){"triggers_csv", "triggers"}, 2, triggers, sizeof(triggers))) {
         copy_text(triggers, sizeof(triggers), "manual,boot,timer,uart,sensor");
     }
+
+#ifdef ESP_PLATFORM
+    ESP_LOGI(
+        TAG,
+        "app.install request raw_name=%s app_id=%s title_len=%u permissions_len=%u triggers_len=%u source_len=%u",
+        raw_name,
+        app_id,
+        (unsigned)strlen(title),
+        (unsigned)strlen(permissions),
+        (unsigned)strlen(triggers),
+        (unsigned)strlen(source)
+    );
+#endif
 
     app_exists = espclaw_app_read_source(workspace_root, app_id, existing, sizeof(existing)) == 0;
     if (!app_exists &&
         espclaw_app_scaffold_lua(workspace_root, app_id, title, permissions, triggers) != 0) {
-        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"failed to scaffold app\"}");
+        snprintf(
+            buffer,
+            buffer_size,
+            "{\"ok\":false,\"error\":\"failed to scaffold app\",\"raw_name\":"
+        );
+        append_escaped_json(buffer, buffer_size, strlen(buffer), raw_name);
+        append_text_segment(buffer, buffer_size, ",\"app_id\":");
+        append_escaped_json(buffer, buffer_size, strlen(buffer), app_id);
+        append_text_segment(buffer, buffer_size, "}");
         return -1;
     }
     if (espclaw_app_update_source(workspace_root, app_id, source) != 0) {
@@ -2895,10 +3020,14 @@ static int codex_sse_finalize_event(
             copy_text(error_text, error_text_size, "Provider completed response exceeded the embedded receive buffer.");
             return -1;
         }
-        memcpy(buffer, parser->data, parser->data_len);
-        buffer[parser->data_len] = '\0';
+        if (espclaw_agent_store_terminal_response_json(parser->data, parser->data_len, buffer, buffer_size) != 0) {
+            copy_text(error_text, error_text_size, "Failed to preserve the provider completed response.");
+            return -1;
+        }
         parser->saw_completed = true;
-        codex_sse_reset_event(parser);
+        /* On embedded raw-Codex paths the parser scratch space aliases the final
+         * response buffer, so resetting the event here would wipe the completed
+         * JSON we just preserved. The stream ends immediately after this. */
         return 1;
     }
 

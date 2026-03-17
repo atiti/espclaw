@@ -170,7 +170,7 @@ The firmware now serves the admin UI directly from the device root path and expo
 - `GET /api/hardware`
 - `GET /api/apps`
 - `GET /api/apps/detail?app_id=<id>`
-- `POST /api/apps/scaffold?app_id=<id>`
+- `POST /api/apps/scaffold?app_id=<id>[&title=<title>&permissions=<csv>&triggers=<csv>]`
 - `PUT /api/apps/source?app_id=<id>`
 - `POST /api/apps/run?app_id=<id>&trigger=<name>`
 - `DELETE /api/apps?app_id=<id>`
@@ -190,6 +190,8 @@ The firmware now serves the admin UI directly from the device root path and expo
 - `POST /api/loops/stop?loop_id=<id>`
 
 The firmware defaults now assume at least `4MB` flash because the Lua app runtime does not fit in the old `2MB` / `1MB app partition` layout.
+
+On the `esp32cam` profile, the internal flash `workspace` partition is only a fallback because the primary workspace lives on the SD card. The partition table therefore prioritizes two equally large `0x190000` OTA app slots over a large internal workspace reserve so OTA remains viable after PSRAM-enabled growth.
 
 The vision/tool path is now end-to-end in the simulator: `camera.capture` writes a deterministic JPEG into `/workspace/media/` and the next model round receives it as an `input_image` attachment. The real ESP32 camera backend is board-specific work on the supported camera boards rather than a fake on-device capture path.
 
@@ -246,6 +248,8 @@ On simulator builds the values are synthetic but shape-compatible. On real firmw
 - Default secret storage: NVS
 - Default workspace storage: `sdcard`
 - Default dynamic app runtime: Lua
+
+On AI Thinker `esp32cam`, SD-backed workspace startup now tries the socket in conservative `sdmmc-1bit` mode first and then falls back to `sdspi` on the same socket pins (`CLK=14`, `CMD/MOSI=15`, `D0/MISO=2`, `D3/CS=13`) so storage bring-up is more tolerant of board/card variance.
 
 ## Board Configuration
 
@@ -457,6 +461,15 @@ python3 scripts/real_device_bench.py --device http://192.168.1.253:8080
 
 The bench starts with a simple exact-text prompt and then moves toward tool use, LLM-generated Lua, and hardware-backed validation. Full details are in `docs/real-hardware-bench.md`.
 
+The current default bench order is:
+
+- `preflight`
+- `inventory`
+- `hello`
+- `tool_reasoning`
+- `generate_echo_app`
+- `task_event_runtime`
+
 ## Documentation
 
 - Architecture: `docs/architecture.md`
@@ -464,5 +477,6 @@ The bench starts with a simple exact-text prompt and then moves toward tool use,
 - Apps: `docs/apps.md`
 - Hardware Lua: `docs/hardware-lua.md`
 - Real Hardware Bench: `docs/real-hardware-bench.md`
+- Next Phase Plan: `docs/next-phase-plan.md`
 - Vehicle Control: `docs/vehicle-control.md`
 - Simulator: `docs/simulator.md`
