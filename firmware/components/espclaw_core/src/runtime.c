@@ -8,6 +8,7 @@
 #include <time.h>
 
 #include "esp_event.h"
+#include "esp_crt_bundle.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_mac.h"
@@ -93,6 +94,10 @@ static esp_err_t maybe_start_telegram(void);
 #ifdef ESP_PLATFORM
 #define ESPCLAW_BEHAVIOR_AUTOSTART_DELAY_MS 8000
 #define ESPCLAW_BEHAVIOR_AUTOSTART_STACK_WORDS 6144
+#define ESPCLAW_TELEGRAM_STACK_BYTES 16384
+#define ESPCLAW_TELEGRAM_URL_BYTES 512
+#define ESPCLAW_TELEGRAM_RESPONSE_BYTES 8192
+#define ESPCLAW_TELEGRAM_REPLY_BYTES 768
 #define ESPCLAW_UART_CONSOLE_STACK_BYTES 32768
 #endif
 
@@ -777,6 +782,7 @@ static esp_err_t telegram_send_message(const char *token, const char *chat_id, c
 
     config.url = url;
     config.transport_type = HTTP_TRANSPORT_OVER_SSL;
+    config.crt_bundle_attach = esp_crt_bundle_attach;
     config.timeout_ms = 15000;
     client = esp_http_client_init(&config);
     if (client == NULL) {
@@ -790,9 +796,215 @@ static esp_err_t telegram_send_message(const char *token, const char *chat_id, c
         esp_http_client_cleanup(client);
         return ESP_FAIL;
     }
+    if (esp_http_client_get_status_code(client) < 200 || esp_http_client_get_status_code(client) >= 300) {
+        esp_http_client_cleanup(client);
+        return ESP_FAIL;
+    }
 
     esp_http_client_cleanup(client);
     return ESP_OK;
+}
+
+static esp_err_t http_client_write_all(esp_http_client_handle_t client, const uint8_t *data, size_t length)
+{
+    size_t written = 0;
+
+    if (client == NULL || (data == NULL && length > 0U)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    while (written < length) {
+        int result = esp_http_client_write(client, (const char *)data + written, (int)(length - written));
+        if (result <= 0) {
+            return ESP_FAIL;
+        }
+        written += (size_t)result;
+    }
+
+    return ESP_OK;
+}
+
+static esp_err_t telegram_send_chat_action(const char *token, const char *chat_id, const char *action)
+{
+    char url[256];
+    char payload[256];
+    esp_http_client_config_t config = {0};
+    esp_http_client_handle_t client;
+
+    if (token == NULL || chat_id == NULL || action == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    snprintf(url, sizeof(url), "https://api.telegram.org/bot%s/sendChatAction", token);
+    snprintf(payload, sizeof(payload), "{\"chat_id\":\"%s\",\"action\":\"%s\"}", chat_id, action);
+
+    config.url = url;
+    config.transport_type = HTTP_TRANSPORT_OVER_SSL;
+    config.crt_bundle_attach = esp_crt_bundle_attach;
+    config.timeout_ms = 15000;
+    client = esp_http_client_init(&config);
+    if (client == NULL) {
+        return ESP_FAIL;
+    }
+
+    esp_http_client_set_method(client, HTTP_METHOD_POST);
+    esp_http_client_set_header(client, "Content-Type", "application/json");
+    esp_http_client_set_post_field(client, payload, (int)strlen(payload));
+    if (esp_http_client_perform(client) != ESP_OK) {
+        esp_http_client_cleanup(client);
+        return ESP_FAIL;
+    }
+    if (esp_http_client_get_status_code(client) < 200 || esp_http_client_get_status_code(client) >= 300) {
+        esp_http_client_cleanup(client);
+        return ESP_FAIL;
+    }
+
+    esp_http_client_cleanup(client);
+    return ESP_OK;
+}
+
+static esp_err_t telegram_send_photo(
+    const char *workspace_root,
+    const char *token,
+    const char *chat_id,
+    const char *relative_path,
+    const char *caption
+)
+{
+    static const char *boundary = "----espclawTelegramBoundary7MA4YWxkTrZu0gW";
+    char url[256];
+    char absolute_path[512];
+    char prelude[384];
+    char caption_part[256];
+    char file_header[384];
+    char closing[96];
+    uint8_t *file_buffer = NULL;
+    const char *filename;
+    FILE *handle = NULL;
+    long file_size = 0;
+    size_t closing_len;
+    size_t content_length;
+    esp_http_client_config_t config = {0};
+    esp_http_client_handle_t client = NULL;
+    esp_err_t status = ESP_FAIL;
+
+    if (workspace_root == NULL || token == NULL || chat_id == NULL || relative_path == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (espclaw_workspace_resolve_path(workspace_root, relative_path, absolute_path, sizeof(absolute_path)) != 0) {
+        return ESP_FAIL;
+    }
+
+    handle = fopen(absolute_path, "rb");
+    if (handle == NULL) {
+        return ESP_FAIL;
+    }
+    if (fseek(handle, 0, SEEK_END) != 0) {
+        fclose(handle);
+        return ESP_FAIL;
+    }
+    file_size = ftell(handle);
+    if (file_size <= 0 || fseek(handle, 0, SEEK_SET) != 0) {
+        fclose(handle);
+        return ESP_FAIL;
+    }
+
+    filename = strrchr(relative_path, '/');
+    filename = filename != NULL ? filename + 1 : relative_path;
+    snprintf(url, sizeof(url), "https://api.telegram.org/bot%s/sendPhoto", token);
+    snprintf(
+        prelude,
+        sizeof(prelude),
+        "--%s\r\n"
+        "Content-Disposition: form-data; name=\"chat_id\"\r\n\r\n"
+        "%s\r\n",
+        boundary,
+        chat_id
+    );
+    caption_part[0] = '\0';
+    if (caption != NULL && caption[0] != '\0') {
+        snprintf(
+            caption_part,
+            sizeof(caption_part),
+            "--%s\r\n"
+            "Content-Disposition: form-data; name=\"caption\"\r\n\r\n"
+            "%s\r\n",
+            boundary,
+            caption
+        );
+    }
+    snprintf(
+        file_header,
+        sizeof(file_header),
+        "--%s\r\n"
+        "Content-Disposition: form-data; name=\"photo\"; filename=\"%s\"\r\n"
+        "Content-Type: image/jpeg\r\n\r\n",
+        boundary,
+        filename
+    );
+    snprintf(closing, sizeof(closing), "\r\n--%s--\r\n", boundary);
+    closing_len = strlen(closing);
+    content_length = strlen(prelude) + strlen(caption_part) + strlen(file_header) + (size_t)file_size + closing_len;
+
+    config.url = url;
+    config.transport_type = HTTP_TRANSPORT_OVER_SSL;
+    config.crt_bundle_attach = esp_crt_bundle_attach;
+    config.timeout_ms = 30000;
+    client = esp_http_client_init(&config);
+    if (client == NULL) {
+        fclose(handle);
+        return ESP_FAIL;
+    }
+
+    esp_http_client_set_method(client, HTTP_METHOD_POST);
+    {
+        char content_type[128];
+        snprintf(content_type, sizeof(content_type), "multipart/form-data; boundary=%s", boundary);
+        esp_http_client_set_header(client, "Content-Type", content_type);
+    }
+
+    if (esp_http_client_open(client, (int)content_length) != ESP_OK) {
+        goto cleanup;
+    }
+    if (http_client_write_all(client, (const uint8_t *)prelude, strlen(prelude)) != ESP_OK ||
+        http_client_write_all(client, (const uint8_t *)caption_part, strlen(caption_part)) != ESP_OK ||
+        http_client_write_all(client, (const uint8_t *)file_header, strlen(file_header)) != ESP_OK) {
+        goto cleanup;
+    }
+
+    file_buffer = malloc(1024);
+    if (file_buffer == NULL) {
+        goto cleanup;
+    }
+    while (!feof(handle)) {
+        size_t bytes_read = fread(file_buffer, 1, 1024, handle);
+        if (bytes_read > 0U && http_client_write_all(client, file_buffer, bytes_read) != ESP_OK) {
+            goto cleanup;
+        }
+        if (ferror(handle)) {
+            goto cleanup;
+        }
+    }
+    if (http_client_write_all(client, (const uint8_t *)closing, closing_len) != ESP_OK) {
+        goto cleanup;
+    }
+    if (esp_http_client_fetch_headers(client) < 0) {
+        goto cleanup;
+    }
+    if (esp_http_client_get_status_code(client) >= 200 && esp_http_client_get_status_code(client) < 300) {
+        status = ESP_OK;
+    }
+
+cleanup:
+    if (handle != NULL) {
+        fclose(handle);
+    }
+    free(file_buffer);
+    if (client != NULL) {
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+    }
+    return status;
 }
 
 esp_err_t espclaw_runtime_get_telegram_config(espclaw_telegram_config_t *config)
@@ -1167,7 +1379,27 @@ static bool parse_remove_app_command(
 
 static void telegram_polling_task(void *arg)
 {
+    char *url;
+    char *response;
+    char *reply;
+    espclaw_agent_run_result_t *run_result;
+
     (void)arg;
+    url = malloc(ESPCLAW_TELEGRAM_URL_BYTES);
+    response = malloc(ESPCLAW_TELEGRAM_RESPONSE_BYTES);
+    reply = malloc(ESPCLAW_TELEGRAM_REPLY_BYTES);
+    run_result = calloc(1, sizeof(*run_result));
+    if (url == NULL || response == NULL || reply == NULL || run_result == NULL) {
+        ESP_LOGE(TAG, "Telegram polling task failed to allocate working buffers");
+        free(url);
+        free(response);
+        free(reply);
+        free(run_result);
+        s_runtime_status.telegram_ready = false;
+        s_telegram_task_started = false;
+        vTaskDelete(NULL);
+        return;
+    }
 
     while (true) {
         espclaw_telegram_config_t config;
@@ -1197,16 +1429,13 @@ static void telegram_polling_task(void *arg)
         }
 
         {
-            char url[512];
-            char response[8192];
-            char reply[768];
             esp_http_client_config_t client_config = {0};
             esp_http_client_handle_t client;
             espclaw_telegram_update_t update;
 
             snprintf(
                 url,
-                sizeof(url),
+                ESPCLAW_TELEGRAM_URL_BYTES,
                 "https://api.telegram.org/bot%s/getUpdates?timeout=5&offset=%ld",
                 config.bot_token,
                 s_telegram_offset
@@ -1214,6 +1443,7 @@ static void telegram_polling_task(void *arg)
 
             client_config.url = url;
             client_config.transport_type = HTTP_TRANSPORT_OVER_SSL;
+            client_config.crt_bundle_attach = esp_crt_bundle_attach;
             client_config.timeout_ms = 15000;
             client = esp_http_client_init(&client_config);
             if (client == NULL) {
@@ -1222,29 +1452,55 @@ static void telegram_polling_task(void *arg)
             }
 
             esp_http_client_set_method(client, HTTP_METHOD_GET);
-            if (esp_http_client_perform(client) == ESP_OK &&
-                read_http_response(client, response, sizeof(response)) == ESP_OK &&
+            if (esp_http_client_open(client, 0) == ESP_OK &&
+                esp_http_client_fetch_headers(client) >= 0 &&
+                esp_http_client_get_status_code(client) == 200 &&
+                read_http_response(client, response, ESPCLAW_TELEGRAM_RESPONSE_BYTES) == ESP_OK &&
                 espclaw_telegram_extract_update(response, &update)) {
                 bool append_exchange = true;
 
                 s_telegram_offset = update.update_id + 1;
+                telegram_send_chat_action(config.bot_token, update.chat_id, "typing");
 
-                if (strcmp(update.text, "/status") == 0) {
-                    build_status_reply(reply, sizeof(reply));
+                if (strcmp(update.text, "/camera") == 0 || strcmp(update.text, "/photo") == 0) {
+                    espclaw_hw_camera_capture_t capture;
+
+                    append_exchange = false;
+                    telegram_send_chat_action(config.bot_token, update.chat_id, "upload_photo");
+                    if (!s_runtime_status.storage_ready) {
+                        snprintf(reply, ESPCLAW_TELEGRAM_REPLY_BYTES, "Workspace storage is not available.");
+                    } else if (espclaw_hw_camera_capture(
+                                   s_runtime_status.workspace_root,
+                                   "telegram_capture.jpg",
+                                   &capture) != 0) {
+                        snprintf(reply, ESPCLAW_TELEGRAM_REPLY_BYTES, "Camera capture failed: %s", capture.error);
+                    } else if (telegram_send_photo(
+                                   s_runtime_status.workspace_root,
+                                   config.bot_token,
+                                   update.chat_id,
+                                   capture.relative_path,
+                                   "ESPClaw camera capture") == ESP_OK) {
+                        snprintf(reply, ESPCLAW_TELEGRAM_REPLY_BYTES, "Sent camera capture: %s", capture.relative_path);
+                        s_runtime_status.telegram_ready = true;
+                    } else {
+                        snprintf(reply, ESPCLAW_TELEGRAM_REPLY_BYTES, "Captured image but failed to upload it to Telegram.");
+                    }
+                } else if (strcmp(update.text, "/status") == 0) {
+                    build_status_reply(reply, ESPCLAW_TELEGRAM_REPLY_BYTES);
                 } else if (strcmp(update.text, "/apps") == 0) {
-                    build_apps_list_reply(reply, sizeof(reply));
+                    build_apps_list_reply(reply, ESPCLAW_TELEGRAM_REPLY_BYTES);
                 } else if (strncmp(update.text, "/newapp ", 8) == 0) {
                     char app_id[ESPCLAW_APP_ID_MAX + 1];
 
                     if (!s_runtime_status.storage_ready) {
-                        snprintf(reply, sizeof(reply), "Workspace storage is not available.");
+                        snprintf(reply, ESPCLAW_TELEGRAM_REPLY_BYTES, "Workspace storage is not available.");
                     } else if (!parse_new_app_command(update.text, app_id, sizeof(app_id))) {
-                        snprintf(reply, sizeof(reply), "Usage: /newapp <app_id>");
+                        snprintf(reply, ESPCLAW_TELEGRAM_REPLY_BYTES, "Usage: /newapp <app_id>");
                     } else {
                         if (espclaw_admin_scaffold_default_app(s_runtime_status.workspace_root, app_id) == 0) {
-                            snprintf(reply, sizeof(reply), "Created app %s. Run it with /app %s", app_id, app_id);
+                            snprintf(reply, ESPCLAW_TELEGRAM_REPLY_BYTES, "Created app %s. Run it with /app %s", app_id, app_id);
                         } else {
-                            snprintf(reply, sizeof(reply), "Failed to create app %s", app_id);
+                            snprintf(reply, ESPCLAW_TELEGRAM_REPLY_BYTES, "Failed to create app %s", app_id);
                         }
                     }
                 } else if (strncmp(update.text, "/app ", 5) == 0) {
@@ -1252,46 +1508,47 @@ static void telegram_polling_task(void *arg)
                     char app_payload[256];
 
                     if (!s_runtime_status.storage_ready) {
-                        snprintf(reply, sizeof(reply), "Workspace storage is not available.");
+                        snprintf(reply, ESPCLAW_TELEGRAM_REPLY_BYTES, "Workspace storage is not available.");
                     } else if (!parse_app_command(update.text, app_id, sizeof(app_id), app_payload, sizeof(app_payload))) {
-                        snprintf(reply, sizeof(reply), "Usage: /app <app_id> [payload]");
+                        snprintf(reply, ESPCLAW_TELEGRAM_REPLY_BYTES, "Usage: /app <app_id> [payload]");
                     } else if (espclaw_app_run(
                                    s_runtime_status.workspace_root,
                                    app_id,
                                    "telegram",
                                    app_payload,
                                    reply,
-                                   sizeof(reply)) != 0 && reply[0] == '\0') {
-                        snprintf(reply, sizeof(reply), "Failed to run app %s", app_id);
+                                   ESPCLAW_TELEGRAM_REPLY_BYTES) != 0 && reply[0] == '\0') {
+                        snprintf(reply, ESPCLAW_TELEGRAM_REPLY_BYTES, "Failed to run app %s", app_id);
                     }
                 } else if (strncmp(update.text, "/rmapp ", 7) == 0) {
                     char app_id[ESPCLAW_APP_ID_MAX + 1];
 
                     if (!s_runtime_status.storage_ready) {
-                        snprintf(reply, sizeof(reply), "Workspace storage is not available.");
+                        snprintf(reply, ESPCLAW_TELEGRAM_REPLY_BYTES, "Workspace storage is not available.");
                     } else if (!parse_remove_app_command(update.text, app_id, sizeof(app_id))) {
-                        snprintf(reply, sizeof(reply), "Usage: /rmapp <app_id>");
+                        snprintf(reply, ESPCLAW_TELEGRAM_REPLY_BYTES, "Usage: /rmapp <app_id>");
                     } else if (espclaw_app_remove(s_runtime_status.workspace_root, app_id) == 0) {
-                        snprintf(reply, sizeof(reply), "Removed app %s", app_id);
+                        snprintf(reply, ESPCLAW_TELEGRAM_REPLY_BYTES, "Removed app %s", app_id);
                     } else {
-                        snprintf(reply, sizeof(reply), "Failed to remove app %s", app_id);
+                        snprintf(reply, ESPCLAW_TELEGRAM_REPLY_BYTES, "Failed to remove app %s", app_id);
                     }
                 } else {
-                    espclaw_agent_run_result_t run_result;
-
                     append_exchange = false;
                     if (!s_runtime_status.storage_ready) {
-                        snprintf(reply, sizeof(reply), "Workspace storage is not available.");
-                    } else if (espclaw_agent_loop_run(
+                        snprintf(reply, ESPCLAW_TELEGRAM_REPLY_BYTES, "Workspace storage is not available.");
+                    } else {
+                        memset(run_result, 0, sizeof(*run_result));
+                    }
+                    if (s_runtime_status.storage_ready && (espclaw_agent_loop_run_stateless(
                                    s_runtime_status.workspace_root,
                                    update.chat_id,
                                    update.text,
                                    false,
                                    false,
-                                   &run_result) == 0 || run_result.ok) {
-                        copy_text(reply, sizeof(reply), run_result.final_text);
-                    } else {
-                        copy_text(reply, sizeof(reply), run_result.final_text);
+                                   run_result) == 0 || run_result->ok)) {
+                        copy_text(reply, ESPCLAW_TELEGRAM_REPLY_BYTES, run_result->final_text);
+                    } else if (s_runtime_status.storage_ready) {
+                        copy_text(reply, ESPCLAW_TELEGRAM_REPLY_BYTES, run_result->final_text);
                     }
                 }
 
@@ -1315,6 +1572,7 @@ static void telegram_polling_task(void *arg)
                 }
             }
 
+            esp_http_client_close(client);
             esp_http_client_cleanup(client);
         }
 
@@ -1341,7 +1599,7 @@ static esp_err_t maybe_start_telegram(void)
     if (xTaskCreatePinnedToCore(
             telegram_polling_task,
             "espclaw_tg",
-            8192,
+            ESPCLAW_TELEGRAM_STACK_BYTES,
             NULL,
             5,
             NULL,

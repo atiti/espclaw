@@ -185,3 +185,9 @@
 - fix(agent): require a corrective retry when a request explicitly requires both web.search and web.fetch but one tool is skipped
 - fix(storage): prefer the proven ESP32-CAM SDSPI workspace mount path before retrying the noisy sdmmc-1bit fallback
 - fix(web): use explicit esp_http_client open/read flow for embedded web.search and web.fetch, with cert bundle attachment and live response status checks
+- fix(runtime): move Telegram polling HTTP buffers and agent-result state off the task stack and increase the ESP32-CAM Telegram task stack budget to avoid post-boot crash loops
+- fix(runtime): attach the cert bundle for Telegram HTTPS polling/sends and emit Telegram typing indicators while the bot processes incoming messages
+- feat(telegram): add direct `/camera` and `/photo` commands that capture a JPEG on camera boards and upload it to the Telegram chat
+- fix(telegram): parse 64-bit Telegram chat/user ids correctly on ESP32 so private-chat updates are no longer ignored on 32-bit builds
+- fix(telegram): switch Telegram `getUpdates` polling to explicit open/fetch_headers/read flow so response bodies are actually parsed on embedded builds
+- fix(telegram): run embedded Telegram LLM turns without SD-backed session transcripts to avoid polling-task FATFS crashes on esp32cam

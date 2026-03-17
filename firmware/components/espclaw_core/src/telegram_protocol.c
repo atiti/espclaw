@@ -53,7 +53,7 @@ static const char *find_key(const char *json, const char *key)
     return strstr(json, pattern);
 }
 
-static bool extract_numeric_after_key(const char *json, const char *key, long *value)
+static bool extract_numeric_after_key(const char *json, const char *key, long long *value)
 {
     const char *key_start = find_key(json, key);
     char *end_ptr = NULL;
@@ -72,7 +72,7 @@ static bool extract_numeric_after_key(const char *json, const char *key, long *v
         key_start++;
     }
 
-    *value = strtol(key_start, &end_ptr, 10);
+    *value = strtoll(key_start, &end_ptr, 10);
     return end_ptr != key_start;
 }
 
@@ -141,7 +141,8 @@ static size_t json_escape_string(const char *input, char *buffer, size_t buffer_
 bool espclaw_telegram_extract_update(const char *json, espclaw_telegram_update_t *update)
 {
     const char *message_start = NULL;
-    long message_id = 0;
+    long long update_id = 0;
+    long long message_id = 0;
 
     if (json == NULL || update == NULL) {
         return false;
@@ -149,9 +150,10 @@ bool espclaw_telegram_extract_update(const char *json, espclaw_telegram_update_t
 
     memset(update, 0, sizeof(*update));
 
-    if (!extract_numeric_after_key(json, "update_id", &update->update_id)) {
+    if (!extract_numeric_after_key(json, "update_id", &update_id)) {
         return false;
     }
+    update->update_id = (long)update_id;
 
     message_start = strstr(json, "\"message\"");
     if (message_start == NULL) {
@@ -167,8 +169,8 @@ bool espclaw_telegram_extract_update(const char *json, espclaw_telegram_update_t
     }
 
     {
-        long chat_id = 0;
-        long from_id = 0;
+        long long chat_id = 0;
+        long long from_id = 0;
         const char *chat_start = strstr(message_start, "\"chat\"");
         const char *from_start = strstr(message_start, "\"from\"");
 
@@ -183,8 +185,8 @@ bool espclaw_telegram_extract_update(const char *json, espclaw_telegram_update_t
             return false;
         }
 
-        snprintf(update->chat_id, sizeof(update->chat_id), "%ld", chat_id);
-        snprintf(update->from_id, sizeof(update->from_id), "%ld", from_id);
+        snprintf(update->chat_id, sizeof(update->chat_id), "%lld", chat_id);
+        snprintf(update->from_id, sizeof(update->from_id), "%lld", from_id);
     }
 
     return true;

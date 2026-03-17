@@ -1809,6 +1809,21 @@ static void test_console_chat_skips_embedded_transcript_writes(void)
     assert_string_contains(append_fn, "return;", "console transcript helper can no-op on embedded targets");
 }
 
+static void test_telegram_agent_turns_use_stateless_loop(void)
+{
+    char path[512];
+    char contents[131072];
+
+    snprintf(path, sizeof(path), "%s/firmware/components/espclaw_core/src/runtime.c", ESPCLAW_SOURCE_DIR);
+    read_text_file(path, contents, sizeof(contents));
+    assert_string_contains(contents, "espclaw_agent_loop_run_stateless(", "telegram polling uses the stateless agent loop");
+
+    snprintf(path, sizeof(path), "%s/firmware/components/espclaw_core/src/agent_loop.c", ESPCLAW_SOURCE_DIR);
+    read_text_file(path, contents, sizeof(contents));
+    assert_string_contains(contents, "int espclaw_agent_loop_run_stateless(", "agent loop exposes a stateless entrypoint");
+    assert_string_contains(contents, "persist_transcript,\n        false,", "stateless agent loop disables transcript persistence");
+}
+
 static void test_runtime_uses_larger_uart_console_stack(void)
 {
     char path[512];
@@ -2360,6 +2375,10 @@ static void test_telegram_protocol(void)
         "{\"ok\":true,\"result\":[{\"update_id\":9001,\"message\":{\"message_id\":12,"
         "\"from\":{\"id\":111,\"is_bot\":false},\"chat\":{\"id\":222,\"type\":\"private\"},"
         "\"date\":1710000000,\"text\":\"/status\"}}]}";
+    const char *large_id_update_json =
+        "{\"ok\":true,\"result\":[{\"update_id\":9002,\"message\":{\"message_id\":13,"
+        "\"from\":{\"id\":6568730383,\"is_bot\":false},\"chat\":{\"id\":6568730383,\"type\":\"private\"},"
+        "\"date\":1710000001,\"text\":\"hi\"}}]}";
     char payload[1024];
     espclaw_telegram_update_t update;
 
@@ -2368,6 +2387,11 @@ static void test_telegram_protocol(void)
     assert_true(strcmp(update.chat_id, "222") == 0, "telegram chat id");
     assert_true(strcmp(update.from_id, "111") == 0, "telegram from id");
     assert_true(strcmp(update.text, "/status") == 0, "telegram text");
+
+    assert_true(espclaw_telegram_extract_update(large_id_update_json, &update), "telegram large-id update extracted");
+    assert_true(strcmp(update.chat_id, "6568730383") == 0, "telegram large chat id preserved");
+    assert_true(strcmp(update.from_id, "6568730383") == 0, "telegram large from id preserved");
+    assert_true(strcmp(update.text, "hi") == 0, "telegram large-id text preserved");
 
     assert_true(
         espclaw_telegram_build_send_message_payload("222", "hello\n\"world\"", payload, sizeof(payload)) > 0,
@@ -3910,6 +3934,19 @@ static void test_console_chat_and_web_tools(void)
     assert_string_contains(transcript, "uart_console_write_raw(\"\\r\\n\")", "uart console emits newline before running commands");
     assert_string_contains(transcript, "Telegram polling idle: empty bot token", "runtime reports idle telegram state");
     assert_string_contains(transcript, "espclaw_runtime_set_telegram_config", "runtime exposes telegram setter");
+    assert_string_contains(transcript, "#define ESPCLAW_TELEGRAM_STACK_BYTES 16384", "telegram task stack budget is increased");
+    assert_string_contains(transcript, "response = malloc(ESPCLAW_TELEGRAM_RESPONSE_BYTES);", "telegram response buffer moves off stack");
+    assert_string_contains(transcript, "run_result = calloc(1, sizeof(*run_result));", "telegram agent result moves off stack");
+    assert_string_contains(transcript, "\"espclaw_tg\",\n            ESPCLAW_TELEGRAM_STACK_BYTES,", "telegram task uses named stack budget");
+    assert_string_contains(transcript, "config.crt_bundle_attach = esp_crt_bundle_attach;", "telegram send message attaches cert bundle");
+    assert_string_contains(transcript, "client_config.crt_bundle_attach = esp_crt_bundle_attach;", "telegram get updates attaches cert bundle");
+    assert_string_contains(transcript, "telegram_send_chat_action(config.bot_token, update.chat_id, \"typing\")", "telegram sends typing indicator before processing");
+    assert_string_contains(transcript, "https://api.telegram.org/bot%s/sendPhoto", "telegram photo upload endpoint is present");
+    assert_string_contains(transcript, "multipart/form-data; boundary=", "telegram photo upload uses multipart form data");
+    assert_string_contains(transcript, "strcmp(update.text, \"/camera\") == 0 || strcmp(update.text, \"/photo\") == 0", "telegram supports direct camera commands");
+    assert_string_contains(transcript, "telegram_send_chat_action(config.bot_token, update.chat_id, \"upload_photo\")", "telegram sends upload-photo indicator");
+    assert_string_contains(transcript, "esp_http_client_open(client, 0) == ESP_OK", "telegram polling uses explicit http open");
+    assert_string_contains(transcript, "esp_http_client_fetch_headers(client) >= 0", "telegram polling fetches headers before reads");
 
     read_text_file(
         ESPCLAW_SOURCE_DIR "/firmware/components/espclaw_core/src/admin_ui.c",
@@ -3985,6 +4022,7 @@ int main(void)
     test_behavior_register_avoids_sd_manifest_validation();
     test_session_append_avoids_workspace_bootstrap_on_embedded_console_paths();
     test_console_chat_skips_embedded_transcript_writes();
+    test_telegram_agent_turns_use_stateless_loop();
     test_runtime_uses_larger_uart_console_stack();
     test_embedded_console_and_agent_paths_heap_allocate_auth_profiles();
     test_uart_console_normalizes_newlines_for_serial_terminals();

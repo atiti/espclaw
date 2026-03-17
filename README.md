@@ -136,6 +136,12 @@ Supported slash commands:
 
 - `/help`
 - `/status`
+- `/telegram status`
+- `/telegram token <token>`
+- `/telegram poll <seconds>`
+- `/telegram enable`
+- `/telegram disable`
+- `/telegram clear-token`
 - `/tools`
 - `/tool <name> [json]`
 - `/wifi status`
@@ -437,6 +443,7 @@ Current runtime surfaces:
 
 - boot-trigger apps run automatically after workspace mount
 - Telegram `/apps` lists installed apps with versions
+- Telegram `/camera` and `/photo` capture a JPEG on camera boards and upload it directly to the chat
 - Telegram `/newapp <app_id>` scaffolds a new Lua app bundle
 - Telegram `/app <app_id> [payload]` runs an installed app with the `telegram` trigger
 - Telegram `/rmapp <app_id>` removes an installed app bundle

@@ -5816,12 +5816,13 @@ static void build_tool_summary(
     }
 }
 
-int espclaw_agent_loop_run(
+static int espclaw_agent_loop_run_with_options(
     const char *workspace_root,
     const char *session_id,
     const char *user_message,
     bool allow_mutations,
     bool yolo_mode,
+    bool persist_transcript,
     espclaw_agent_run_result_t *result
 )
 {
@@ -5943,7 +5944,7 @@ int espclaw_agent_loop_run(
     }
 
     codex_items_json[0] = '\0';
-    if (workspace_root != NULL && workspace_root[0] != '\0') {
+    if (persist_transcript && workspace_root != NULL && workspace_root[0] != '\0') {
         espclaw_session_append_message(workspace_root, session_id, "user", user_message);
         load_history(workspace_root, session_id, history, runtime_budget.agent_history_max, &history_count);
     } else if (runtime_budget.agent_history_max > 0) {
@@ -6018,7 +6019,7 @@ int espclaw_agent_loop_run(
                     copy_text(result->response_id, sizeof(result->response_id), completed_id);
                     result->final_text[0] = '\0';
                     result->ok = true;
-                    if (workspace_root != NULL && workspace_root[0] != '\0') {
+                    if (persist_transcript && workspace_root != NULL && workspace_root[0] != '\0') {
                         espclaw_session_append_message(workspace_root, session_id, "assistant", "");
                     }
                     free(instructions);
@@ -6182,7 +6183,7 @@ int espclaw_agent_loop_run(
                 continue;
             }
             result->ok = true;
-            if (workspace_root != NULL && workspace_root[0] != '\0') {
+            if (persist_transcript && workspace_root != NULL && workspace_root[0] != '\0') {
                 espclaw_session_append_message(workspace_root, session_id, "assistant", result->final_text);
             }
             free(instructions);
@@ -6210,14 +6211,14 @@ int espclaw_agent_loop_run(
 
         result->used_tools = true;
         if (provider_response->text[0] != '\0') {
-            if (workspace_root != NULL && workspace_root[0] != '\0') {
+            if (persist_transcript && workspace_root != NULL && workspace_root[0] != '\0') {
                 espclaw_session_append_message(workspace_root, session_id, "assistant", provider_response->text);
             }
         } else {
             char tool_summary[256];
 
             build_tool_summary(provider_response, tool_summary, sizeof(tool_summary));
-            if (workspace_root != NULL && workspace_root[0] != '\0') {
+            if (persist_transcript && workspace_root != NULL && workspace_root[0] != '\0') {
                 espclaw_session_append_message(workspace_root, session_id, "assistant", tool_summary);
             }
         }
@@ -6276,7 +6277,7 @@ int espclaw_agent_loop_run(
             if (tool_media.active && media_count < ESPCLAW_AGENT_MEDIA_MAX) {
                 media_refs[media_count++] = tool_media;
             }
-            if (workspace_root != NULL && workspace_root[0] != '\0') {
+            if (persist_transcript && workspace_root != NULL && workspace_root[0] != '\0') {
                 espclaw_session_append_message(
                     workspace_root,
                     session_id,
@@ -6409,7 +6410,7 @@ int espclaw_agent_loop_run(
                 copy_text(result->final_text, sizeof(result->final_text), "Out of memory loading follow-up history.");
                 return -1;
             }
-            if (workspace_root != NULL && workspace_root[0] != '\0') {
+            if (persist_transcript && workspace_root != NULL && workspace_root[0] != '\0') {
                 load_history(workspace_root, session_id, history, runtime_budget.agent_history_max, &history_count);
             } else {
                 history_count = 0;
@@ -6482,7 +6483,7 @@ int espclaw_agent_loop_run(
 
     result->hit_iteration_limit = true;
     copy_text(result->final_text, sizeof(result->final_text), "Agent run hit the tool iteration limit.");
-    if (workspace_root != NULL && workspace_root[0] != '\0') {
+    if (persist_transcript && workspace_root != NULL && workspace_root[0] != '\0') {
         espclaw_session_append_message(workspace_root, session_id, "assistant", result->final_text);
     }
     free(media_refs);
@@ -6495,6 +6496,50 @@ int espclaw_agent_loop_run(
     free(response_body);
     free_embedded_auth_profile(profile);
     return -1;
+}
+
+int espclaw_agent_loop_run(
+    const char *workspace_root,
+    const char *session_id,
+    const char *user_message,
+    bool allow_mutations,
+    bool yolo_mode,
+    espclaw_agent_run_result_t *result
+)
+{
+    return espclaw_agent_loop_run_with_options(
+        workspace_root,
+        session_id,
+        user_message,
+        allow_mutations,
+        yolo_mode,
+        true,
+        result
+    );
+}
+
+int espclaw_agent_loop_run_stateless(
+    const char *workspace_root,
+    const char *session_id,
+    const char *user_message,
+    bool allow_mutations,
+    bool yolo_mode,
+    espclaw_agent_run_result_t *result
+)
+{
+    /*
+     * Embedded Telegram turns share the same SD-backed workspace as the rest of the runtime.
+     * Keep them stateless so they do not hit session transcript reads/writes from the polling task.
+     */
+    return espclaw_agent_loop_run_with_options(
+        workspace_root,
+        session_id,
+        user_message,
+        allow_mutations,
+        yolo_mode,
+        false,
+        result
+    );
 }
 
 void espclaw_agent_set_http_adapter(espclaw_agent_http_adapter_t adapter, void *user_data)

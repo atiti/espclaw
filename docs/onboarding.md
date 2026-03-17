@@ -77,6 +77,7 @@ Current behavior:
 
 - `/status` returns a compact runtime status payload
 - `/apps` lists installed Lua apps
+- `/camera` or `/photo` captures a fresh JPEG on camera boards and uploads it into the Telegram chat
 - `/newapp <app_id>` scaffolds a new Lua app in the workspace
 - `/app <app_id> [payload]` runs an installed Lua app with the `telegram` trigger
 - `/rmapp <app_id>` removes an installed Lua app from the workspace
