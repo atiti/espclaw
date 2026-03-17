@@ -7,6 +7,9 @@
 
 #ifdef ESP_PLATFORM
 #include "esp_http_client.h"
+#if defined(CONFIG_MBEDTLS_CERTIFICATE_BUNDLE)
+#include "esp_crt_bundle.h"
+#endif
 #endif
 
 #include "espclaw/workspace.h"
@@ -205,16 +208,34 @@ static int default_http_get(const char *url, char *response, size_t response_siz
         .buffer_size_tx = 1024,
     };
     esp_http_client_handle_t client;
+    esp_err_t err;
     int total_read = 0;
+    int status_code = 0;
 
     if (url == NULL || response == NULL || response_size == 0) {
         return -1;
     }
+#if defined(CONFIG_MBEDTLS_CERTIFICATE_BUNDLE)
+    config.crt_bundle_attach = esp_crt_bundle_attach;
+#endif
     client = esp_http_client_init(&config);
     if (client == NULL) {
         return -1;
     }
-    if (esp_http_client_perform(client) != ESP_OK) {
+
+    err = esp_http_client_open(client, 0);
+    if (err != ESP_OK) {
+        esp_http_client_cleanup(client);
+        return -1;
+    }
+    if (esp_http_client_fetch_headers(client) < 0) {
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        return -1;
+    }
+    status_code = esp_http_client_get_status_code(client);
+    if (status_code < 200 || status_code >= 300) {
+        esp_http_client_close(client);
         esp_http_client_cleanup(client);
         return -1;
     }
@@ -222,6 +243,7 @@ static int default_http_get(const char *url, char *response, size_t response_siz
         int read_now = esp_http_client_read(client, response + total_read, (int)response_size - 1 - total_read);
 
         if (read_now < 0) {
+            esp_http_client_close(client);
             esp_http_client_cleanup(client);
             return -1;
         }
@@ -231,6 +253,7 @@ static int default_http_get(const char *url, char *response, size_t response_siz
         total_read += read_now;
     }
     response[total_read] = '\0';
+    esp_http_client_close(client);
     esp_http_client_cleanup(client);
     return 0;
 #else

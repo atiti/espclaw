@@ -3503,6 +3503,16 @@ static void test_console_chat_and_web_tools(void)
     assert_true(espclaw_workspace_read_file(temp_dir, stored_path, buffer, sizeof(buffer)) == 0, "web fetch stored markdown readable");
     assert_string_contains(buffer, "PROM read sequence", "web fetch stored markdown content");
 
+    read_text_file(
+        ESPCLAW_SOURCE_DIR "/firmware/components/espclaw_core/src/web_tools.c",
+        transcript,
+        sizeof(transcript)
+    );
+    assert_string_contains(transcript, "esp_http_client_open(client, 0)", "web tools uses explicit http open");
+    assert_string_contains(transcript, "esp_http_client_fetch_headers(client)", "web tools fetches headers before reads");
+    assert_string_contains(transcript, "esp_http_client_close(client)", "web tools closes explicit http session");
+    assert_string_contains(transcript, "config.crt_bundle_attach = esp_crt_bundle_attach", "web tools attaches cert bundle");
+
     memset(&result, 0, sizeof(result));
     assert_true(
         espclaw_console_run(temp_dir, "console_reboot", "/reboot", true, false, &result) == 0,
