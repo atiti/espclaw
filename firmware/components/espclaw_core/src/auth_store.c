@@ -2,6 +2,7 @@
 
 #include <ctype.h>
 #include <errno.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,6 +18,14 @@
 #endif
 
 static char s_workspace_root[512];
+
+static bool extract_string_value(const char *json, const char *key, char *buffer, size_t buffer_size);
+static bool extract_i64_value(const char *json, const char *key, int64_t *value);
+static int load_profile_from_json(
+    const char *json,
+    const char *fallback_source,
+    espclaw_auth_profile_t *profile
+);
 
 static void copy_text(char *buffer, size_t buffer_size, const char *value)
 {
@@ -79,7 +88,6 @@ int espclaw_auth_store_init(const char *workspace_root)
 #endif
 }
 
-#ifdef ESPCLAW_HOST_LUA
 static bool extract_string_value(const char *json, const char *key, char *buffer, size_t buffer_size)
 {
     char pattern[64];
@@ -140,7 +148,7 @@ static bool extract_string_value(const char *json, const char *key, char *buffer
     return true;
 }
 
-static bool extract_long_value(const char *json, const char *key, long *value)
+static bool extract_i64_value(const char *json, const char *key, int64_t *value)
 {
     char pattern[64];
     const char *cursor;
@@ -164,10 +172,86 @@ static bool extract_long_value(const char *json, const char *key, long *value)
         cursor++;
     }
 
-    *value = strtol(cursor, &end_ptr, 10);
+    *value = strtoll(cursor, &end_ptr, 10);
     return end_ptr != cursor;
 }
 
+static int load_profile_from_json(
+    const char *json,
+    const char *fallback_source,
+    espclaw_auth_profile_t *profile
+)
+{
+    int64_t expires_at = 0;
+    espclaw_auth_profile_t *parsed = NULL;
+    int status = -1;
+    char scratch[ESPCLAW_AUTH_TOKEN_MAX + 1];
+
+    if (json == NULL || profile == NULL) {
+        return -1;
+    }
+
+    parsed = calloc(1, sizeof(*parsed));
+    if (parsed == NULL) {
+        return -1;
+    }
+
+    espclaw_auth_profile_default(parsed);
+    parsed->source[0] = '\0';
+    if (extract_string_value(json, "provider_id", scratch, sizeof(parsed->provider_id)) ||
+        extract_string_value(json, "provider", scratch, sizeof(parsed->provider_id))) {
+        copy_text(parsed->provider_id, sizeof(parsed->provider_id), scratch);
+    }
+    if (extract_string_value(json, "model", scratch, sizeof(parsed->model)) ||
+        extract_string_value(json, "default_model", scratch, sizeof(parsed->model))) {
+        copy_text(parsed->model, sizeof(parsed->model), scratch);
+    }
+    if (extract_string_value(json, "base_url", scratch, sizeof(parsed->base_url)) ||
+        extract_string_value(json, "url", scratch, sizeof(parsed->base_url))) {
+        copy_text(parsed->base_url, sizeof(parsed->base_url), scratch);
+    }
+    if (extract_string_value(json, "access_token", scratch, sizeof(parsed->access_token)) ||
+        extract_string_value(json, "api_key", scratch, sizeof(parsed->access_token))) {
+        copy_text(parsed->access_token, sizeof(parsed->access_token), scratch);
+    }
+    if (extract_string_value(json, "refresh_token", scratch, sizeof(parsed->refresh_token))) {
+        copy_text(parsed->refresh_token, sizeof(parsed->refresh_token), scratch);
+    }
+    if (extract_string_value(json, "account_id", scratch, sizeof(parsed->account_id)) ||
+        extract_string_value(json, "accountId", scratch, sizeof(parsed->account_id)) ||
+        extract_string_value(json, "chatgpt_account_id", scratch, sizeof(parsed->account_id))) {
+        copy_text(parsed->account_id, sizeof(parsed->account_id), scratch);
+    }
+    if (extract_string_value(json, "source", scratch, sizeof(parsed->source))) {
+        copy_text(parsed->source, sizeof(parsed->source), scratch);
+    }
+    if (!extract_i64_value(json, "expires_at", &expires_at)) {
+        extract_i64_value(json, "expiresAt", &expires_at);
+    }
+
+    if (parsed->provider_id[0] == '\0' && parsed->account_id[0] != '\0') {
+        copy_text(parsed->provider_id, sizeof(parsed->provider_id), "openai_codex");
+    }
+    if (parsed->source[0] == '\0' && fallback_source != NULL && fallback_source[0] != '\0') {
+        copy_text(parsed->source, sizeof(parsed->source), fallback_source);
+    }
+    if (expires_at > 0) {
+        parsed->expires_at = expires_at;
+    }
+
+    parsed->configured = parsed->access_token[0] != '\0';
+    if (parsed->source[0] == '\0') {
+        copy_text(parsed->source, sizeof(parsed->source), "imported_json");
+    }
+    if (espclaw_auth_profile_is_ready(parsed)) {
+        *profile = *parsed;
+        status = 0;
+    }
+    free(parsed);
+    return status;
+}
+
+#ifdef ESPCLAW_HOST_LUA
 static size_t append_escaped_json(char *buffer, size_t buffer_size, size_t used, const char *value)
 {
     const char *cursor = value != NULL ? value : "";
@@ -212,32 +296,6 @@ static int auth_store_path(char *buffer, size_t buffer_size)
     return espclaw_workspace_resolve_path(s_workspace_root, "config/auth.json", buffer, buffer_size);
 }
 
-static int load_profile_from_json(const char *json, espclaw_auth_profile_t *profile)
-{
-    long expires_at = 0;
-
-    if (json == NULL || profile == NULL) {
-        return -1;
-    }
-
-    espclaw_auth_profile_default(profile);
-    extract_string_value(json, "provider_id", profile->provider_id, sizeof(profile->provider_id));
-    extract_string_value(json, "model", profile->model, sizeof(profile->model));
-    extract_string_value(json, "base_url", profile->base_url, sizeof(profile->base_url));
-    extract_string_value(json, "access_token", profile->access_token, sizeof(profile->access_token));
-    extract_string_value(json, "refresh_token", profile->refresh_token, sizeof(profile->refresh_token));
-    extract_string_value(json, "account_id", profile->account_id, sizeof(profile->account_id));
-    extract_string_value(json, "source", profile->source, sizeof(profile->source));
-    if (extract_long_value(json, "expires_at", &expires_at)) {
-        profile->expires_at = expires_at;
-    }
-    profile->configured = profile->access_token[0] != '\0';
-    if (profile->source[0] == '\0') {
-        copy_text(profile->source, sizeof(profile->source), "workspace");
-    }
-    return 0;
-}
-
 int espclaw_auth_store_load(espclaw_auth_profile_t *profile)
 {
     char path[640];
@@ -262,7 +320,7 @@ int espclaw_auth_store_load(espclaw_auth_profile_t *profile)
     fclose(file);
     json[bytes_read] = '\0';
 
-    return load_profile_from_json(json, profile);
+    return load_profile_from_json(json, "workspace", profile);
 }
 
 int espclaw_auth_store_save(const espclaw_auth_profile_t *profile)
@@ -298,7 +356,7 @@ int espclaw_auth_store_save(const espclaw_auth_profile_t *profile)
     used += (size_t)snprintf(
         json + used,
         sizeof(json) - used,
-        ",\"expires_at\":%ld}\n",
+        ",\"expires_at\":%" PRId64 "}\n",
         profile->expires_at
     );
 
@@ -357,7 +415,7 @@ int espclaw_auth_store_load(espclaw_auth_profile_t *profile)
     ok |= nvs_get_string(handle, "refresh_token", profile->refresh_token, sizeof(profile->refresh_token));
     ok |= nvs_get_string(handle, "account_id", profile->account_id, sizeof(profile->account_id));
     ok |= nvs_get_string(handle, "source", profile->source, sizeof(profile->source));
-    nvs_get_i64(handle, "expires_at", (int64_t *)&profile->expires_at);
+    nvs_get_i64(handle, "expires_at", &profile->expires_at);
     nvs_close(handle);
 
     profile->configured = ok == 0 && profile->access_token[0] != '\0';
@@ -405,6 +463,53 @@ int espclaw_auth_store_clear(void)
 }
 #endif
 
+int espclaw_auth_store_import_json(
+    const char *json,
+    espclaw_auth_profile_t *profile,
+    char *message,
+    size_t message_size
+)
+{
+    espclaw_auth_profile_t *imported = NULL;
+    int status = -1;
+
+    if (json == NULL || json[0] == '\0') {
+        snprintf(message, message_size, "auth import body is empty");
+        return -1;
+    }
+    imported = calloc(1, sizeof(*imported));
+    if (imported == NULL) {
+        snprintf(message, message_size, "out of memory while importing auth json");
+        return -1;
+    }
+    if (load_profile_from_json(json, "imported_json", imported) != 0) {
+        snprintf(
+            message,
+            message_size,
+            "auth json is missing required fields for the selected provider"
+        );
+        goto cleanup;
+    }
+    if (espclaw_auth_store_save(imported) != 0) {
+        snprintf(message, message_size, "failed to save imported credentials");
+        goto cleanup;
+    }
+    if (profile != NULL) {
+        *profile = *imported;
+    }
+    snprintf(
+        message,
+        message_size,
+        "imported %s credentials and saved them to the device auth store",
+        imported->provider_id[0] != '\0' ? imported->provider_id : "provider"
+    );
+    status = 0;
+
+cleanup:
+    free(imported);
+    return status;
+}
+
 int espclaw_auth_store_import_codex_cli(
     const char *codex_home,
     espclaw_auth_profile_t *profile,
@@ -417,9 +522,7 @@ int espclaw_auth_store_import_codex_cli(
     char json[8192];
     FILE *file;
     size_t bytes_read;
-    char access_token[ESPCLAW_AUTH_TOKEN_MAX + 1];
-    char refresh_token[ESPCLAW_AUTH_TOKEN_MAX + 1];
-    char account_id[ESPCLAW_AUTH_ACCOUNT_ID_MAX + 1];
+    espclaw_auth_profile_t imported;
     const char *home = codex_home;
 
     if (home == NULL || home[0] == '\0') {
@@ -445,32 +548,18 @@ int espclaw_auth_store_import_codex_cli(
     fclose(file);
     json[bytes_read] = '\0';
 
-    access_token[0] = '\0';
-    refresh_token[0] = '\0';
-    account_id[0] = '\0';
-    extract_string_value(json, "access_token", access_token, sizeof(access_token));
-    extract_string_value(json, "refresh_token", refresh_token, sizeof(refresh_token));
-    extract_string_value(json, "account_id", account_id, sizeof(account_id));
-    if (access_token[0] == '\0' || account_id[0] == '\0') {
+    if (load_profile_from_json(json, "codex_cli", &imported) != 0) {
         snprintf(message, message_size, "codex auth.json is missing access_token or account_id");
         return -1;
     }
+    copy_text(imported.source, sizeof(imported.source), "codex_cli");
 
+    if (espclaw_auth_store_save(&imported) != 0) {
+        snprintf(message, message_size, "failed to save imported Codex credentials");
+        return -1;
+    }
     if (profile != NULL) {
-        espclaw_auth_profile_default(profile);
-        profile->configured = true;
-        copy_text(profile->provider_id, sizeof(profile->provider_id), "openai_codex");
-        copy_text(profile->model, sizeof(profile->model), "gpt-5.3-codex");
-        copy_text(profile->base_url, sizeof(profile->base_url), "https://chatgpt.com/backend-api/codex");
-        copy_text(profile->access_token, sizeof(profile->access_token), access_token);
-        copy_text(profile->refresh_token, sizeof(profile->refresh_token), refresh_token);
-        copy_text(profile->account_id, sizeof(profile->account_id), account_id);
-        copy_text(profile->source, sizeof(profile->source), "codex_cli");
-        profile->expires_at = 0;
-        if (espclaw_auth_store_save(profile) != 0) {
-            snprintf(message, message_size, "failed to save imported Codex credentials");
-            return -1;
-        }
+        *profile = imported;
     }
 
     snprintf(message, message_size, "imported Codex credentials from %s", path);

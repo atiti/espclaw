@@ -24,6 +24,10 @@
 #include <unistd.h>
 #endif
 
+#include "espclaw/board_config.h"
+#include "espclaw/board_profile.h"
+#include "espclaw/workspace.h"
+
 #define ESPCLAW_HW_GPIO_MAX 64
 #define ESPCLAW_HW_ADC_UNIT_MAX 2
 #define ESPCLAW_HW_ADC_CHANNEL_MAX 10
@@ -51,6 +55,7 @@ typedef struct {
 typedef struct {
     size_t rx_length;
     size_t tx_length;
+    size_t event_length;
 #ifdef ESP_PLATFORM
     bool configured;
 #else
@@ -58,6 +63,7 @@ typedef struct {
 #endif
     uint8_t rx_buffer[ESPCLAW_HW_UART_BUFFER_MAX];
     uint8_t tx_buffer[ESPCLAW_HW_UART_BUFFER_MAX];
+    uint8_t event_buffer[ESPCLAW_HW_UART_BUFFER_MAX];
 } espclaw_hw_uart_state_t;
 
 #ifndef ESP_PLATFORM
@@ -83,6 +89,21 @@ static int s_gpio_level[ESPCLAW_HW_GPIO_MAX];
 static int s_adc_raw[ESPCLAW_HW_ADC_UNIT_MAX][ESPCLAW_HW_ADC_CHANNEL_MAX];
 static espclaw_hw_i2c_device_t s_i2c_devices[ESPCLAW_HW_I2C_PORT_MAX][ESPCLAW_HW_I2C_DEVICE_MAX];
 static bool s_host_stdio_nonblocking_ready;
+#endif
+
+#ifndef ESP_PLATFORM
+static const uint8_t ESPCLAW_SIM_CAMERA_JPEG[] = {
+    0xff, 0xd8, 0xff, 0xdb, 0x00, 0x43, 0x00, 0x03, 0x02, 0x02, 0x02, 0x02, 0x02, 0x03, 0x02, 0x02,
+    0x02, 0x03, 0x03, 0x03, 0x03, 0x04, 0x06, 0x04, 0x04, 0x04, 0x04, 0x04, 0x08, 0x06, 0x06, 0x05,
+    0x06, 0x09, 0x08, 0x0a, 0x0a, 0x09, 0x08, 0x09, 0x09, 0x0a, 0x0c, 0x0f, 0x0c, 0x0a, 0x0b, 0x0e,
+    0x0b, 0x09, 0x09, 0x0d, 0x11, 0x0d, 0x0e, 0x0f, 0x10, 0x10, 0x11, 0x10, 0x0a, 0x0c, 0x12, 0x13,
+    0x12, 0x10, 0x13, 0x0f, 0x10, 0x10, 0x10, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x00, 0x01, 0x00, 0x01,
+    0x03, 0x01, 0x11, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01, 0xff, 0xc4, 0x00, 0x14, 0x00, 0x01,
+    0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff,
+    0xc4, 0x00, 0x14, 0x10, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0xff, 0xda, 0x00, 0x0c, 0x03, 0x01, 0x00, 0x02, 0x11, 0x03, 0x11, 0x00, 0x3f, 0x00,
+    0xff, 0xd9,
+};
 #endif
 
 static bool pwm_channel_valid(int channel)
@@ -131,7 +152,6 @@ static size_t uart_buffer_append(uint8_t *buffer, size_t *length, const uint8_t 
     return writable;
 }
 
-#ifndef ESP_PLATFORM
 static size_t uart_buffer_take(uint8_t *buffer, size_t *length, uint8_t *data_out, size_t max_length)
 {
     size_t readable;
@@ -155,7 +175,6 @@ static size_t uart_buffer_take(uint8_t *buffer, size_t *length, uint8_t *data_ou
     *length -= readable;
     return readable;
 }
-#endif
 
 static int pwm_period_us(const espclaw_hw_pwm_state_t *state)
 {
@@ -316,6 +335,26 @@ static int ensure_uart_port(int port)
     s_uart_state[port].configured = true;
     return 0;
 }
+
+static void poll_uart_input(int port)
+{
+    uint8_t chunk[128];
+    int bytes_read;
+
+    if (!uart_port_valid(port) || !s_uart_state[port].configured) {
+        return;
+    }
+
+    while (s_uart_state[port].rx_length < ESPCLAW_HW_UART_BUFFER_MAX ||
+           s_uart_state[port].event_length < ESPCLAW_HW_UART_BUFFER_MAX) {
+        bytes_read = uart_read_bytes((uart_port_t)port, chunk, sizeof(chunk), 0);
+        if (bytes_read <= 0) {
+            break;
+        }
+        (void)uart_buffer_append(s_uart_state[port].rx_buffer, &s_uart_state[port].rx_length, chunk, (size_t)bytes_read);
+        (void)uart_buffer_append(s_uart_state[port].event_buffer, &s_uart_state[port].event_length, chunk, (size_t)bytes_read);
+    }
+}
 #else
 static void ensure_host_stdio_nonblocking(void)
 {
@@ -349,6 +388,7 @@ static void host_uart_ingest_stdio(int port)
             if (uart_buffer_append(s_uart_state[port].rx_buffer, &s_uart_state[port].rx_length, chunk, (size_t)bytes_read) < (size_t)bytes_read) {
                 break;
             }
+            (void)uart_buffer_append(s_uart_state[port].event_buffer, &s_uart_state[port].event_length, chunk, (size_t)bytes_read);
             continue;
         }
         if (bytes_read == 0 || errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -610,7 +650,8 @@ int espclaw_hw_uart_read(int port, uint8_t *data, size_t max_length, size_t *len
     if (ensure_uart_port(port) != 0) {
         return -1;
     }
-    length = (size_t)uart_read_bytes((uart_port_t)port, data, max_length, 0);
+    poll_uart_input(port);
+    length = uart_buffer_take(s_uart_state[port].rx_buffer, &s_uart_state[port].rx_length, data, max_length);
 #else
     host_uart_ingest_stdio(port);
     length = uart_buffer_take(s_uart_state[port].rx_buffer, &s_uart_state[port].rx_length, data, max_length);
@@ -643,6 +684,25 @@ int espclaw_hw_uart_write(int port, const uint8_t *data, size_t length, size_t *
 
     (void)uart_buffer_append(s_uart_state[port].tx_buffer, &s_uart_state[port].tx_length, data, length);
     *written_out = length;
+    return 0;
+}
+
+int espclaw_hw_uart_take_event_data(int port, uint8_t *data, size_t max_length, size_t *length_out)
+{
+    if (!uart_port_valid(port) || data == NULL || length_out == NULL || max_length == 0) {
+        return -1;
+    }
+
+#ifdef ESP_PLATFORM
+    if (ensure_uart_port(port) != 0) {
+        return -1;
+    }
+    poll_uart_input(port);
+#else
+    host_uart_ingest_stdio(port);
+#endif
+
+    *length_out = uart_buffer_take(s_uart_state[port].event_buffer, &s_uart_state[port].event_length, data, max_length);
     return 0;
 }
 
@@ -1071,6 +1131,77 @@ int espclaw_hw_mix_quad_x(
     return 0;
 }
 
+#ifndef ESP_PLATFORM
+static int write_binary_file(const char *path, const uint8_t *data, size_t length)
+{
+    FILE *file;
+
+    if (path == NULL || data == NULL) {
+        return -1;
+    }
+
+    file = fopen(path, "wb");
+    if (file == NULL) {
+        return -1;
+    }
+    if (fwrite(data, 1, length, file) != length) {
+        fclose(file);
+        return -1;
+    }
+    fclose(file);
+    return 0;
+}
+#endif
+
+int espclaw_hw_camera_capture(
+    const char *workspace_root,
+    const char *filename,
+    espclaw_hw_camera_capture_t *capture_out
+)
+{
+    char relative_path[ESPCLAW_HW_CAMERA_PATH_MAX];
+    char absolute_path[512];
+    const espclaw_board_descriptor_t *board = espclaw_board_current();
+    espclaw_board_profile_t profile;
+    uint64_t now_ms;
+
+    if (workspace_root == NULL || capture_out == NULL || board == NULL) {
+        return -1;
+    }
+
+    memset(capture_out, 0, sizeof(*capture_out));
+    profile = espclaw_board_profile_for(board->profile_id);
+    if (!profile.has_camera) {
+        return -1;
+    }
+
+    now_ms = espclaw_hw_ticks_ms();
+    if (filename != NULL && filename[0] != '\0') {
+        snprintf(relative_path, sizeof(relative_path), "media/%s", filename);
+    } else {
+        snprintf(relative_path, sizeof(relative_path), "media/capture_%llu.jpg", (unsigned long long)now_ms);
+    }
+    if (espclaw_workspace_resolve_path(workspace_root, relative_path, absolute_path, sizeof(absolute_path)) != 0) {
+        return -1;
+    }
+
+#ifdef ESP_PLATFORM
+    return -1;
+#else
+    if (write_binary_file(absolute_path, ESPCLAW_SIM_CAMERA_JPEG, sizeof(ESPCLAW_SIM_CAMERA_JPEG)) != 0) {
+        return -1;
+    }
+    capture_out->ok = true;
+    capture_out->simulated = true;
+    capture_out->width = 1;
+    capture_out->height = 1;
+    capture_out->bytes_written = sizeof(ESPCLAW_SIM_CAMERA_JPEG);
+    snprintf(capture_out->relative_path, sizeof(capture_out->relative_path), "%s", relative_path);
+    snprintf(capture_out->mime_type, sizeof(capture_out->mime_type), "image/jpeg");
+    return 0;
+#endif
+}
+
 uint64_t espclaw_hw_ticks_ms(void)
 {
 #ifdef ESP_PLATFORM
@@ -1136,6 +1267,7 @@ void espclaw_hw_sim_uart_feed_input(int port, const uint8_t *data, size_t length
     }
 
     (void)uart_buffer_append(s_uart_state[port].rx_buffer, &s_uart_state[port].rx_length, data, length);
+    (void)uart_buffer_append(s_uart_state[port].event_buffer, &s_uart_state[port].event_length, data, length);
 }
 
 int espclaw_hw_sim_uart_take_output(int port, uint8_t *data, size_t max_length, size_t *length_out)

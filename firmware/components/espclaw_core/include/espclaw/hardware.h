@@ -13,6 +13,7 @@
 #define ESPCLAW_HW_I2C_REGISTER_BYTES 256
 #define ESPCLAW_HW_I2C_SCAN_MAX 126
 #define ESPCLAW_HW_UART_PORT_MAX 3
+#define ESPCLAW_HW_CAMERA_PATH_MAX 128
 
 typedef struct {
     bool configured;
@@ -42,6 +43,16 @@ typedef struct {
     double temperature_c;
 } espclaw_hw_mpu6050_sample_t;
 
+typedef struct {
+    bool ok;
+    bool simulated;
+    size_t width;
+    size_t height;
+    size_t bytes_written;
+    char relative_path[ESPCLAW_HW_CAMERA_PATH_MAX];
+    char mime_type[24];
+} espclaw_hw_camera_capture_t;
+
 int espclaw_hw_gpio_write(int pin, int level);
 int espclaw_hw_gpio_read(int pin, int *level_out);
 
@@ -57,6 +68,7 @@ int espclaw_hw_adc_read_mv(int unit, int channel, int *millivolts_out);
 
 int espclaw_hw_uart_read(int port, uint8_t *data, size_t max_length, size_t *length_out);
 int espclaw_hw_uart_write(int port, const uint8_t *data, size_t length, size_t *written_out);
+int espclaw_hw_uart_take_event_data(int port, uint8_t *data, size_t max_length, size_t *length_out);
 
 int espclaw_hw_i2c_begin(int port, int sda_pin, int scl_pin, int frequency_hz);
 int espclaw_hw_i2c_scan(int port, uint8_t *addresses, size_t max_addresses, size_t *count_out);
@@ -112,6 +124,12 @@ int espclaw_hw_mix_quad_x(
     double *front_right_out,
     double *rear_right_out,
     double *rear_left_out
+);
+
+int espclaw_hw_camera_capture(
+    const char *workspace_root,
+    const char *filename,
+    espclaw_hw_camera_capture_t *capture_out
 );
 
 uint64_t espclaw_hw_ticks_ms(void);

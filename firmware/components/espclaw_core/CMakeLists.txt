@@ -7,12 +7,15 @@ idf_component_register(
     "src/admin_server.c"
     "src/admin_ui.c"
     "src/auth_store.c"
+    "src/behavior_runtime.c"
     "src/board_config.c"
     "src/board_profile.c"
     "src/channel.c"
     "src/control_loop.c"
     "src/config_render.c"
+    "src/event_watch.c"
     "src/hardware.c"
+    "src/ota_manager.c"
     "src/ota_state.c"
     "src/provisioning.c"
     "src/provider.c"
@@ -22,6 +25,7 @@ idf_component_register(
     "src/storage.c"
     "src/system_monitor.c"
     "src/task_policy.c"
+    "src/task_runtime.c"
     "src/telegram_protocol.c"
     "src/tool_catalog.c"
     "src/workspace.c"
@@ -40,7 +44,9 @@ idf_component_register(
     fatfs
     json
     littlefs
+    lwip
     lua
+    mbedtls
     nvs_flash
     sdmmc
     spi_flash

@@ -13,7 +13,6 @@
 #include "esp_ota_ops.h"
 #include "esp_system.h"
 #include "esp_timer.h"
-#include "freertos/FreeRTOS.h"
 #endif
 
 typedef struct {
@@ -90,10 +89,22 @@ int espclaw_system_monitor_snapshot(
     }
 
     snapshot->available = true;
+    snapshot->memory_class = profile != NULL ? profile->runtime_budget.memory_class : "unknown";
     snapshot->cpu_cores = cpu_cores;
     snapshot->dual_core = cpu_cores > 1U;
     snapshot->workspace_total_bytes = workspace_total_bytes;
     snapshot->workspace_used_bytes = workspace_used_bytes;
+    if (profile != NULL) {
+        snapshot->agent_estimated_heap_bytes = profile->runtime_budget.agent_estimated_heap_bytes;
+        snapshot->recommended_free_heap_bytes = profile->runtime_budget.recommended_free_heap_bytes;
+        snapshot->agent_request_buffer_bytes = profile->runtime_budget.agent_request_buffer_max;
+        snapshot->agent_response_buffer_bytes = profile->runtime_budget.agent_response_buffer_max;
+        snapshot->agent_codex_items_bytes = profile->runtime_budget.agent_codex_items_max;
+        snapshot->agent_instructions_bytes = profile->runtime_budget.agent_instructions_max;
+        snapshot->agent_tool_result_bytes = profile->runtime_budget.agent_tool_result_max;
+        snapshot->agent_image_data_bytes = profile->runtime_budget.agent_image_data_max;
+        snapshot->agent_history_slots = profile->runtime_budget.agent_history_max;
+    }
 
 #ifdef ESP_PLATFORM
     {

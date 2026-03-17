@@ -6,15 +6,13 @@ On first boot, ESPClaw picks the onboarding transport from the active board prof
 
 - `esp32s3` profile prefers BLE provisioning
 - `esp32cam` profile uses ESPClaw-owned SoftAP onboarding
-- `esp32c3` profile prefers BLE provisioning and defaults to internal flash storage
-- the default `esp32c3` firmware build enables NimBLE, so BLE onboarding works without extra `menuconfig` steps
-- if BLE is not enabled in the active ESP-IDF sdkconfig, `esp32s3` and `esp32c3` fall back to ESPClaw-owned SoftAP onboarding automatically
+- if BLE is not enabled in the active ESP-IDF sdkconfig, `esp32s3` falls back to ESPClaw-owned SoftAP onboarding automatically
 
 If credentials are already stored in Wi-Fi flash/NVS state, ESPClaw skips onboarding and starts station mode directly.
 
 ## BLE Flow
 
-BLE onboarding is the primary zero-config path for the default `esp32s3` and `esp32c3` profiles when Bluetooth is enabled in the firmware build.
+BLE onboarding is the primary zero-config path for the default `esp32s3` profile when Bluetooth is enabled in the firmware build.
 
 Behavior:
 
@@ -27,7 +25,7 @@ The QR payload format matches Espressif's standard provisioning helper, so the a
 
 ## Zero-Config SoftAP Flow
 
-SoftAP onboarding is the default zero-serial path for `esp32cam` and the fallback path for BLE-disabled `esp32s3` / `esp32c3` builds.
+SoftAP onboarding is the default zero-serial path for `esp32cam` and the fallback path for BLE-disabled `esp32s3` builds.
 
 Behavior:
 
@@ -38,14 +36,14 @@ Behavior:
 - the Network panel can scan nearby SSIDs and submit credentials without leaving the admin UI
 - after the board gets a station IP, ESPClaw disables the onboarding AP and continues in STA mode
 
-This avoids the socket contention that appears when trying to run the generic ESP-IDF SoftAP provisioning HTTP server and the ESPClaw admin server side by side on small boards such as the `esp32c3`.
+This avoids the socket contention that appears when trying to run the generic ESP-IDF SoftAP provisioning HTTP server and the ESPClaw admin server side by side on constrained boards.
 
 ## Workspace Storage
 
-ESPClaw bootstraps the same workspace layout on either:
+ESPClaw bootstraps the workspace layout on the SD card for both supported board profiles:
 
-- SD card storage for `esp32s3` and `esp32cam`
-- internal LittleFS flash storage for `esp32c3`
+- SD card storage for `esp32s3`
+- SD card storage for `esp32cam`
 
 When workspace mounting succeeds, ESPClaw bootstraps:
 

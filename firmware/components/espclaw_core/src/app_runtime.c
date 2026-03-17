@@ -11,7 +11,9 @@
 #include <unistd.h>
 
 #include "espclaw/board_config.h"
+#include "espclaw/event_watch.h"
 #include "espclaw/hardware.h"
+#include "espclaw/task_runtime.h"
 #include "espclaw/tool_catalog.h"
 #include "espclaw/workspace.h"
 
@@ -1036,6 +1038,105 @@ static int lua_espclaw_board_variant(lua_State *state)
     return 1;
 }
 
+static void lua_push_board_descriptor(lua_State *state, const espclaw_board_descriptor_t *board)
+{
+    size_t index;
+
+    if (board == NULL) {
+        lua_pushnil(state);
+        return;
+    }
+
+    lua_newtable(state);
+    lua_pushstring(state, board->variant_id);
+    lua_setfield(state, -2, "variant");
+    lua_pushstring(state, board->display_name);
+    lua_setfield(state, -2, "display_name");
+    lua_pushstring(state, board->source);
+    lua_setfield(state, -2, "source");
+
+    lua_newtable(state);
+    for (index = 0; index < board->pin_count; ++index) {
+        lua_newtable(state);
+        lua_pushstring(state, board->pins[index].name);
+        lua_setfield(state, -2, "name");
+        lua_pushinteger(state, (lua_Integer)board->pins[index].pin);
+        lua_setfield(state, -2, "pin");
+        lua_seti(state, -2, (lua_Integer)(index + 1));
+    }
+    lua_setfield(state, -2, "pins");
+
+    lua_newtable(state);
+    for (index = 0; index < board->i2c_bus_count; ++index) {
+        lua_newtable(state);
+        lua_pushstring(state, board->i2c_buses[index].name);
+        lua_setfield(state, -2, "name");
+        lua_pushinteger(state, (lua_Integer)board->i2c_buses[index].port);
+        lua_setfield(state, -2, "port");
+        lua_pushinteger(state, (lua_Integer)board->i2c_buses[index].sda_pin);
+        lua_setfield(state, -2, "sda");
+        lua_pushinteger(state, (lua_Integer)board->i2c_buses[index].scl_pin);
+        lua_setfield(state, -2, "scl");
+        lua_pushinteger(state, (lua_Integer)board->i2c_buses[index].frequency_hz);
+        lua_setfield(state, -2, "frequency_hz");
+        lua_seti(state, -2, (lua_Integer)(index + 1));
+    }
+    lua_setfield(state, -2, "i2c_buses");
+
+    lua_newtable(state);
+    for (index = 0; index < board->uart_count; ++index) {
+        lua_newtable(state);
+        lua_pushstring(state, board->uarts[index].name);
+        lua_setfield(state, -2, "name");
+        lua_pushinteger(state, (lua_Integer)board->uarts[index].port);
+        lua_setfield(state, -2, "port");
+        lua_pushinteger(state, (lua_Integer)board->uarts[index].tx_pin);
+        lua_setfield(state, -2, "tx");
+        lua_pushinteger(state, (lua_Integer)board->uarts[index].rx_pin);
+        lua_setfield(state, -2, "rx");
+        lua_pushinteger(state, (lua_Integer)board->uarts[index].baud_rate);
+        lua_setfield(state, -2, "baud_rate");
+        lua_seti(state, -2, (lua_Integer)(index + 1));
+    }
+    lua_setfield(state, -2, "uarts");
+
+    lua_newtable(state);
+    for (index = 0; index < board->adc_count; ++index) {
+        lua_newtable(state);
+        lua_pushstring(state, board->adc_channels[index].name);
+        lua_setfield(state, -2, "name");
+        lua_pushinteger(state, (lua_Integer)board->adc_channels[index].unit);
+        lua_setfield(state, -2, "unit");
+        lua_pushinteger(state, (lua_Integer)board->adc_channels[index].channel);
+        lua_setfield(state, -2, "channel");
+        lua_seti(state, -2, (lua_Integer)(index + 1));
+    }
+    lua_setfield(state, -2, "adc_channels");
+}
+
+static int lua_espclaw_hardware_list(lua_State *state)
+{
+    static const char *CAPABILITIES[] = {
+        "apps", "tasks", "events", "event_watches", "fs", "gpio", "pwm", "ppm", "buzzer",
+        "adc", "i2c", "uart", "camera", "temperature", "imu", "pid", "control"
+    };
+    const espclaw_board_descriptor_t *board = espclaw_board_current();
+    size_t index;
+
+    lua_push_board_descriptor(state, board);
+    if (lua_isnil(state, -1)) {
+        return 1;
+    }
+
+    lua_newtable(state);
+    for (index = 0; index < sizeof(CAPABILITIES) / sizeof(CAPABILITIES[0]); ++index) {
+        lua_pushstring(state, CAPABILITIES[index]);
+        lua_seti(state, -2, (lua_Integer)(index + 1));
+    }
+    lua_setfield(state, -2, "capabilities");
+    return 1;
+}
+
 static int lua_espclaw_board_pin(lua_State *state)
 {
     const char *name = luaL_checkstring(state, 1);
@@ -1903,6 +2004,150 @@ static int lua_espclaw_sleep_ms(lua_State *state)
     return 1;
 }
 
+static int lua_espclaw_camera_capture(lua_State *state)
+{
+    espclaw_lua_context_t *context = lua_get_context(state);
+    const char *filename = luaL_optstring(state, 1, "");
+    espclaw_hw_camera_capture_t capture;
+
+    if (context == NULL || !espclaw_app_has_permission(context->manifest, "camera.capture")) {
+        return lua_push_permission_error(state, "camera.capture");
+    }
+    if (espclaw_hw_camera_capture(
+            context->workspace_root,
+            filename != NULL && filename[0] != '\0' ? filename : NULL,
+            &capture) != 0) {
+        lua_pushnil(state);
+        lua_pushstring(state, "camera capture failed");
+        return 2;
+    }
+
+    lua_newtable(state);
+    lua_pushstring(state, capture.relative_path);
+    lua_setfield(state, -2, "path");
+    lua_pushstring(state, capture.mime_type);
+    lua_setfield(state, -2, "mime_type");
+    lua_pushinteger(state, (lua_Integer)capture.bytes_written);
+    lua_setfield(state, -2, "bytes");
+    lua_pushinteger(state, (lua_Integer)capture.width);
+    lua_setfield(state, -2, "width");
+    lua_pushinteger(state, (lua_Integer)capture.height);
+    lua_setfield(state, -2, "height");
+    lua_pushboolean(state, capture.simulated);
+    lua_setfield(state, -2, "simulated");
+    return 1;
+}
+
+static int lua_espclaw_event_emit(lua_State *state)
+{
+    espclaw_lua_context_t *context = lua_get_context(state);
+    const char *event_name = luaL_checkstring(state, 1);
+    const char *payload = luaL_optstring(state, 2, "");
+    char message[160];
+
+    if (context == NULL || !espclaw_app_has_permission(context->manifest, "task.control")) {
+        return lua_push_permission_error(state, "task.control");
+    }
+    if (espclaw_task_emit_event(event_name, payload, message, sizeof(message)) != 0) {
+        lua_pushnil(state);
+        lua_pushstring(state, message[0] != '\0' ? message : "event dispatch failed");
+        return 2;
+    }
+
+    lua_pushboolean(state, 1);
+    lua_pushstring(state, message);
+    return 2;
+}
+
+static int lua_espclaw_event_watch_list(lua_State *state)
+{
+    char json[2048];
+
+    if (espclaw_event_watch_render_json(json, sizeof(json)) != 0) {
+        lua_pushnil(state);
+        lua_pushstring(state, "failed to render watches");
+        return 2;
+    }
+
+    lua_pushstring(state, json);
+    return 1;
+}
+
+static int lua_espclaw_event_watch_uart(lua_State *state)
+{
+    espclaw_lua_context_t *context = lua_get_context(state);
+    const char *watch_id = luaL_checkstring(state, 1);
+    const char *event_name = luaL_optstring(state, 2, "uart");
+    int port = (int)luaL_optinteger(state, 3, 0);
+    char message[160];
+
+    if (context == NULL || !espclaw_app_has_permission(context->manifest, "task.control")) {
+        return lua_push_permission_error(state, "task.control");
+    }
+    if (espclaw_event_watch_add_uart(watch_id, event_name, port, message, sizeof(message)) != 0) {
+        lua_pushnil(state);
+        lua_pushstring(state, message[0] != '\0' ? message : "failed to add uart watch");
+        return 2;
+    }
+
+    lua_pushboolean(state, 1);
+    lua_pushstring(state, message);
+    return 2;
+}
+
+static int lua_espclaw_event_watch_adc_threshold(lua_State *state)
+{
+    espclaw_lua_context_t *context = lua_get_context(state);
+    const char *watch_id = luaL_checkstring(state, 1);
+    int unit = (int)luaL_checkinteger(state, 2);
+    int channel = (int)luaL_checkinteger(state, 3);
+    int threshold = (int)luaL_checkinteger(state, 4);
+    const char *event_name = luaL_optstring(state, 5, "sensor");
+    int interval_ms = (int)luaL_optinteger(state, 6, 100);
+    char message[160];
+
+    if (context == NULL || !espclaw_app_has_permission(context->manifest, "task.control")) {
+        return lua_push_permission_error(state, "task.control");
+    }
+    if (espclaw_event_watch_add_adc_threshold(
+            watch_id,
+            event_name,
+            unit,
+            channel,
+            threshold,
+            interval_ms > 0 ? (uint32_t)interval_ms : 100U,
+            message,
+            sizeof(message)) != 0) {
+        lua_pushnil(state);
+        lua_pushstring(state, message[0] != '\0' ? message : "failed to add adc watch");
+        return 2;
+    }
+
+    lua_pushboolean(state, 1);
+    lua_pushstring(state, message);
+    return 2;
+}
+
+static int lua_espclaw_event_watch_remove(lua_State *state)
+{
+    espclaw_lua_context_t *context = lua_get_context(state);
+    const char *watch_id = luaL_checkstring(state, 1);
+    char message[160];
+
+    if (context == NULL || !espclaw_app_has_permission(context->manifest, "task.control")) {
+        return lua_push_permission_error(state, "task.control");
+    }
+    if (espclaw_event_watch_remove(watch_id, message, sizeof(message)) != 0) {
+        lua_pushnil(state);
+        lua_pushstring(state, message[0] != '\0' ? message : "failed to remove watch");
+        return 2;
+    }
+
+    lua_pushboolean(state, 1);
+    lua_pushstring(state, message);
+    return 2;
+}
+
 static void register_lua_context_fn(lua_State *state, espclaw_lua_context_t *context, lua_CFunction fn, const char *name)
 {
     lua_pushlightuserdata(state, context);
@@ -1937,6 +2182,11 @@ static void register_lua_bindings(lua_State *state, espclaw_lua_context_t *conte
     lua_pushcfunction(state, lua_espclaw_board_adc);
     lua_setfield(state, -2, "adc");
     register_lua_table(state, "board");
+
+    lua_newtable(state);
+    lua_pushcfunction(state, lua_espclaw_hardware_list);
+    lua_setfield(state, -2, "list");
+    register_lua_table(state, "hardware");
 
     lua_newtable(state);
     register_lua_context_fn(state, context, lua_espclaw_gpio_read, "read");
@@ -1983,6 +2233,10 @@ static void register_lua_bindings(lua_State *state, espclaw_lua_context_t *conte
     register_lua_table(state, "uart");
 
     lua_newtable(state);
+    register_lua_context_fn(state, context, lua_espclaw_camera_capture, "capture");
+    register_lua_table(state, "camera");
+
+    lua_newtable(state);
     register_lua_context_fn(state, context, lua_espclaw_tmp102_c, "tmp102_c");
     register_lua_table(state, "temperature");
 
@@ -2016,7 +2270,72 @@ static void register_lua_bindings(lua_State *state, espclaw_lua_context_t *conte
     lua_setfield(state, -2, "sleep_ms");
     register_lua_table(state, "time");
 
+    lua_newtable(state);
+    register_lua_context_fn(state, context, lua_espclaw_event_emit, "emit");
+    register_lua_context_fn(state, context, lua_espclaw_event_watch_list, "list");
+    register_lua_context_fn(state, context, lua_espclaw_event_watch_uart, "watch_uart");
+    register_lua_context_fn(state, context, lua_espclaw_event_watch_adc_threshold, "watch_adc_threshold");
+    register_lua_context_fn(state, context, lua_espclaw_event_watch_remove, "remove_watch");
+    register_lua_table(state, "events");
+
     lua_setglobal(state, "espclaw");
+}
+
+static int configure_lua_package_path(
+    lua_State *state,
+    const char *workspace_root,
+    const char *app_id,
+    char *buffer,
+    size_t buffer_size
+)
+{
+    char package_path[1536];
+    const char *existing_path = NULL;
+
+    if (state == NULL || workspace_root == NULL || app_id == NULL) {
+        return -1;
+    }
+
+    lua_getglobal(state, "package");
+    if (!lua_istable(state, -1)) {
+        lua_pop(state, 1);
+        if (buffer != NULL && buffer_size > 0) {
+            snprintf(buffer, buffer_size, "lua package table is unavailable");
+        }
+        return -1;
+    }
+
+    lua_getfield(state, -1, "path");
+    if (lua_isstring(state, -1)) {
+        existing_path = lua_tostring(state, -1);
+    }
+
+    if (snprintf(
+            package_path,
+            sizeof(package_path),
+            "%s/lib/?.lua;%s/lib/?/init.lua;%s/apps/%s/lib/?.lua;%s/apps/%s/lib/?/init.lua;%s/apps/%s/?.lua;%s",
+            workspace_root,
+            workspace_root,
+            workspace_root,
+            app_id,
+            workspace_root,
+            app_id,
+            workspace_root,
+            app_id,
+            existing_path != NULL ? existing_path : ""
+        ) >= (int)sizeof(package_path)) {
+        lua_pop(state, 2);
+        if (buffer != NULL && buffer_size > 0) {
+            snprintf(buffer, buffer_size, "lua package.path exceeds buffer size");
+        }
+        return -1;
+    }
+
+    lua_pop(state, 1);
+    lua_pushstring(state, package_path);
+    lua_setfield(state, -2, "path");
+    lua_pop(state, 1);
+    return 0;
 }
 
 static int run_lua_handle(
@@ -2027,6 +2346,7 @@ static int run_lua_handle(
     size_t buffer_size
 )
 {
+    char handler_name[64];
     const char *result = NULL;
 
     if (vm == NULL || vm->state == NULL || trigger == NULL || buffer == NULL || buffer_size == 0) {
@@ -2037,19 +2357,61 @@ static int run_lua_handle(
         return -1;
     }
 
-    lua_getglobal(vm->state, "handle");
-    if (!lua_isfunction(vm->state, -1)) {
-        snprintf(buffer, buffer_size, "app %s missing handle(trigger, payload)", vm->manifest.app_id);
-        lua_pop(vm->state, 1);
-        return -1;
+    snprintf(handler_name, sizeof(handler_name), "on_");
+    {
+        size_t used = strlen(handler_name);
+        size_t index;
+
+        for (index = 0; trigger[index] != '\0' && used + 1 < sizeof(handler_name); ++index) {
+            unsigned char c = (unsigned char)trigger[index];
+
+            handler_name[used++] = (char)(isalnum(c) ? tolower(c) : '_');
+            handler_name[used] = '\0';
+        }
     }
 
-    lua_pushstring(vm->state, trigger);
-    lua_pushstring(vm->state, payload != NULL ? payload : "");
-    if (lua_pcall(vm->state, 2, 1, 0) != LUA_OK) {
-        snprintf(buffer, buffer_size, "lua runtime failed: %s", lua_tostring(vm->state, -1));
+    lua_getglobal(vm->state, handler_name);
+    if (lua_isfunction(vm->state, -1)) {
+        lua_pushstring(vm->state, payload != NULL ? payload : "");
+        if (lua_pcall(vm->state, 1, 1, 0) != LUA_OK) {
+            snprintf(buffer, buffer_size, "lua runtime failed: %s", lua_tostring(vm->state, -1));
+            lua_pop(vm->state, 1);
+            return -1;
+        }
+    } else {
         lua_pop(vm->state, 1);
-        return -1;
+        lua_getglobal(vm->state, "on_event");
+        if (lua_isfunction(vm->state, -1)) {
+            lua_pushstring(vm->state, trigger);
+            lua_pushstring(vm->state, payload != NULL ? payload : "");
+            if (lua_pcall(vm->state, 2, 1, 0) != LUA_OK) {
+                snprintf(buffer, buffer_size, "lua runtime failed: %s", lua_tostring(vm->state, -1));
+                lua_pop(vm->state, 1);
+                return -1;
+            }
+        } else {
+            lua_pop(vm->state, 1);
+            lua_getglobal(vm->state, "handle");
+            if (!lua_isfunction(vm->state, -1)) {
+                snprintf(
+                    buffer,
+                    buffer_size,
+                    "app %s missing %s(payload), on_event(trigger, payload), or handle(trigger, payload)",
+                    vm->manifest.app_id,
+                    handler_name
+                );
+                lua_pop(vm->state, 1);
+                return -1;
+            }
+
+            lua_pushstring(vm->state, trigger);
+            lua_pushstring(vm->state, payload != NULL ? payload : "");
+            if (lua_pcall(vm->state, 2, 1, 0) != LUA_OK) {
+                snprintf(buffer, buffer_size, "lua runtime failed: %s", lua_tostring(vm->state, -1));
+                lua_pop(vm->state, 1);
+                return -1;
+            }
+        }
     }
 
     if (lua_isstring(vm->state, -1)) {
@@ -2111,6 +2473,11 @@ int espclaw_app_vm_open(
     }
 
     luaL_openlibs(vm->state);
+    if (configure_lua_package_path(vm->state, vm->workspace_root, vm->manifest.app_id, buffer, buffer_size) != 0) {
+        lua_close(vm->state);
+        free(vm);
+        return -1;
+    }
     register_lua_bindings(vm->state, &vm->context);
     if (luaL_loadfile(vm->state, vm->script_path) != LUA_OK || lua_pcall(vm->state, 0, 0, 0) != LUA_OK) {
         if (buffer != NULL && buffer_size > 0) {

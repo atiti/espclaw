@@ -17,13 +17,16 @@
 #include "espclaw/admin_ui.h"
 #include "espclaw/app_runtime.h"
 #include "espclaw/auth_store.h"
+#include "espclaw/behavior_runtime.h"
 #include "espclaw/board_config.h"
 #include "espclaw/board_profile.h"
 #include "espclaw/control_loop.h"
+#include "espclaw/event_watch.h"
 #include "espclaw/ota_state.h"
 #include "espclaw/provisioning.h"
 #include "espclaw/system_monitor.h"
 #include "espclaw/task_policy.h"
+#include "espclaw/task_runtime.h"
 #include "espclaw/workspace.h"
 
 #define ESPCLAW_SIM_REQUEST_MAX 65536
@@ -99,7 +102,7 @@ static void print_usage(const char *argv0)
 {
     fprintf(
         stderr,
-        "Usage: %s [--workspace PATH] [--port PORT] [--profile esp32s3|esp32cam|esp32c3] [--self-test]\n",
+        "Usage: %s [--workspace PATH] [--port PORT] [--profile esp32s3|esp32cam] [--self-test]\n",
         argv0
     );
 }
@@ -542,6 +545,19 @@ static void handle_api_request(
         return;
     }
 
+    if (strcmp(method, "POST") == 0 && strcmp(path, "/api/auth/import-json") == 0) {
+        espclaw_auth_profile_t profile;
+
+        if (espclaw_auth_store_import_json(body != NULL ? body : "", &profile, response, sizeof(response)) != 0) {
+            espclaw_admin_render_result_json(false, response, response, sizeof(response));
+            send_http_response(client_fd, 400, "Bad Request", "application/json", response);
+        } else {
+            espclaw_render_auth_profile_json(&profile, response, sizeof(response));
+            send_http_response(client_fd, 200, "OK", "application/json", response);
+        }
+        return;
+    }
+
     if (strcmp(method, "POST") == 0 && strcmp(path, "/api/auth/import-codex-cli") == 0) {
         espclaw_auth_profile_t profile;
 
@@ -584,8 +600,20 @@ static void handle_api_request(
         return;
     }
 
+    if (strcmp(method, "GET") == 0 && strcmp(path, "/api/behaviors") == 0) {
+        espclaw_render_behaviors_json(config->workspace_root, response, sizeof(response));
+        send_http_response(client_fd, 200, "OK", "application/json", response);
+        return;
+    }
+
     if (strcmp(method, "GET") == 0 && strcmp(path, "/api/tools") == 0) {
         espclaw_render_tools_json(response, sizeof(response));
+        send_http_response(client_fd, 200, "OK", "application/json", response);
+        return;
+    }
+
+    if (strcmp(method, "GET") == 0 && strcmp(path, "/api/hardware") == 0) {
+        espclaw_render_hardware_json(espclaw_board_current(), response, sizeof(response));
         send_http_response(client_fd, 200, "OK", "application/json", response);
         return;
     }
@@ -667,6 +695,26 @@ static void handle_api_request(
         return;
     }
 
+    if (strcmp(method, "DELETE") == 0 && strcmp(path, "/api/behaviors") == 0) {
+        char behavior_id[ESPCLAW_BEHAVIOR_ID_MAX + 1];
+        char message[256];
+
+        if (!espclaw_admin_query_value(query, "behavior_id", behavior_id, sizeof(behavior_id))) {
+            espclaw_admin_render_result_json(false, "missing behavior_id query parameter", response, sizeof(response));
+            send_http_response(client_fd, 400, "Bad Request", "application/json", response);
+            return;
+        }
+
+        if (espclaw_behavior_remove(config->workspace_root, behavior_id, message, sizeof(message)) == 0) {
+            espclaw_render_behaviors_json(config->workspace_root, response, sizeof(response));
+            send_http_response(client_fd, 200, "OK", "application/json", response);
+        } else {
+            espclaw_admin_render_result_json(false, message, response, sizeof(response));
+            send_http_response(client_fd, 404, "Not Found", "application/json", response);
+        }
+        return;
+    }
+
     if (strcmp(method, "POST") == 0 && strcmp(path, "/api/apps/run") == 0) {
         char app_id[ESPCLAW_APP_ID_MAX + 1];
         char trigger[ESPCLAW_APP_TRIGGER_NAME_MAX + 1];
@@ -699,7 +747,7 @@ static void handle_api_request(
             copy_text(session_id, sizeof(session_id), "admin");
         }
 
-        if (espclaw_agent_loop_run(config->workspace_root, session_id, body != NULL ? body : "", false, &result) != 0 && !result.ok) {
+        if (espclaw_agent_loop_run(config->workspace_root, session_id, body != NULL ? body : "", true, &result) != 0 && !result.ok) {
             espclaw_admin_render_result_json(false, result.final_text, response, sizeof(response));
             send_http_response(client_fd, 500, "Internal Server Error", "application/json", response);
         } else {
@@ -776,6 +824,174 @@ static void handle_api_request(
         }
 
         if (espclaw_control_loop_stop(loop_id, message, sizeof(message)) == 0) {
+            espclaw_admin_render_result_json(true, message, response, sizeof(response));
+            send_http_response(client_fd, 200, "OK", "application/json", response);
+        } else {
+            espclaw_admin_render_result_json(false, message, response, sizeof(response));
+            send_http_response(client_fd, 404, "Not Found", "application/json", response);
+        }
+        return;
+    }
+
+    if (strcmp(method, "POST") == 0 && strcmp(path, "/api/behaviors/register") == 0) {
+        char behavior_id[ESPCLAW_BEHAVIOR_ID_MAX + 1];
+        char app_id[ESPCLAW_APP_ID_MAX + 1];
+        char schedule[ESPCLAW_TASK_SCHEDULE_MAX + 1];
+        char trigger[ESPCLAW_TASK_TRIGGER_MAX + 1];
+        char message[256];
+        espclaw_behavior_spec_t spec;
+
+        if (!espclaw_admin_query_value(query, "behavior_id", behavior_id, sizeof(behavior_id)) ||
+            !espclaw_admin_query_value(query, "app_id", app_id, sizeof(app_id))) {
+            espclaw_admin_render_result_json(false, "missing behavior_id or app_id query parameter", response, sizeof(response));
+            send_http_response(client_fd, 400, "Bad Request", "application/json", response);
+            return;
+        }
+        if (!espclaw_admin_query_value(query, "schedule", schedule, sizeof(schedule))) {
+            snprintf(schedule, sizeof(schedule), "periodic");
+        }
+        if (!espclaw_admin_query_value(query, "trigger", trigger, sizeof(trigger))) {
+            snprintf(trigger, sizeof(trigger), "%s", strcmp(schedule, "event") == 0 ? "sensor" : "timer");
+        }
+
+        memset(&spec, 0, sizeof(spec));
+        snprintf(spec.behavior_id, sizeof(spec.behavior_id), "%s", behavior_id);
+        snprintf(spec.title, sizeof(spec.title), "%s", behavior_id);
+        snprintf(spec.app_id, sizeof(spec.app_id), "%s", app_id);
+        snprintf(spec.schedule, sizeof(spec.schedule), "%s", schedule);
+        snprintf(spec.trigger, sizeof(spec.trigger), "%s", trigger);
+        snprintf(spec.payload, sizeof(spec.payload), "%s", body != NULL ? body : "");
+        spec.period_ms = query_u32_or_default(query, "period_ms", 20);
+        spec.max_iterations = query_u32_or_default(query, "iterations", 0);
+        spec.autostart = query_u32_or_default(query, "autostart", 0) != 0;
+
+        if (espclaw_behavior_register(config->workspace_root, &spec, message, sizeof(message)) == 0) {
+            espclaw_render_behaviors_json(config->workspace_root, response, sizeof(response));
+            send_http_response(client_fd, 200, "OK", "application/json", response);
+        } else {
+            espclaw_admin_render_result_json(false, message, response, sizeof(response));
+            send_http_response(client_fd, 500, "Internal Server Error", "application/json", response);
+        }
+        return;
+    }
+
+    if (strcmp(method, "POST") == 0 && strcmp(path, "/api/behaviors/start") == 0) {
+        char behavior_id[ESPCLAW_BEHAVIOR_ID_MAX + 1];
+        char message[256];
+
+        if (!espclaw_admin_query_value(query, "behavior_id", behavior_id, sizeof(behavior_id))) {
+            espclaw_admin_render_result_json(false, "missing behavior_id query parameter", response, sizeof(response));
+            send_http_response(client_fd, 400, "Bad Request", "application/json", response);
+            return;
+        }
+
+        if (espclaw_behavior_start(config->workspace_root, behavior_id, message, sizeof(message)) == 0) {
+            espclaw_render_behaviors_json(config->workspace_root, response, sizeof(response));
+            send_http_response(client_fd, 200, "OK", "application/json", response);
+        } else {
+            espclaw_admin_render_result_json(false, message, response, sizeof(response));
+            send_http_response(client_fd, 404, "Not Found", "application/json", response);
+        }
+        return;
+    }
+
+    if (strcmp(method, "POST") == 0 && strcmp(path, "/api/behaviors/stop") == 0) {
+        char behavior_id[ESPCLAW_BEHAVIOR_ID_MAX + 1];
+        char message[256];
+
+        if (!espclaw_admin_query_value(query, "behavior_id", behavior_id, sizeof(behavior_id))) {
+            espclaw_admin_render_result_json(false, "missing behavior_id query parameter", response, sizeof(response));
+            send_http_response(client_fd, 400, "Bad Request", "application/json", response);
+            return;
+        }
+
+        if (espclaw_behavior_stop(behavior_id, message, sizeof(message)) == 0) {
+            espclaw_render_behaviors_json(config->workspace_root, response, sizeof(response));
+            send_http_response(client_fd, 200, "OK", "application/json", response);
+        } else {
+            espclaw_admin_render_result_json(false, message, response, sizeof(response));
+            send_http_response(client_fd, 404, "Not Found", "application/json", response);
+        }
+        return;
+    }
+
+    if (strcmp(method, "GET") == 0 && strcmp(path, "/api/tasks") == 0) {
+        espclaw_task_render_json(response, sizeof(response));
+        send_http_response(client_fd, 200, "OK", "application/json", response);
+        return;
+    }
+
+    if (strcmp(method, "POST") == 0 && strcmp(path, "/api/tasks/start") == 0) {
+        char task_id[ESPCLAW_TASK_ID_MAX + 1];
+        char app_id[ESPCLAW_APP_ID_MAX + 1];
+        char schedule[ESPCLAW_TASK_SCHEDULE_MAX + 1];
+        char trigger[ESPCLAW_APP_TRIGGER_NAME_MAX + 1];
+        char message[256];
+
+        if (!espclaw_admin_query_value(query, "task_id", task_id, sizeof(task_id)) ||
+            !espclaw_admin_query_value(query, "app_id", app_id, sizeof(app_id))) {
+            espclaw_admin_render_result_json(false, "missing task_id or app_id query parameter", response, sizeof(response));
+            send_http_response(client_fd, 400, "Bad Request", "application/json", response);
+            return;
+        }
+        if (!espclaw_admin_query_value(query, "schedule", schedule, sizeof(schedule))) {
+            snprintf(schedule, sizeof(schedule), "periodic");
+        }
+        if (!espclaw_admin_query_value(query, "trigger", trigger, sizeof(trigger))) {
+            snprintf(trigger, sizeof(trigger), "%s", strcmp(schedule, "event") == 0 ? "sensor" : "timer");
+        }
+
+        if (espclaw_task_start_with_schedule(
+                task_id,
+                config->workspace_root,
+                app_id,
+                schedule,
+                trigger,
+                body != NULL ? body : "",
+                query_u32_or_default(query, "period_ms", 20),
+                query_u32_or_default(query, "iterations", 0),
+                message,
+                sizeof(message)) == 0) {
+            espclaw_task_render_json(response, sizeof(response));
+            send_http_response(client_fd, 200, "OK", "application/json", response);
+        } else {
+            espclaw_admin_render_result_json(false, message, response, sizeof(response));
+            send_http_response(client_fd, 500, "Internal Server Error", "application/json", response);
+        }
+        return;
+    }
+
+    if (strcmp(method, "POST") == 0 && strcmp(path, "/api/events/emit") == 0) {
+        char event_name[ESPCLAW_TASK_TRIGGER_MAX + 1];
+        char message[256];
+
+        if (!espclaw_admin_query_value(query, "name", event_name, sizeof(event_name))) {
+            espclaw_admin_render_result_json(false, "missing name query parameter", response, sizeof(response));
+            send_http_response(client_fd, 400, "Bad Request", "application/json", response);
+            return;
+        }
+
+        if (espclaw_task_emit_event(event_name, body != NULL ? body : "", message, sizeof(message)) == 0) {
+            espclaw_admin_render_result_json(true, message, response, sizeof(response));
+            send_http_response(client_fd, 200, "OK", "application/json", response);
+        } else {
+            espclaw_admin_render_result_json(false, message, response, sizeof(response));
+            send_http_response(client_fd, 404, "Not Found", "application/json", response);
+        }
+        return;
+    }
+
+    if (strcmp(method, "POST") == 0 && strcmp(path, "/api/tasks/stop") == 0) {
+        char task_id[ESPCLAW_TASK_ID_MAX + 1];
+        char message[256];
+
+        if (!espclaw_admin_query_value(query, "task_id", task_id, sizeof(task_id))) {
+            espclaw_admin_render_result_json(false, "missing task_id query parameter", response, sizeof(response));
+            send_http_response(client_fd, 400, "Bad Request", "application/json", response);
+            return;
+        }
+
+        if (espclaw_task_stop(task_id, message, sizeof(message)) == 0) {
             espclaw_admin_render_result_json(true, message, response, sizeof(response));
             send_http_response(client_fd, 200, "OK", "application/json", response);
         } else {
@@ -882,8 +1098,6 @@ int main(int argc, char **argv)
 
             if (strcmp(profile, "esp32cam") == 0) {
                 config.profile = espclaw_board_profile_for(ESPCLAW_BOARD_PROFILE_ESP32CAM);
-            } else if (strcmp(profile, "esp32c3") == 0) {
-                config.profile = espclaw_board_profile_for(ESPCLAW_BOARD_PROFILE_ESP32C3);
             } else {
                 config.profile = espclaw_board_profile_for(ESPCLAW_BOARD_PROFILE_ESP32S3);
             }
@@ -906,12 +1120,21 @@ int main(int argc, char **argv)
     espclaw_auth_store_init(config.workspace_root);
     espclaw_task_policy_select(&config.profile);
     espclaw_board_configure_current(config.workspace_root, &config.profile);
+    if (espclaw_event_watch_runtime_start() != 0) {
+        fprintf(stderr, "failed to start event watch runtime\n");
+        return 1;
+    }
 
     {
         char boot_log[512];
+        char behavior_log[512];
 
         if (espclaw_app_run_boot_apps(config.workspace_root, boot_log, sizeof(boot_log)) == 0 && boot_log[0] != '\0') {
             fprintf(stderr, "boot apps: %s\n", boot_log);
+        }
+        if (espclaw_behavior_start_autostart(config.workspace_root, behavior_log, sizeof(behavior_log)) == 0 &&
+            behavior_log[0] != '\0') {
+            fprintf(stderr, "autostart behaviors: %s\n", behavior_log);
         }
     }
 
@@ -967,6 +1190,7 @@ int main(int argc, char **argv)
     }
 
     espclaw_control_loop_shutdown_all();
+    espclaw_event_watch_runtime_shutdown();
     close(server_fd);
     return 0;
 }

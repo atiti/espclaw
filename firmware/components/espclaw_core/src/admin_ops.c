@@ -1,8 +1,8 @@
 #include "espclaw/admin_ops.h"
 
 #include <ctype.h>
-#include <stdlib.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "espclaw/app_runtime.h"
@@ -227,6 +227,38 @@ bool espclaw_admin_json_long_value(
     }
 
     *value = strtol(cursor, &end_ptr, 10);
+    return end_ptr != cursor;
+}
+
+bool espclaw_admin_json_i64_value(
+    const char *json,
+    const char *key,
+    int64_t *value
+)
+{
+    char pattern[64];
+    const char *cursor;
+    char *end_ptr = NULL;
+
+    if (json == NULL || key == NULL || value == NULL) {
+        return false;
+    }
+
+    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
+    cursor = strstr(json, pattern);
+    if (cursor == NULL) {
+        return false;
+    }
+    cursor = strchr(cursor, ':');
+    if (cursor == NULL) {
+        return false;
+    }
+    cursor++;
+    while (*cursor != '\0' && isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+
+    *value = strtoll(cursor, &end_ptr, 10);
     return end_ptr != cursor;
 }
 

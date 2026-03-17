@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 bool espclaw_admin_query_value(
     const char *query,
@@ -20,6 +21,11 @@ bool espclaw_admin_json_long_value(
     const char *json,
     const char *key,
     long *value
+);
+bool espclaw_admin_json_i64_value(
+    const char *json,
+    const char *key,
+    int64_t *value
 );
 size_t espclaw_admin_render_result_json(
     bool ok,

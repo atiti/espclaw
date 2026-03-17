@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+- Added real HTTP firmware OTA uploads with inactive-slot streaming writes, boot-partition switching, scheduled reboot, and boot confirmation on the next startup.
+- Switched the firmware partition layout to an OTA-capable `otadata` + `ota_0` + `ota_1` scheme, which requires one final serial migration flash on existing boards.
+- Fixed AI Thinker `esp32cam` SD initialization by using the board’s real slot-1 SDMMC pin map (`CLK=14`, `CMD=15`, `D0=2`) instead of the ESP32 flash-slot defaults from `SDMMC_SLOT_CONFIG_DEFAULT()`.
+- Added an `esp32cam` safe-start boot policy that keeps Wi-Fi offline when SD-backed workspace mount fails, preventing the previous brownout loop caused by failed SD init immediately followed by full RF calibration.
+- Removed `esp32c3` as a supported ESPClaw target so the project now clearly focuses on the PSRAM-capable full-agent boards: `esp32s3` and AI Thinker `esp32cam`.
+- Reworked the embedded Codex SSE parser to process `event:` and `data:` lines incrementally instead of holding a 4 KB temporary line buffer, and added a regression that proves long single-line `response.completed` payloads reduce correctly on the host.
+- Moved SNTP startup out of the Wi-Fi `IP_EVENT_STA_GOT_IP` handler and into the synchronous `wait_for_time_sync()` path so constrained boards like the `esp32c3` do not initialize time sync through an asynchronous callback path immediately after association.
+- Fixed auth expiry persistence on ESP32 targets by making `expires_at` explicitly 64-bit end to end; the old `nvs_get_i64()` into a 32-bit `long` was corrupting adjacent memory on the ESP32-C3.
+- Added board-profile runtime memory budgets and switched the agent loop to use those budgets dynamically, so `esp32c3` now runs in a real `lowmem` mode instead of sharing the same request/history buffers as larger boards.
+- Extended `/api/monitor` and the admin monitor panel with memory-class and agent-budget telemetry, including request/response/instruction/tool-result budgets and the recommended free-heap watermark for the active profile.
+- Verified the new low-memory budget on the real ESP32-C3 at `192.168.1.253`, where `/api/monitor` now reports `memory_class=lowmem`, `agent_request_buffer_bytes=14336`, `agent_response_buffer_bytes=8192`, and `ram_free_bytes=112256` after boot.
+- Added `scripts/real_device_bench.py`, a host-side progressive hardware bench that drives the live admin API from simple text prompts up through LLM-generated Lua app validation.
+- Added `docs/real-hardware-bench.md` and README guidance for running repeatable real-board validation against a flashed ESPClaw device.
+- Added a shared SSE stream reducer plus an embedded incremental SSE parser so direct Codex responses can be consumed line-by-line instead of buffering an entire response and waiting for socket close.
+- Changed the embedded direct-Codex transport back to `HTTP/1.1` and added incremental chunked-SSE parsing so the ESP32 can speak the normal ChatGPT/Codex streaming path without a relay.
+- Reduced the embedded agent response buffer now that the Codex path is streaming incrementally, freeing heap for TLS setup on constrained boards like the ESP32-C3.
+- Hardened direct on-device Codex transport diagnostics with explicit `tls_code` / `tls_flags` reporting and added direct certificate trust fallback attempts for `chatgpt.com` using the current Let's Encrypt `E7` chain before giving up.
+- Fixed direct embedded Codex SSE parsing by making `response.completed` extraction safe for in-place buffer collapse and covering the wrapped final-event shape with host regression tests.
+- Switched the embedded direct-Codex transport to `HTTP/1.0` close-delimited SSE so the ESP32 no longer has to buffer Cloudflare chunked transfer framing just to recover the final `response.completed` payload.
+- Reduced embedded agent-loop memory pressure by moving large request/response/history scratch state off stacks, shortening buffer overlap, and adding a text-only response parse path before allocating full tool-call state.
+- Added automatic hardware event watches for `uart` and `adc_threshold`, plus model and Lua management surfaces so local tasks can react to hardware-originated events without another LLM round-trip.
+- Added simulator-backed `camera.capture` plus vision handoff in the iterative agent loop, so follow-up model requests now include captured JPEGs as `input_image` attachments for vision-capable providers.
+- Added Lua camera and event-watch bindings through `espclaw.camera.capture(...)`, `espclaw.events.watch_uart(...)`, `espclaw.events.watch_adc_threshold(...)`, `espclaw.events.remove_watch(...)`, and `espclaw.events.list()`.
+- Added first-class persisted behaviors on top of the task runtime, including `/workspace/behaviors/*.json`, boot autostart, and model/admin/simulator control surfaces for `behavior.list`, `behavior.register`, `behavior.start`, `behavior.stop`, and `behavior.remove`.
+- Added behavior lifecycle APIs across firmware and simulator with `GET /api/behaviors`, `POST /api/behaviors/register`, `POST /api/behaviors/start`, `POST /api/behaviors/stop`, and `DELETE /api/behaviors`.
+- Updated the admin operator console to manage persisted autonomous behaviors alongside live tasks, so behaviors can be saved, autostarted, and inspected without exposing raw JSON in the main workflow.
+- Added a friendlier provider-auth import flow with `POST /api/auth/import-json`, admin UI upload/paste actions for `auth.json`, and clearer persistence messaging around secure auth storage.
+- Added Lua module search paths for `/workspace/lib` and app-local `lib/` directories so apps can reuse nested components through normal `require(...)` calls.
+- Added mutation-enabled local admin/simulator chat runs so the model can now install Lua apps, start tasks, and emit events from the browser without falling back to manual API calls.
+- Added task runtime schedules for both `periodic` and `event` workers, plus `POST /api/tasks/start`, `POST /api/tasks/stop`, and `POST /api/events/emit` surfaces across firmware and simulator.
+- Added Lua trigger dispatch through `on_<trigger>(payload)` and `on_event(trigger, payload)` while keeping legacy `handle(trigger, payload)` compatibility.
+- Added dynamic hardware discovery through `hardware.list`, `GET /api/hardware`, and `espclaw.hardware.list()` so one firmware image can describe the active board at runtime.
+- Added model-callable `hardware.list`, `app.install`, `app.remove`, `task.list`, `task.start`, `task.stop`, and `event.emit` tools so the iterative agent loop can create persistent Lua behaviors and coordinate them directly.
+- Added automatic tool introspection to the system prompt by embedding a live tool inventory snapshot into every model run, while keeping `tool.list` available for explicit detailed discovery.
+- Fixed event-task delivery to queue multiple back-to-back emitted payloads instead of collapsing them into a single pending event.
 - Added `/api/monitor` and an admin UI system monitor panel for flash, workspace, RAM, CPU load, and dual-core visibility across simulator and firmware builds.
 - Changed the embedded admin dashboard to lazy-load most sections on first interaction instead of fetching every panel eagerly on first paint.
 - Replaced the JSON-heavy admin screen with a chat-first operator console, structured setup cards, rendered transcripts, metric tiles, and collapsible advanced editors.
@@ -11,6 +46,9 @@
 - Enabled NimBLE BLE provisioning by default for the `esp32c3` target and added a regression test so C3 builds do not silently fall back to SoftAP because Bluetooth was compiled out.
 - Added a shared provisioning descriptor with `/api/network/provisioning`, BLE QR payload generation, Espressif helper URLs, admin UI provisioning details, and serial log output so BLE onboarding data is visible in firmware and simulator flows.
 - Increased the ESP-IDF admin HTTP task stack to handle large JSON responses from routes such as `/api/loops`, `/api/tools`, and chat/session endpoints without triggering stack protection faults on real ESP32-C3 hardware.
+- Fixed embedded stack overflows in behavior/task/watch/loop snapshot rendering by moving large runtime snapshots off task stacks, which stops ESP32-C3 boot and admin-path panics in behavior autostart and related JSON views.
+- Fixed auth import/save/status stack overflows on real ESP32-C3 hardware by moving large auth profiles, request bodies, and JSON parse scratch state off the `httpd` task stack, and added regression coverage for large `auth.json` token payloads.
+- Fixed the live chat/model loop on real ESP32-C3 hardware by moving large per-run agent state off the `httpd` task stack and shrinking embedded history/prompt continuation buffers to realistic device-safe limits.
 - Fixed ESP-IDF system monitor integration by linking the `esp_app_format` component and using the correct CPU clock header for runtime metrics.
 - Added a task-policy module that applies multicore placement rules for admin HTTP, Telegram polling, and persistent control loops on dual-core ESP32 targets while leaving single-core targets unpinned.
 - Added Lua board helpers such as `espclaw.board.describe()` and alias-aware hardware bindings so apps can target named resources instead of hard-coded GPIO numbers.
@@ -63,3 +101,9 @@
 - Added vehicle-control documentation describing how the current hardware blocks support rover, balancing robot, and quadcopter applications.
 - Added host-buildable unit tests for the core runtime contracts so the architecture can be verified without an installed ESP-IDF toolchain.
 - Added architecture and admin UI documentation for contributors and end users.
+# Unreleased
+
+- fix(agent): surface embedded provider transport errors, attach the ESP-IDF certificate bundle, and use non-streamed Codex requests with larger HTTP buffers on device builds
+- fix(runtime): start SNTP after Wi-Fi connect and gate live provider calls on a sane wall clock so TLS certificate validation can succeed on freshly booted devices
+- fix(runtime): use a single supported SNTP server on the ESP32-C3 build so time sync actually starts instead of failing on CONFIG_LWIP_SNTP_MAX_SERVERS
+- fix(test): restore simulator API tool-listing expectations in the host Codex mock

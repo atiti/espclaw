@@ -2,6 +2,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 
 #include "esp_http_server.h"
@@ -13,12 +14,15 @@
 #include "espclaw/admin_ui.h"
 #include "espclaw/app_runtime.h"
 #include "espclaw/auth_store.h"
+#include "espclaw/behavior_runtime.h"
 #include "espclaw/board_config.h"
 #include "espclaw/control_loop.h"
+#include "espclaw/ota_manager.h"
 #include "espclaw/ota_state.h"
 #include "espclaw/runtime.h"
 #include "espclaw/system_monitor.h"
 #include "espclaw/task_policy.h"
+#include "espclaw/task_runtime.h"
 #include "espclaw/workspace.h"
 
 static const char *TAG = "espclaw_admin";
@@ -165,36 +169,48 @@ static esp_err_t root_get_handler(httpd_req_t *req)
 static esp_err_t status_get_handler(httpd_req_t *req)
 {
     char buffer[512];
-    espclaw_ota_state_t ota_state = espclaw_ota_state_init();
+    espclaw_ota_snapshot_t ota_snapshot;
     const espclaw_runtime_status_t *status = espclaw_runtime_status();
-    espclaw_auth_profile_t profile;
+    espclaw_auth_profile_t *profile = NULL;
 
-    espclaw_auth_profile_default(&profile);
-    espclaw_auth_store_load(&profile);
+    profile = calloc(1, sizeof(*profile));
+    if (profile == NULL) {
+        return send_json_status(req, "{\"ok\":false,\"message\":\"out of memory\"}", 500, "Internal Server Error");
+    }
+
+    espclaw_auth_profile_default(profile);
+    espclaw_auth_store_load(profile);
+    espclaw_ota_manager_snapshot(&ota_snapshot);
 
     espclaw_render_admin_status_json(
         status != NULL ? &status->profile : NULL,
         status != NULL ? status->storage_backend : ESPCLAW_STORAGE_BACKEND_SD_CARD,
-        profile.provider_id,
+        profile->provider_id,
         "telegram",
         status != NULL && status->storage_ready,
-        &ota_state,
+        &ota_snapshot.state,
         buffer,
         sizeof(buffer)
     );
+    free(profile);
     return send_json(req, buffer);
 }
 
 static esp_err_t auth_status_get_handler(httpd_req_t *req)
 {
     char buffer[768];
-    espclaw_auth_profile_t profile;
+    espclaw_auth_profile_t *profile = calloc(1, sizeof(*profile));
 
-    espclaw_auth_profile_default(&profile);
-    if (espclaw_auth_store_load(&profile) != 0) {
-        profile.configured = false;
+    if (profile == NULL) {
+        return send_json_status(req, "{\"ok\":false,\"message\":\"out of memory\"}", 500, "Internal Server Error");
     }
-    espclaw_render_auth_profile_json(&profile, buffer, sizeof(buffer));
+
+    espclaw_auth_profile_default(profile);
+    if (espclaw_auth_store_load(profile) != 0) {
+        profile->configured = false;
+    }
+    espclaw_render_auth_profile_json(profile, buffer, sizeof(buffer));
+    free(profile);
     return send_json(req, buffer);
 }
 
@@ -204,6 +220,73 @@ static esp_err_t tools_get_handler(httpd_req_t *req)
 
     espclaw_render_tools_json(buffer, sizeof(buffer));
     return send_json(req, buffer);
+}
+
+static esp_err_t ota_status_get_handler(httpd_req_t *req)
+{
+    char buffer[512];
+    espclaw_ota_snapshot_t snapshot;
+
+    espclaw_ota_manager_snapshot(&snapshot);
+    espclaw_render_ota_status_json(&snapshot, buffer, sizeof(buffer));
+    return send_json(req, buffer);
+}
+
+static esp_err_t ota_upload_post_handler(httpd_req_t *req)
+{
+    char message[256];
+    char response[512];
+    unsigned char *chunk = NULL;
+    int total_received = 0;
+
+    if (req == NULL || req->content_len <= 0) {
+        espclaw_admin_render_result_json(false, "missing firmware body", response, sizeof(response));
+        return send_json_status(req, response, 400, "Bad Request");
+    }
+
+    chunk = calloc(1, 4096);
+    if (chunk == NULL) {
+        espclaw_admin_render_result_json(false, "out of memory", response, sizeof(response));
+        return send_json_status(req, response, 500, "Internal Server Error");
+    }
+
+    if (espclaw_ota_manager_begin((size_t)req->content_len, message, sizeof(message)) != ESP_OK) {
+        free(chunk);
+        espclaw_admin_render_result_json(false, message, response, sizeof(response));
+        return send_json_status(req, response, 503, "Service Unavailable");
+    }
+
+    while (total_received < req->content_len) {
+        int to_read = req->content_len - total_received;
+        int received;
+
+        if (to_read > 4096) {
+            to_read = 4096;
+        }
+        received = httpd_req_recv(req, (char *)chunk, to_read);
+        if (received <= 0) {
+            espclaw_ota_manager_abort(message, sizeof(message));
+            free(chunk);
+            espclaw_admin_render_result_json(false, "failed to read firmware upload", response, sizeof(response));
+            return send_json_status(req, response, 400, "Bad Request");
+        }
+        if (espclaw_ota_manager_write(chunk, (size_t)received, message, sizeof(message)) != ESP_OK) {
+            espclaw_ota_manager_abort(message, sizeof(message));
+            free(chunk);
+            espclaw_admin_render_result_json(false, message, response, sizeof(response));
+            return send_json_status(req, response, 500, "Internal Server Error");
+        }
+        total_received += received;
+    }
+
+    free(chunk);
+    if (espclaw_ota_manager_finish(true, message, sizeof(message)) != ESP_OK) {
+        espclaw_admin_render_result_json(false, message, response, sizeof(response));
+        return send_json_status(req, response, 500, "Internal Server Error");
+    }
+
+    espclaw_admin_render_result_json(true, message, response, sizeof(response));
+    return send_json(req, response);
 }
 
 static esp_err_t monitor_get_handler(httpd_req_t *req)
@@ -326,8 +409,9 @@ static size_t render_wifi_status_json(char *buffer, size_t buffer_size)
     return (size_t)snprintf(
         buffer,
         buffer_size,
-        "{\"ok\":true,\"wifi_ready\":%s,\"provisioning_active\":%s,\"storage_ready\":%s,\"provisioning_transport\":",
+        "{\"ok\":true,\"wifi_ready\":%s,\"wifi_boot_deferred\":%s,\"provisioning_active\":%s,\"storage_ready\":%s,\"provisioning_transport\":",
         status != NULL && status->wifi_ready ? "true" : "false",
+        status != NULL && status->wifi_boot_deferred ? "true" : "false",
         status != NULL && status->provisioning_active ? "true" : "false",
         status != NULL && status->storage_ready ? "true" : "false"
     );
@@ -476,35 +560,20 @@ static esp_err_t network_join_post_handler(httpd_req_t *req)
 
 static void merge_auth_profile_from_body(espclaw_auth_profile_t *profile, const char *body)
 {
-    long expires_at = 0;
-    char value[ESPCLAW_AUTH_TOKEN_MAX + 1];
+    int64_t expires_at = 0;
 
     if (profile == NULL || body == NULL) {
         return;
     }
 
-    if (espclaw_admin_json_string_value(body, "provider_id", value, sizeof(value))) {
-        copy_text(profile->provider_id, sizeof(profile->provider_id), value);
-    }
-    if (espclaw_admin_json_string_value(body, "model", value, sizeof(value))) {
-        copy_text(profile->model, sizeof(profile->model), value);
-    }
-    if (espclaw_admin_json_string_value(body, "base_url", value, sizeof(value))) {
-        copy_text(profile->base_url, sizeof(profile->base_url), value);
-    }
-    if (espclaw_admin_json_string_value(body, "access_token", value, sizeof(value))) {
-        copy_text(profile->access_token, sizeof(profile->access_token), value);
-    }
-    if (espclaw_admin_json_string_value(body, "refresh_token", value, sizeof(value))) {
-        copy_text(profile->refresh_token, sizeof(profile->refresh_token), value);
-    }
-    if (espclaw_admin_json_string_value(body, "account_id", value, sizeof(value))) {
-        copy_text(profile->account_id, sizeof(profile->account_id), value);
-    }
-    if (espclaw_admin_json_string_value(body, "source", value, sizeof(value))) {
-        copy_text(profile->source, sizeof(profile->source), value);
-    }
-    if (espclaw_admin_json_long_value(body, "expires_at", &expires_at)) {
+    (void)espclaw_admin_json_string_value(body, "provider_id", profile->provider_id, sizeof(profile->provider_id));
+    (void)espclaw_admin_json_string_value(body, "model", profile->model, sizeof(profile->model));
+    (void)espclaw_admin_json_string_value(body, "base_url", profile->base_url, sizeof(profile->base_url));
+    (void)espclaw_admin_json_string_value(body, "access_token", profile->access_token, sizeof(profile->access_token));
+    (void)espclaw_admin_json_string_value(body, "refresh_token", profile->refresh_token, sizeof(profile->refresh_token));
+    (void)espclaw_admin_json_string_value(body, "account_id", profile->account_id, sizeof(profile->account_id));
+    (void)espclaw_admin_json_string_value(body, "source", profile->source, sizeof(profile->source));
+    if (espclaw_admin_json_i64_value(body, "expires_at", &expires_at)) {
         profile->expires_at = expires_at;
     }
     profile->configured = profile->access_token[0] != '\0';
@@ -515,28 +584,46 @@ static void merge_auth_profile_from_body(espclaw_auth_profile_t *profile, const 
 
 static esp_err_t auth_put_handler(httpd_req_t *req)
 {
-    char body[4096];
+    char *body = NULL;
     char response[768];
-    espclaw_auth_profile_t profile;
+    espclaw_auth_profile_t *profile = NULL;
 
-    espclaw_auth_profile_default(&profile);
-    espclaw_auth_store_load(&profile);
-    if (read_request_body(req, body, sizeof(body)) != ESP_OK) {
+    if (req->content_len <= 0 || req->content_len > 8191) {
+        espclaw_admin_render_result_json(false, "missing auth body", response, sizeof(response));
+        return send_json_status(req, response, 400, "Bad Request");
+    }
+    body = calloc(1, (size_t)req->content_len + 1);
+    profile = calloc(1, sizeof(*profile));
+    if (body == NULL || profile == NULL) {
+        free(body);
+        free(profile);
+        return send_json_status(req, "{\"ok\":false,\"message\":\"out of memory\"}", 500, "Internal Server Error");
+    }
+
+    espclaw_auth_profile_default(profile);
+    espclaw_auth_store_load(profile);
+    if (read_request_body(req, body, (size_t)req->content_len + 1) != ESP_OK) {
+        free(body);
+        free(profile);
         espclaw_admin_render_result_json(false, "failed to read request body", response, sizeof(response));
         return send_json_status(req, response, 400, "Bad Request");
     }
 
-    merge_auth_profile_from_body(&profile, body);
-    if (!espclaw_auth_profile_is_ready(&profile)) {
+    merge_auth_profile_from_body(profile, body);
+    free(body);
+    if (!espclaw_auth_profile_is_ready(profile)) {
+        free(profile);
         espclaw_admin_render_result_json(false, "provider credentials are incomplete for the selected provider", response, sizeof(response));
         return send_json_status(req, response, 400, "Bad Request");
     }
-    if (espclaw_auth_store_save(&profile) != 0) {
+    if (espclaw_auth_store_save(profile) != 0) {
+        free(profile);
         espclaw_admin_render_result_json(false, "failed to save credentials", response, sizeof(response));
         return send_json_status(req, response, 500, "Internal Server Error");
     }
 
-    espclaw_render_auth_profile_json(&profile, response, sizeof(response));
+    espclaw_render_auth_profile_json(profile, response, sizeof(response));
+    free(profile);
     return send_json(req, response);
 }
 
@@ -556,71 +643,153 @@ static esp_err_t auth_delete_handler(httpd_req_t *req)
 static esp_err_t auth_import_codex_cli_post_handler(httpd_req_t *req)
 {
     char response[768];
-    espclaw_auth_profile_t profile;
+    espclaw_auth_profile_t *profile = calloc(1, sizeof(*profile));
 
-    if (espclaw_auth_store_import_codex_cli(NULL, &profile, response, sizeof(response)) != 0) {
+    if (profile == NULL) {
+        return send_json_status(req, "{\"ok\":false,\"message\":\"out of memory\"}", 500, "Internal Server Error");
+    }
+
+    if (espclaw_auth_store_import_codex_cli(NULL, profile, response, sizeof(response)) != 0) {
+        free(profile);
         espclaw_admin_render_result_json(false, response, response, sizeof(response));
         return send_json_status(req, response, 400, "Bad Request");
     }
 
-    espclaw_render_auth_profile_json(&profile, response, sizeof(response));
+    espclaw_render_auth_profile_json(profile, response, sizeof(response));
+    free(profile);
+    return send_json(req, response);
+}
+
+static esp_err_t auth_import_json_post_handler(httpd_req_t *req)
+{
+    char *body = NULL;
+    char response[768];
+    espclaw_auth_profile_t *profile = NULL;
+    esp_err_t read_status;
+
+    if (req->content_len <= 0 || req->content_len > 8191) {
+        espclaw_admin_render_result_json(false, "missing auth json body", response, sizeof(response));
+        return send_json_status(req, response, 400, "Bad Request");
+    }
+    body = (char *)calloc(1, (size_t)req->content_len + 1);
+    profile = calloc(1, sizeof(*profile));
+    if (body == NULL || profile == NULL) {
+        free(profile);
+        free(body);
+        espclaw_admin_render_result_json(false, "out of memory while reading auth json", response, sizeof(response));
+        return send_json_status(req, response, 500, "Internal Server Error");
+    }
+    read_status = read_request_body(req, body, (size_t)req->content_len + 1);
+    if (read_status != ESP_OK) {
+        free(body);
+        free(profile);
+        espclaw_admin_render_result_json(false, "missing auth json body", response, sizeof(response));
+        return send_json_status(req, response, 400, "Bad Request");
+    }
+    if (espclaw_auth_store_import_json(body, profile, response, sizeof(response)) != 0) {
+        free(body);
+        free(profile);
+        espclaw_admin_render_result_json(false, response, response, sizeof(response));
+        return send_json_status(req, response, 400, "Bad Request");
+    }
+
+    free(body);
+    espclaw_render_auth_profile_json(profile, response, sizeof(response));
+    free(profile);
     return send_json(req, response);
 }
 
 static esp_err_t chat_run_post_handler(httpd_req_t *req)
 {
     char session_id[ESPCLAW_AGENT_SESSION_ID_MAX + 1];
-    char body[2048];
-    char response[12288];
-    espclaw_agent_run_result_t result;
+    char *response = NULL;
+    char *body = NULL;
+    espclaw_agent_run_result_t *result = NULL;
     const espclaw_runtime_status_t *status = espclaw_runtime_status();
 
-    if (status == NULL || !status->storage_ready) {
-        espclaw_admin_render_result_json(false, "workspace storage is not available", response, sizeof(response));
-        return send_json_status(req, response, 503, "Service Unavailable");
+    response = (char *)calloc(1, 12288);
+    if (response == NULL) {
+        return send_json_status(req, "{\"ok\":false,\"message\":\"out of memory\"}", 500, "Internal Server Error");
+    }
+    body = (char *)calloc(1, 2048);
+    result = (espclaw_agent_run_result_t *)calloc(1, sizeof(*result));
+    if (body == NULL || result == NULL) {
+        free(result);
+        free(body);
+        free(response);
+        return send_json_status(req, "{\"ok\":false,\"message\":\"out of memory\"}", 500, "Internal Server Error");
+    }
+    if (status == NULL) {
+        espclaw_admin_render_result_json(false, "runtime status is not available", response, 12288);
+        send_json_status(req, response, 503, "Service Unavailable");
+        free(result);
+        free(body);
+        free(response);
+        return ESP_OK;
     }
     if (!load_query_value(req, "session_id", session_id, sizeof(session_id))) {
         copy_text(session_id, sizeof(session_id), "admin");
     }
-    if (req->content_len <= 0 || read_request_body(req, body, sizeof(body)) != ESP_OK) {
-        espclaw_admin_render_result_json(false, "missing chat body", response, sizeof(response));
-        return send_json_status(req, response, 400, "Bad Request");
+    if (req->content_len <= 0 || read_request_body(req, body, 2048) != ESP_OK) {
+        espclaw_admin_render_result_json(false, "missing chat body", response, 12288);
+        send_json_status(req, response, 400, "Bad Request");
+        free(result);
+        free(body);
+        free(response);
+        return ESP_OK;
     }
-    if (espclaw_agent_loop_run(status->workspace_root, session_id, body, false, &result) != 0 && !result.ok) {
-        espclaw_admin_render_result_json(false, result.final_text, response, sizeof(response));
-        return send_json_status(req, response, 500, "Internal Server Error");
+    if (espclaw_agent_loop_run(status->storage_ready ? status->workspace_root : NULL, session_id, body, true, result) != 0 &&
+        !result->ok) {
+        espclaw_admin_render_result_json(false, result->final_text, response, 12288);
+        send_json_status(req, response, 500, "Internal Server Error");
+        free(result);
+        free(body);
+        free(response);
+        return ESP_OK;
     }
 
     snprintf(
         response,
-        sizeof(response),
+        12288,
         "{\"ok\":true,\"session_id\":\"%s\",\"iterations\":%u,\"used_tools\":%s,\"response_id\":\"%s\",\"final_text\":",
         session_id,
-        result.iterations,
-        result.used_tools ? "true" : "false",
-        result.response_id
+        result->iterations,
+        result->used_tools ? "true" : "false",
+        result->response_id
     );
-    append_escaped_json(response, sizeof(response), strlen(response), result.final_text);
-    append_text(response, sizeof(response), "}");
-    return send_json(req, response);
+    append_escaped_json(response, 12288, strlen(response), result->final_text);
+    append_text(response, 12288, "}");
+    send_json(req, response);
+    free(result);
+    free(body);
+    free(response);
+    return ESP_OK;
 }
 
 static esp_err_t chat_session_get_handler(httpd_req_t *req)
 {
     char session_id[ESPCLAW_AGENT_SESSION_ID_MAX + 1];
-    char response[9216];
+    char *response = NULL;
     const espclaw_runtime_status_t *status = espclaw_runtime_status();
 
+    response = (char *)calloc(1, 9216);
+    if (response == NULL) {
+        return send_json_status(req, "{\"ok\":false,\"message\":\"out of memory\"}", 500, "Internal Server Error");
+    }
     if (status == NULL || !status->storage_ready) {
-        espclaw_admin_render_result_json(false, "workspace storage is not available", response, sizeof(response));
-        return send_json_status(req, response, 503, "Service Unavailable");
+        espclaw_admin_render_result_json(false, "workspace storage is not available", response, 9216);
+        send_json_status(req, response, 503, "Service Unavailable");
+        free(response);
+        return ESP_OK;
     }
     if (!load_query_value(req, "session_id", session_id, sizeof(session_id))) {
         copy_text(session_id, sizeof(session_id), "admin");
     }
 
-    espclaw_render_session_transcript_json(status->workspace_root, session_id, response, sizeof(response));
-    return send_json(req, response);
+    espclaw_render_session_transcript_json(status->workspace_root, session_id, response, 9216);
+    send_json(req, response);
+    free(response);
+    return ESP_OK;
 }
 
 static esp_err_t workspace_get_handler(httpd_req_t *req)
@@ -649,11 +818,43 @@ static esp_err_t apps_get_handler(httpd_req_t *req)
     return send_json(req, buffer);
 }
 
+static esp_err_t hardware_get_handler(httpd_req_t *req)
+{
+    char buffer[4096];
+
+    (void)req;
+    espclaw_render_hardware_json(espclaw_board_current(), buffer, sizeof(buffer));
+    return send_json(req, buffer);
+}
+
 static esp_err_t loops_get_handler(httpd_req_t *req)
 {
     char buffer[4096];
 
     espclaw_control_loop_render_json(buffer, sizeof(buffer));
+    return send_json(req, buffer);
+}
+
+static esp_err_t tasks_get_handler(httpd_req_t *req)
+{
+    char buffer[6144];
+
+    (void)req;
+    espclaw_task_render_json(buffer, sizeof(buffer));
+    return send_json(req, buffer);
+}
+
+static esp_err_t behaviors_get_handler(httpd_req_t *req)
+{
+    char buffer[6144];
+    const espclaw_runtime_status_t *status = espclaw_runtime_status();
+
+    if (status == NULL || !status->storage_ready) {
+        espclaw_admin_render_result_json(false, "workspace storage is not available", buffer, sizeof(buffer));
+        return send_json_status(req, buffer, 503, "Service Unavailable");
+    }
+
+    espclaw_render_behaviors_json(status->workspace_root, buffer, sizeof(buffer));
     return send_json(req, buffer);
 }
 
@@ -854,6 +1055,227 @@ static esp_err_t loop_stop_post_handler(httpd_req_t *req)
     return send_json_status(req, response, 404, "Not Found");
 }
 
+static esp_err_t task_start_post_handler(httpd_req_t *req)
+{
+    char task_id[ESPCLAW_TASK_ID_MAX + 1];
+    char app_id[ESPCLAW_APP_ID_MAX + 1];
+    char schedule[ESPCLAW_TASK_SCHEDULE_MAX + 1];
+    char trigger[ESPCLAW_APP_TRIGGER_NAME_MAX + 1];
+    char payload[1024];
+    char message[256];
+    char response[6144];
+    const espclaw_runtime_status_t *status = espclaw_runtime_status();
+
+    if (status == NULL || !status->storage_ready) {
+        espclaw_admin_render_result_json(false, "workspace storage is not available", response, sizeof(response));
+        return send_json_status(req, response, 503, "Service Unavailable");
+    }
+    if (!load_query_value(req, "task_id", task_id, sizeof(task_id)) ||
+        !load_query_value(req, "app_id", app_id, sizeof(app_id))) {
+        espclaw_admin_render_result_json(false, "missing task_id or app_id query parameter", response, sizeof(response));
+        return send_json_status(req, response, 400, "Bad Request");
+    }
+    if (!load_query_value(req, "schedule", schedule, sizeof(schedule))) {
+        snprintf(schedule, sizeof(schedule), "periodic");
+    }
+    if (!load_query_value(req, "trigger", trigger, sizeof(trigger))) {
+        snprintf(trigger, sizeof(trigger), "%s", strcmp(schedule, "event") == 0 ? "sensor" : "timer");
+    }
+    payload[0] = '\0';
+    if (req->content_len > 0 && read_request_body(req, payload, sizeof(payload)) != ESP_OK) {
+        espclaw_admin_render_result_json(false, "failed to read request body", response, sizeof(response));
+        return send_json_status(req, response, 400, "Bad Request");
+    }
+
+    if (espclaw_task_start_with_schedule(
+            task_id,
+            status->workspace_root,
+            app_id,
+            schedule,
+            trigger,
+            payload,
+            load_query_u32(req, "period_ms", 20),
+            load_query_u32(req, "iterations", 0),
+            message,
+            sizeof(message)) == 0) {
+        espclaw_task_render_json(response, sizeof(response));
+        return send_json(req, response);
+    }
+
+    espclaw_admin_render_result_json(false, message, response, sizeof(response));
+    return send_json_status(req, response, 500, "Internal Server Error");
+}
+
+static esp_err_t task_stop_post_handler(httpd_req_t *req)
+{
+    char task_id[ESPCLAW_TASK_ID_MAX + 1];
+    char message[256];
+    char response[512];
+
+    if (!load_query_value(req, "task_id", task_id, sizeof(task_id))) {
+        espclaw_admin_render_result_json(false, "missing task_id query parameter", response, sizeof(response));
+        return send_json_status(req, response, 400, "Bad Request");
+    }
+
+    if (espclaw_task_stop(task_id, message, sizeof(message)) == 0) {
+        espclaw_admin_render_result_json(true, message, response, sizeof(response));
+        return send_json(req, response);
+    }
+
+    espclaw_admin_render_result_json(false, message, response, sizeof(response));
+    return send_json_status(req, response, 404, "Not Found");
+}
+
+static esp_err_t behavior_register_post_handler(httpd_req_t *req)
+{
+    char behavior_id[ESPCLAW_BEHAVIOR_ID_MAX + 1];
+    char app_id[ESPCLAW_APP_ID_MAX + 1];
+    char schedule[ESPCLAW_TASK_SCHEDULE_MAX + 1];
+    char trigger[ESPCLAW_TASK_TRIGGER_MAX + 1];
+    char payload[ESPCLAW_TASK_PAYLOAD_MAX];
+    char message[256];
+    char response[6144];
+    espclaw_behavior_spec_t spec;
+    const espclaw_runtime_status_t *status = espclaw_runtime_status();
+
+    if (status == NULL || !status->storage_ready) {
+        espclaw_admin_render_result_json(false, "workspace storage is not available", response, sizeof(response));
+        return send_json_status(req, response, 503, "Service Unavailable");
+    }
+    if (!load_query_value(req, "behavior_id", behavior_id, sizeof(behavior_id)) ||
+        !load_query_value(req, "app_id", app_id, sizeof(app_id))) {
+        espclaw_admin_render_result_json(false, "missing behavior_id or app_id query parameter", response, sizeof(response));
+        return send_json_status(req, response, 400, "Bad Request");
+    }
+    if (!load_query_value(req, "schedule", schedule, sizeof(schedule))) {
+        snprintf(schedule, sizeof(schedule), "periodic");
+    }
+    if (!load_query_value(req, "trigger", trigger, sizeof(trigger))) {
+        snprintf(trigger, sizeof(trigger), "%s", strcmp(schedule, "event") == 0 ? "sensor" : "timer");
+    }
+    payload[0] = '\0';
+    if (req->content_len > 0 && read_request_body(req, payload, sizeof(payload)) != ESP_OK) {
+        espclaw_admin_render_result_json(false, "failed to read request body", response, sizeof(response));
+        return send_json_status(req, response, 400, "Bad Request");
+    }
+
+    memset(&spec, 0, sizeof(spec));
+    snprintf(spec.behavior_id, sizeof(spec.behavior_id), "%s", behavior_id);
+    snprintf(spec.title, sizeof(spec.title), "%s", behavior_id);
+    snprintf(spec.app_id, sizeof(spec.app_id), "%s", app_id);
+    snprintf(spec.schedule, sizeof(spec.schedule), "%s", schedule);
+    snprintf(spec.trigger, sizeof(spec.trigger), "%s", trigger);
+    snprintf(spec.payload, sizeof(spec.payload), "%s", payload);
+    spec.period_ms = load_query_u32(req, "period_ms", 20);
+    spec.max_iterations = load_query_u32(req, "iterations", 0);
+    spec.autostart = load_query_u32(req, "autostart", 0) != 0;
+
+    if (espclaw_behavior_register(status->workspace_root, &spec, message, sizeof(message)) == 0) {
+        espclaw_render_behaviors_json(status->workspace_root, response, sizeof(response));
+        return send_json(req, response);
+    }
+
+    espclaw_admin_render_result_json(false, message, response, sizeof(response));
+    return send_json_status(req, response, 500, "Internal Server Error");
+}
+
+static esp_err_t behavior_start_post_handler(httpd_req_t *req)
+{
+    char behavior_id[ESPCLAW_BEHAVIOR_ID_MAX + 1];
+    char message[256];
+    char response[6144];
+    const espclaw_runtime_status_t *status = espclaw_runtime_status();
+
+    if (status == NULL || !status->storage_ready) {
+        espclaw_admin_render_result_json(false, "workspace storage is not available", response, sizeof(response));
+        return send_json_status(req, response, 503, "Service Unavailable");
+    }
+    if (!load_query_value(req, "behavior_id", behavior_id, sizeof(behavior_id))) {
+        espclaw_admin_render_result_json(false, "missing behavior_id query parameter", response, sizeof(response));
+        return send_json_status(req, response, 400, "Bad Request");
+    }
+    if (espclaw_behavior_start(status->workspace_root, behavior_id, message, sizeof(message)) == 0) {
+        espclaw_render_behaviors_json(status->workspace_root, response, sizeof(response));
+        return send_json(req, response);
+    }
+
+    espclaw_admin_render_result_json(false, message, response, sizeof(response));
+    return send_json_status(req, response, 404, "Not Found");
+}
+
+static esp_err_t behavior_stop_post_handler(httpd_req_t *req)
+{
+    char behavior_id[ESPCLAW_BEHAVIOR_ID_MAX + 1];
+    char message[256];
+    char response[6144];
+    const espclaw_runtime_status_t *status = espclaw_runtime_status();
+
+    if (status == NULL || !status->storage_ready) {
+        espclaw_admin_render_result_json(false, "workspace storage is not available", response, sizeof(response));
+        return send_json_status(req, response, 503, "Service Unavailable");
+    }
+    if (!load_query_value(req, "behavior_id", behavior_id, sizeof(behavior_id))) {
+        espclaw_admin_render_result_json(false, "missing behavior_id query parameter", response, sizeof(response));
+        return send_json_status(req, response, 400, "Bad Request");
+    }
+    if (espclaw_behavior_stop(behavior_id, message, sizeof(message)) == 0) {
+        espclaw_render_behaviors_json(status->workspace_root, response, sizeof(response));
+        return send_json(req, response);
+    }
+
+    espclaw_admin_render_result_json(false, message, response, sizeof(response));
+    return send_json_status(req, response, 404, "Not Found");
+}
+
+static esp_err_t behavior_delete_handler(httpd_req_t *req)
+{
+    char behavior_id[ESPCLAW_BEHAVIOR_ID_MAX + 1];
+    char message[256];
+    char response[6144];
+    const espclaw_runtime_status_t *status = espclaw_runtime_status();
+
+    if (status == NULL || !status->storage_ready) {
+        espclaw_admin_render_result_json(false, "workspace storage is not available", response, sizeof(response));
+        return send_json_status(req, response, 503, "Service Unavailable");
+    }
+    if (!load_query_value(req, "behavior_id", behavior_id, sizeof(behavior_id))) {
+        espclaw_admin_render_result_json(false, "missing behavior_id query parameter", response, sizeof(response));
+        return send_json_status(req, response, 400, "Bad Request");
+    }
+    if (espclaw_behavior_remove(status->workspace_root, behavior_id, message, sizeof(message)) == 0) {
+        espclaw_render_behaviors_json(status->workspace_root, response, sizeof(response));
+        return send_json(req, response);
+    }
+
+    espclaw_admin_render_result_json(false, message, response, sizeof(response));
+    return send_json_status(req, response, 404, "Not Found");
+}
+
+static esp_err_t event_emit_post_handler(httpd_req_t *req)
+{
+    char event_name[ESPCLAW_TASK_TRIGGER_MAX + 1];
+    char payload[ESPCLAW_TASK_PAYLOAD_MAX];
+    char message[256];
+    char response[512];
+
+    if (!load_query_value(req, "name", event_name, sizeof(event_name))) {
+        espclaw_admin_render_result_json(false, "missing name query parameter", response, sizeof(response));
+        return send_json_status(req, response, 400, "Bad Request");
+    }
+    payload[0] = '\0';
+    if (req->content_len > 0 && read_request_body(req, payload, sizeof(payload)) != ESP_OK) {
+        espclaw_admin_render_result_json(false, "failed to read request body", response, sizeof(response));
+        return send_json_status(req, response, 400, "Bad Request");
+    }
+    if (espclaw_task_emit_event(event_name, payload, message, sizeof(message)) == 0) {
+        espclaw_admin_render_result_json(true, message, response, sizeof(response));
+        return send_json(req, response);
+    }
+
+    espclaw_admin_render_result_json(false, message, response, sizeof(response));
+    return send_json_status(req, response, 404, "Not Found");
+}
+
 esp_err_t espclaw_admin_server_start(void)
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
@@ -873,13 +1295,21 @@ esp_err_t espclaw_admin_server_start(void)
         {.uri = "/api/auth/status", .method = HTTP_GET, .handler = auth_status_get_handler, .user_ctx = NULL},
         {.uri = "/api/auth/codex", .method = HTTP_PUT, .handler = auth_put_handler, .user_ctx = NULL},
         {.uri = "/api/auth/codex", .method = HTTP_DELETE, .handler = auth_delete_handler, .user_ctx = NULL},
+        {.uri = "/api/auth/import-json", .method = HTTP_POST, .handler = auth_import_json_post_handler, .user_ctx = NULL},
         {.uri = "/api/auth/import-codex-cli", .method = HTTP_POST, .handler = auth_import_codex_cli_post_handler, .user_ctx = NULL},
+        {.uri = "/api/ota/status", .method = HTTP_GET, .handler = ota_status_get_handler, .user_ctx = NULL},
+        {.uri = "/api/ota/upload", .method = HTTP_POST, .handler = ota_upload_post_handler, .user_ctx = NULL},
         {.uri = "/api/workspace/files", .method = HTTP_GET, .handler = workspace_get_handler, .user_ctx = NULL},
         {.uri = "/api/monitor", .method = HTTP_GET, .handler = monitor_get_handler, .user_ctx = NULL},
         {.uri = "/api/tools", .method = HTTP_GET, .handler = tools_get_handler, .user_ctx = NULL},
+        {.uri = "/api/hardware", .method = HTTP_GET, .handler = hardware_get_handler, .user_ctx = NULL},
         {.uri = "/api/apps", .method = HTTP_GET, .handler = apps_get_handler, .user_ctx = NULL},
         {.uri = "/api/apps", .method = HTTP_DELETE, .handler = apps_delete_handler, .user_ctx = NULL},
+        {.uri = "/api/behaviors", .method = HTTP_GET, .handler = behaviors_get_handler, .user_ctx = NULL},
+        {.uri = "/api/behaviors", .method = HTTP_DELETE, .handler = behavior_delete_handler, .user_ctx = NULL},
         {.uri = "/api/loops", .method = HTTP_GET, .handler = loops_get_handler, .user_ctx = NULL},
+        {.uri = "/api/tasks", .method = HTTP_GET, .handler = tasks_get_handler, .user_ctx = NULL},
+        {.uri = "/api/events/emit", .method = HTTP_POST, .handler = event_emit_post_handler, .user_ctx = NULL},
         {.uri = "/api/apps/detail", .method = HTTP_GET, .handler = app_detail_get_handler, .user_ctx = NULL},
         {.uri = "/api/apps/scaffold", .method = HTTP_POST, .handler = app_scaffold_post_handler, .user_ctx = NULL},
         {.uri = "/api/apps/source", .method = HTTP_PUT, .handler = app_source_put_handler, .user_ctx = NULL},
@@ -888,6 +1318,11 @@ esp_err_t espclaw_admin_server_start(void)
         {.uri = "/api/chat/session", .method = HTTP_GET, .handler = chat_session_get_handler, .user_ctx = NULL},
         {.uri = "/api/loops/start", .method = HTTP_POST, .handler = loop_start_post_handler, .user_ctx = NULL},
         {.uri = "/api/loops/stop", .method = HTTP_POST, .handler = loop_stop_post_handler, .user_ctx = NULL},
+        {.uri = "/api/behaviors/register", .method = HTTP_POST, .handler = behavior_register_post_handler, .user_ctx = NULL},
+        {.uri = "/api/behaviors/start", .method = HTTP_POST, .handler = behavior_start_post_handler, .user_ctx = NULL},
+        {.uri = "/api/behaviors/stop", .method = HTTP_POST, .handler = behavior_stop_post_handler, .user_ctx = NULL},
+        {.uri = "/api/tasks/start", .method = HTTP_POST, .handler = task_start_post_handler, .user_ctx = NULL},
+        {.uri = "/api/tasks/stop", .method = HTTP_POST, .handler = task_stop_post_handler, .user_ctx = NULL},
     };
     size_t index;
 
@@ -897,7 +1332,7 @@ esp_err_t espclaw_admin_server_start(void)
 
     config.server_port = CONFIG_ESPCLAW_ADMIN_PORT;
     config.stack_size = ESPCLAW_ADMIN_HTTPD_STACK_SIZE;
-    config.max_uri_handlers = 32;
+    config.max_uri_handlers = 48;
     config.max_open_sockets = 4;
     config.lru_purge_enable = true;
     config.core_id = admin_core >= 0 ? admin_core : tskNO_AFFINITY;

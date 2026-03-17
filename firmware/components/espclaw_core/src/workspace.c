@@ -196,6 +196,9 @@ int espclaw_workspace_bootstrap(const char *workspace_root)
     if (espclaw_workspace_resolve_path(workspace_root, "apps", path, sizeof(path)) != 0 || ensure_directory(path) != 0) {
         return -1;
     }
+    if (espclaw_workspace_resolve_path(workspace_root, "behaviors", path, sizeof(path)) != 0 || ensure_directory(path) != 0) {
+        return -1;
+    }
 
     for (index = 0; index < espclaw_workspace_file_count(); ++index) {
         if (bootstrap_file(workspace_root, &WORKSPACE_FILES[index]) != 0) {

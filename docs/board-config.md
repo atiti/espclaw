@@ -23,8 +23,6 @@ Current built-in variants:
 
 - `generic_esp32s3`
 - `ai_thinker_esp32cam`
-- `generic_esp32c3`
-- `seeed_xiao_esp32c3`
 
 The built-in descriptor is selected from the board profile, then overridden by `board.json`.
 
@@ -43,7 +41,7 @@ Example:
 
 ```json
 {
-  "variant": "seeed_xiao_esp32c3",
+  "variant": "ai_thinker_esp32cam",
   "pins": {
     "servo_main": 4,
     "ppm_out": 5,
@@ -55,14 +53,6 @@ Example:
       "sda": 6,
       "scl": 7,
       "frequency_hz": 400000
-    }
-  },
-  "uart": {
-    "console": {
-      "port": 0,
-      "tx": 21,
-      "rx": 20,
-      "baud_rate": 115200
     }
   },
   "adc": {

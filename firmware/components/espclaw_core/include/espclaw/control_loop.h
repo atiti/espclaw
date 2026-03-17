@@ -5,6 +5,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "espclaw/task_runtime.h"
+
 #define ESPCLAW_CONTROL_LOOP_MAX 4
 #define ESPCLAW_CONTROL_LOOP_ID_MAX 32
 #define ESPCLAW_CONTROL_LOOP_PAYLOAD_MAX 256

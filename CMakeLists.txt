@@ -30,12 +30,15 @@ add_library(
   firmware/components/espclaw_core/src/admin_api.c
   firmware/components/espclaw_core/src/admin_ui.c
   firmware/components/espclaw_core/src/auth_store.c
+  firmware/components/espclaw_core/src/behavior_runtime.c
   firmware/components/espclaw_core/src/board_config.c
   firmware/components/espclaw_core/src/board_profile.c
   firmware/components/espclaw_core/src/channel.c
   firmware/components/espclaw_core/src/control_loop.c
   firmware/components/espclaw_core/src/config_render.c
+  firmware/components/espclaw_core/src/event_watch.c
   firmware/components/espclaw_core/src/hardware.c
+  firmware/components/espclaw_core/src/ota_manager.c
   firmware/components/espclaw_core/src/ota_state.c
   firmware/components/espclaw_core/src/provisioning.c
   firmware/components/espclaw_core/src/provider.c
@@ -45,6 +48,7 @@ add_library(
   firmware/components/espclaw_core/src/system_monitor.c
   firmware/components/espclaw_core/src/task_policy.c
   firmware/components/espclaw_core/src/telegram_protocol.c
+  firmware/components/espclaw_core/src/task_runtime.c
   firmware/components/espclaw_core/src/tool_catalog.c
   firmware/components/espclaw_core/src/workspace.c
 )

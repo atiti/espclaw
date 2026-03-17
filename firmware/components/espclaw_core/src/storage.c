@@ -19,6 +19,11 @@ const char *espclaw_storage_describe_workspace_root(const char *workspace_root)
     return "host";
 }
 
+bool espclaw_storage_use_esp32cam_sdmmc_wiring(const espclaw_board_profile_t *profile)
+{
+    return profile != NULL && profile->profile_id == ESPCLAW_BOARD_PROFILE_ESP32CAM;
+}
+
 #ifdef ESP_PLATFORM
 
 #include "driver/spi_common.h"
@@ -91,7 +96,7 @@ static esp_err_t mount_sd_workspace(const espclaw_board_profile_t *profile, espc
 #if !CONFIG_ESPCLAW_ENABLE_SD_BOOTSTRAP
     return ESP_ERR_NOT_SUPPORTED;
 #else
-    if (profile->profile_id == ESPCLAW_BOARD_PROFILE_ESP32CAM) {
+    if (espclaw_storage_use_esp32cam_sdmmc_wiring(profile)) {
 #if SOC_SDMMC_HOST_SUPPORTED
         sdmmc_host_t host = SDMMC_HOST_DEFAULT();
         sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
@@ -102,8 +107,25 @@ static esp_err_t mount_sd_workspace(const espclaw_board_profile_t *profile, espc
         };
         sdmmc_card_t *card = NULL;
 
+        /* AI Thinker ESP32-CAM routes the microSD socket to the ESP32 slot-1
+         * SDMMC bus pins, not the ESP32 slot-0 default pins baked into
+         * SDMMC_SLOT_CONFIG_DEFAULT(). */
+        host.slot = SDMMC_HOST_SLOT_1;
+        host.max_freq_khz = 10000;
+        slot_config.clk = GPIO_NUM_14;
+        slot_config.cmd = GPIO_NUM_15;
+        slot_config.d0 = GPIO_NUM_2;
+        slot_config.d1 = GPIO_NUM_4;
+        slot_config.d2 = GPIO_NUM_12;
+        slot_config.d3 = GPIO_NUM_13;
+#if CONFIG_IDF_TARGET_ESP32
+        slot_config.d4 = GPIO_NUM_NC;
+        slot_config.d5 = GPIO_NUM_NC;
+        slot_config.d6 = GPIO_NUM_NC;
+        slot_config.d7 = GPIO_NUM_NC;
+#endif
         slot_config.width = 1;
-        host.max_freq_khz = SDMMC_FREQ_DEFAULT;
+        slot_config.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
         if (esp_vfs_fat_sdmmc_mount(CONFIG_ESPCLAW_SD_MOUNT_POINT, &host, &slot_config, &mount_config, &card) != ESP_OK) {
             ESP_LOGW(TAG, "SDMMC mount failed");
             return ESP_FAIL;

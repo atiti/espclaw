@@ -12,25 +12,36 @@
 #include "espclaw/agent_loop.h"
 #include "espclaw/app_runtime.h"
 #include "espclaw/auth_store.h"
+#include "espclaw/behavior_runtime.h"
 #include "espclaw/board_config.h"
 #include "espclaw/board_profile.h"
 #include "espclaw/channel.h"
 #include "espclaw/config_render.h"
 #include "espclaw/control_loop.h"
+#include "espclaw/event_watch.h"
 #include "espclaw/hardware.h"
+#include "espclaw/ota_manager.h"
 #include "espclaw/ota_state.h"
 #include "espclaw/provisioning.h"
 #include "espclaw/provider.h"
 #include "espclaw/provider_request.h"
+#include "espclaw/runtime.h"
 #include "espclaw/session_store.h"
 #include "espclaw/storage.h"
 #include "espclaw/task_policy.h"
+#include "espclaw/task_runtime.h"
 #include "espclaw/telegram_protocol.h"
 #include "espclaw/tool_catalog.h"
 #include "espclaw/workspace.h"
 
 #ifndef ESPCLAW_SOURCE_DIR
 #define ESPCLAW_SOURCE_DIR "."
+#endif
+
+#ifndef MBEDTLS_X509_BADCERT_NOT_TRUSTED
+#define MBEDTLS_X509_BADCERT_NOT_TRUSTED 0x08
+#define MBEDTLS_X509_BADCERT_FUTURE 0x0200
+#define MBEDTLS_X509_BADCERT_BAD_MD 0x4000
 #endif
 
 static void assert_true(bool condition, const char *message)
@@ -45,6 +56,12 @@ static void assert_string_contains(const char *haystack, const char *needle, con
 {
     assert_true(haystack != NULL, "haystack must not be null");
     assert_true(strstr(haystack, needle) != NULL, message);
+}
+
+static void assert_string_not_contains(const char *haystack, const char *needle, const char *message)
+{
+    assert_true(haystack != NULL, "haystack must not be null");
+    assert_true(strstr(haystack, needle) == NULL, message);
 }
 
 static void make_temp_dir(char *buffer, size_t buffer_size)
@@ -97,7 +114,11 @@ static int confirmation_http_adapter(
     }
 
     assert_string_contains(body, "\"store\":false", "agent loop sends store=false");
-    assert_string_contains(body, "\"stream\":true", "agent loop sends stream=true");
+    assert_string_contains(body, "\"stream\":true", "agent loop sends stream=true for codex");
+    assert_string_contains(body, "Tool Inventory Snapshot", "system prompt includes tool inventory snapshot");
+    assert_string_contains(body, "hardware.list", "system prompt includes hardware tool");
+    assert_string_contains(body, "behavior.register", "system prompt includes behavior tool");
+    assert_string_contains(body, "task.start", "system prompt includes task tool");
 
     if (state != NULL && state->calls > 1) {
         assert_string_contains(body, "\"instructions\":", "follow-up codex requests retain instructions");
@@ -150,7 +171,10 @@ static int tool_list_http_adapter(
     }
 
     assert_string_contains(body, "\"store\":false", "tool list loop sends store=false");
-    assert_string_contains(body, "\"stream\":true", "tool list loop sends stream=true");
+    assert_string_contains(body, "\"stream\":true", "tool list loop sends stream=true for codex");
+    assert_string_contains(body, "Tool Inventory Snapshot", "tool list prompt includes tool inventory snapshot");
+    assert_string_contains(body, "hardware.list", "tool list prompt includes hardware tool");
+    assert_string_contains(body, "behavior.register", "tool list prompt includes behavior tool");
 
     if (state != NULL && state->calls > 1) {
         assert_string_contains(body, "\"type\":\"function_call\"", "tool list follow-up retains function call item");
@@ -181,45 +205,424 @@ static int tool_list_http_adapter(
     return 0;
 }
 
+static int app_install_http_adapter(
+    const char *url,
+    const espclaw_auth_profile_t *profile,
+    const char *body,
+    char *response,
+    size_t response_size,
+    void *user_data
+)
+{
+    test_agent_adapter_state_t *state = (test_agent_adapter_state_t *)user_data;
+
+    (void)url;
+    (void)profile;
+
+    if (state != NULL) {
+        state->calls++;
+    }
+
+    assert_string_contains(body, "Tool Inventory Snapshot", "app install prompt includes tool inventory snapshot");
+    assert_string_contains(body, "app.install", "app install prompt includes app install tool");
+    assert_string_contains(body, "event.emit", "app install prompt includes event tool");
+
+    if (state != NULL && state->calls > 1) {
+        assert_string_contains(body, "\"type\":\"function_call_output\"", "app install follow-up includes tool output");
+        snprintf(
+            response,
+            response_size,
+            "{"
+            "\"id\":\"resp_install_final\","
+            "\"status\":\"completed\","
+            "\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"I installed the Lua app and it is ready to start as a task.\"}]}]"
+            "}"
+        );
+        return 0;
+    }
+
+    snprintf(
+        response,
+        response_size,
+        "{"
+        "\"id\":\"resp_install_first\","
+        "\"status\":\"completed\","
+        "\"output\":["
+        "{\"type\":\"function_call\",\"call_id\":\"call_install\",\"name\":\"app.install\",\"arguments\":\"{\\\"app_id\\\":\\\"sensor_agent\\\",\\\"title\\\":\\\"Sensor Agent\\\",\\\"permissions_csv\\\":\\\"task.control,uart.read,uart.write\\\",\\\"triggers_csv\\\":\\\"manual,sensor\\\",\\\"source\\\":\\\"function on_sensor(payload)\\\\n  return 'sensor:' .. payload\\\\nend\\\\nfunction handle(trigger, payload)\\\\n  return 'ready'\\\\nend\\\\n\\\"}\",\"status\":\"completed\"}"
+        "]"
+        "}"
+    );
+    return 0;
+}
+
+static void test_transport_error_formatting(void)
+{
+    char message[256];
+
+    assert_true(
+        espclaw_agent_format_transport_error(
+            28674,
+            -0x2700,
+            MBEDTLS_X509_BADCERT_NOT_TRUSTED | MBEDTLS_X509_BADCERT_BAD_MD | MBEDTLS_X509_BADCERT_FUTURE,
+            message,
+            sizeof(message)) == 0,
+        "transport error formatting succeeds"
+    );
+    assert_string_contains(message, "Provider transport failed:", "transport error prefix present");
+    assert_string_contains(message, "28674", "transport error code present");
+    assert_string_contains(message, "tls_code=", "tls code label present");
+    assert_string_contains(message, "-9984", "tls code present");
+    assert_string_contains(message, "NOT_TRUSTED", "tls not trusted flag present");
+    assert_string_contains(message, "BAD_MD", "tls bad md flag present");
+    assert_string_contains(message, "FUTURE", "tls future flag present");
+
+    assert_true(
+        espclaw_agent_format_transport_error(28674, 0, 0, message, sizeof(message)) == 0,
+        "transport error formatting without tls succeeds"
+    );
+    assert_string_not_contains(message, "tls_code", "tls_code omitted when absent");
+}
+
+static void test_sse_completed_extraction_in_place(void)
+{
+    char buffer[2048];
+
+    snprintf(
+        buffer,
+        sizeof(buffer),
+        "event: response.created\n"
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_ignore\"}}\n\n"
+        "event: response.completed\n"
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_live\",\"status\":\"completed\",\"output\":[{\"id\":\"msg_live\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"ESPCLAW_BENCH_HI\"}]}]}}\n\n"
+        "data: [DONE]\n\n"
+    );
+
+    assert_true(
+        espclaw_agent_extract_sse_completed_response_json(buffer, buffer, sizeof(buffer)) == 0,
+        "in-place sse extraction succeeded"
+    );
+    assert_string_not_contains(buffer, "event: response.created", "sse extraction removed earlier events");
+    assert_string_contains(buffer, "\"type\":\"response.completed\"", "sse extraction preserved completed event");
+    assert_string_contains(buffer, "\"id\":\"resp_live\"", "sse extraction preserved nested response id");
+    assert_string_contains(buffer, "\"text\":\"ESPCLAW_BENCH_HI\"", "sse extraction preserved assistant text");
+}
+
+static void test_http_chunked_body_extraction(void)
+{
+    char buffer[4096];
+    char error_text[256];
+    const char *chunk_one = "event: response.completed\n";
+    const char *chunk_two =
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_chunked\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"ESPCLAW_BENCH_HI\"}]}]}}\n\n";
+    size_t buffer_len;
+
+    snprintf(
+        buffer,
+        sizeof(buffer),
+        "HTTP/1.1 200 OK\r\n"
+        "Transfer-Encoding: chunked\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+        "%zx\r\n%s\r\n"
+        "%zx\r\n%s\r\n"
+        "0\r\n"
+        "\r\n",
+        strlen(chunk_one),
+        chunk_one,
+        strlen(chunk_two),
+        chunk_two
+    );
+    buffer_len = strlen(buffer);
+    memset(error_text, 0, sizeof(error_text));
+
+    assert_true(
+        espclaw_agent_extract_http_body_in_place(buffer, &buffer_len, error_text, sizeof(error_text)) == 0,
+        "chunked body extraction succeeded"
+    );
+    assert_string_contains(buffer, "event: response.completed", "chunked body retained sse event");
+    assert_string_contains(buffer, "\"id\":\"resp_chunked\"", "chunked body retained response id");
+    assert_string_contains(buffer, "\"text\":\"ESPCLAW_BENCH_HI\"", "chunked body retained assistant text");
+    assert_string_not_contains(buffer, "Transfer-Encoding", "chunked body removed http headers");
+}
+
+static void test_incremental_sse_stream_reduction(void)
+{
+    char payload[4096];
+    char reduced[2048];
+    char error_text[256];
+
+    snprintf(
+        payload,
+        sizeof(payload),
+        "HTTP/1.0 200 OK\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+        "event: response.created\n"
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_live\"}}\n\n"
+        "event: response.output_text.done\n"
+        "data: {\"type\":\"response.output_text.done\",\"text\":\"ESPCLAW_\"}\n\n"
+        "event: response.output_text.done\n"
+        "data: {\"type\":\"response.output_text.done\",\"text\":\"BENCH_HI\"}\n\n"
+        "event: response.completed\n"
+        "data: {\"id\":\"resp_live\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"ESPCLAW_BENCH_HI\"}]}]}\n\n"
+    );
+    memset(error_text, 0, sizeof(error_text));
+
+    assert_true(
+        espclaw_agent_reduce_sse_stream_to_response_json(payload, reduced, sizeof(reduced), error_text, sizeof(error_text)) == 0,
+        "incremental sse reduction succeeded"
+    );
+    assert_string_contains(reduced, "\"id\":\"resp_live\"", "incremental sse reduction retained response id");
+    assert_string_contains(reduced, "\"text\":\"ESPCLAW_BENCH_HI\"", "incremental sse reduction retained assistant text");
+}
+
+static void test_incremental_sse_stream_fallback_text(void)
+{
+    char payload[4096];
+    char reduced[2048];
+    char error_text[256];
+
+    snprintf(
+        payload,
+        sizeof(payload),
+        "HTTP/1.0 200 OK\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+        "event: response.created\n"
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_fallback\"}}\n\n"
+        "event: response.output_text.done\n"
+        "data: {\"type\":\"response.output_text.done\",\"text\":\"ESPCLAW_BENCH_HI\"}\n\n"
+    );
+    memset(error_text, 0, sizeof(error_text));
+
+    assert_true(
+        espclaw_agent_reduce_sse_stream_to_response_json(payload, reduced, sizeof(reduced), error_text, sizeof(error_text)) == 0,
+        "incremental sse fallback reduction succeeded"
+    );
+    assert_string_contains(reduced, "\"id\":\"resp_fallback\"", "fallback reduction retained response id");
+    assert_string_contains(reduced, "\"text\":\"ESPCLAW_BENCH_HI\"", "fallback reduction synthesized assistant text");
+}
+
+static void test_incremental_sse_stream_handles_long_completed_line(void)
+{
+    char long_text[4600];
+    char *payload = NULL;
+    char *reduced = NULL;
+    char error_text[256];
+    size_t index;
+
+    for (index = 0; index < sizeof(long_text) - 1; ++index) {
+        long_text[index] = (char)('a' + (index % 26));
+    }
+    long_text[sizeof(long_text) - 1] = '\0';
+
+    payload = (char *)calloc(1, 8192);
+    reduced = (char *)calloc(1, 6144);
+    assert_true(payload != NULL && reduced != NULL, "long sse buffers allocated");
+
+    snprintf(
+        payload,
+        8192,
+        "HTTP/1.1 200 OK\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+        "event: response.completed\n"
+        "data: {\"id\":\"resp_long\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"%s\"}]}]}\n\n",
+        long_text
+    );
+    memset(error_text, 0, sizeof(error_text));
+
+    assert_true(
+        espclaw_agent_reduce_sse_stream_to_response_json(payload, reduced, 6144, error_text, sizeof(error_text)) == 0,
+        "incremental sse reduction handles long completed line"
+    );
+    assert_string_contains(reduced, "\"id\":\"resp_long\"", "long completed line retained response id");
+    assert_string_contains(reduced, "\"type\":\"output_text\"", "long completed line retained assistant content");
+    assert_string_contains(reduced, "\"text\":\"abc", "long completed line retained long text");
+
+    free(reduced);
+    free(payload);
+}
+
+static int sse_wrapped_http_adapter(
+    const char *url,
+    const espclaw_auth_profile_t *profile,
+    const char *body,
+    char *response,
+    size_t response_size,
+    void *user_data
+)
+{
+    (void)url;
+    (void)profile;
+    (void)body;
+    (void)user_data;
+
+    snprintf(
+        response,
+        response_size,
+        "event: response.completed\n"
+        "data: {"
+        "\"type\":\"response.completed\","
+        "\"response\":{"
+        "\"id\":\"resp_sse_wrapped\","
+        "\"status\":\"completed\","
+        "\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"ESPCLAW_BENCH_HI\"}]}]"
+        "}"
+        "}\n\n"
+    );
+    return 0;
+}
+
+static int sse_stream_http_adapter(
+    const char *url,
+    const espclaw_auth_profile_t *profile,
+    const char *body,
+    char *response,
+    size_t response_size,
+    void *user_data
+)
+{
+    (void)url;
+    (void)profile;
+    (void)body;
+    (void)user_data;
+
+    snprintf(
+        response,
+        response_size,
+        "event: response.created\n"
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_sse_stream\",\"status\":\"in_progress\"}}\n\n"
+        "event: response.output_text.done\n"
+        "data: {\"type\":\"response.output_text.done\",\"text\":\"ESPCLAW_BENCH_HI\"}\n\n"
+    );
+    return 0;
+}
+
+static int behavior_register_http_adapter(
+    const char *url,
+    const espclaw_auth_profile_t *profile,
+    const char *body,
+    char *response,
+    size_t response_size,
+    void *user_data
+)
+{
+    test_agent_adapter_state_t *state = (test_agent_adapter_state_t *)user_data;
+
+    (void)url;
+    (void)profile;
+
+    if (state != NULL) {
+        state->calls++;
+    }
+
+    assert_string_contains(body, "Tool Inventory Snapshot", "behavior register prompt includes tool inventory snapshot");
+    assert_string_contains(body, "behavior.register", "behavior register prompt includes behavior tool");
+
+    if (state != NULL && state->calls > 1) {
+        assert_string_contains(body, "\"type\":\"function_call_output\"", "behavior register follow-up includes tool output");
+        snprintf(
+            response,
+            response_size,
+            "{"
+            "\"id\":\"resp_behavior_final\","
+            "\"status\":\"completed\","
+            "\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"I installed and saved the autonomous behavior.\"}]}]"
+            "}"
+        );
+        return 0;
+    }
+
+    snprintf(
+        response,
+        response_size,
+        "{"
+        "\"id\":\"resp_behavior_first\","
+        "\"status\":\"completed\","
+        "\"output\":["
+        "{\"type\":\"function_call\",\"call_id\":\"call_behavior\",\"name\":\"behavior.register\",\"arguments\":\"{\\\"behavior_id\\\":\\\"wall_watch\\\",\\\"title\\\":\\\"Wall Watch\\\",\\\"schedule\\\":\\\"event\\\",\\\"trigger\\\":\\\"sensor\\\",\\\"autostart\\\":true,\\\"source\\\":\\\"function on_sensor(payload)\\\\n  return 'watch:' .. payload\\\\nend\\\\nfunction handle(trigger, payload)\\\\n  return on_sensor(payload)\\\\nend\\\\n\\\"}\",\"status\":\"completed\"}"
+        "]"
+        "}"
+    );
+    return 0;
+}
+
+static int camera_capture_http_adapter(
+    const char *url,
+    const espclaw_auth_profile_t *profile,
+    const char *body,
+    char *response,
+    size_t response_size,
+    void *user_data
+)
+{
+    test_agent_adapter_state_t *state = (test_agent_adapter_state_t *)user_data;
+
+    (void)url;
+    (void)profile;
+
+    if (state != NULL) {
+        state->calls++;
+    }
+
+    assert_string_contains(body, "Tool Inventory Snapshot", "camera capture prompt includes tool inventory");
+    assert_string_contains(body, "camera.capture", "camera capture prompt includes camera tool");
+
+    if (state != NULL && state->calls > 1) {
+        assert_string_contains(body, "\"type\":\"function_call_output\"", "camera follow-up includes tool output");
+        assert_string_contains(body, "\"type\":\"input_image\"", "camera follow-up includes input image");
+        assert_string_contains(body, "\"media_type\":\"image/jpeg\"", "camera follow-up uses jpeg media type");
+        snprintf(
+            response,
+            response_size,
+            "{"
+            "\"id\":\"resp_camera_final\","
+            "\"status\":\"completed\","
+            "\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"I inspected the captured camera frame and attached it to this run.\"}]}]"
+            "}"
+        );
+        return 0;
+    }
+
+    snprintf(
+        response,
+        response_size,
+        "{"
+        "\"id\":\"resp_camera_first\","
+        "\"status\":\"completed\","
+        "\"output\":["
+        "{\"type\":\"function_call\",\"call_id\":\"call_camera\",\"name\":\"camera.capture\",\"arguments\":\"{\\\"filename\\\":\\\"vision_test.jpg\\\"}\",\"status\":\"completed\"}"
+        "]"
+        "}"
+    );
+    return 0;
+}
+
 static void test_board_profiles(void)
 {
     espclaw_board_profile_t s3 = espclaw_board_profile_for(ESPCLAW_BOARD_PROFILE_ESP32S3);
     espclaw_board_profile_t cam = espclaw_board_profile_for(ESPCLAW_BOARD_PROFILE_ESP32CAM);
-    espclaw_board_profile_t c3 = espclaw_board_profile_for(ESPCLAW_BOARD_PROFILE_ESP32C3);
 
     assert_true(strcmp(s3.id, "esp32s3") == 0, "esp32s3 profile id");
     assert_true(strcmp(s3.provisioning, "ble") == 0, "esp32s3 uses BLE provisioning");
     assert_true(s3.default_storage_backend == ESPCLAW_STORAGE_BACKEND_SD_CARD, "esp32s3 defaults to sd storage");
     assert_true(s3.cpu_cores == 2, "esp32s3 is dual core");
     assert_true(s3.supports_concurrent_capture, "esp32s3 supports concurrent capture");
+    assert_true(strcmp(s3.runtime_budget.memory_class, "full") == 0, "esp32s3 uses full runtime budget");
     assert_true(strcmp(cam.id, "esp32cam") == 0, "esp32cam profile id");
     assert_true(strcmp(cam.provisioning, "softap") == 0, "esp32cam uses SoftAP provisioning");
     assert_true(cam.default_storage_backend == ESPCLAW_STORAGE_BACKEND_SD_CARD, "esp32cam defaults to sd storage");
     assert_true(!cam.supports_ble_provisioning, "esp32cam does not expose BLE provisioning");
-    assert_true(strcmp(c3.id, "esp32c3") == 0, "esp32c3 profile id");
-    assert_true(strcmp(c3.provisioning, "ble") == 0, "esp32c3 uses BLE provisioning");
-    assert_true(c3.default_storage_backend == ESPCLAW_STORAGE_BACKEND_LITTLEFS, "esp32c3 defaults to littlefs");
-    assert_true(c3.cpu_cores == 1, "esp32c3 is single core");
-    assert_true(!c3.has_camera, "esp32c3 has no camera");
-}
-
-static void test_esp32c3_sdkconfig_defaults_enable_ble(void)
-{
-    char path[512];
-    char defaults[1024];
-
-    snprintf(path, sizeof(path), "%s/firmware/sdkconfig.defaults.esp32c3", ESPCLAW_SOURCE_DIR);
-    read_text_file(path, defaults, sizeof(defaults));
-    assert_string_contains(defaults, "CONFIG_BT_ENABLED=y", "esp32c3 defaults enable bluetooth");
-    assert_string_contains(defaults, "CONFIG_BT_NIMBLE_ENABLED=y", "esp32c3 defaults enable nimble");
+    assert_true(strcmp(cam.runtime_budget.memory_class, "balanced") == 0, "esp32cam uses balanced runtime budget");
 }
 
 static void test_board_descriptor_and_task_policy(void)
 {
     char temp_dir[128];
     char board_json[4096];
-    espclaw_board_profile_t c3 = espclaw_board_profile_for(ESPCLAW_BOARD_PROFILE_ESP32C3);
     espclaw_board_profile_t s3 = espclaw_board_profile_for(ESPCLAW_BOARD_PROFILE_ESP32S3);
+    espclaw_board_profile_t cam = espclaw_board_profile_for(ESPCLAW_BOARD_PROFILE_ESP32CAM);
     const espclaw_board_descriptor_t *current = NULL;
     espclaw_board_i2c_bus_t i2c_bus;
     espclaw_board_uart_t uart;
@@ -238,7 +641,7 @@ static void test_board_descriptor_and_task_policy(void)
             temp_dir,
             "config/board.json",
             "{\n"
-            "  \"variant\": \"seeed_xiao_esp32c3\",\n"
+            "  \"variant\": \"ai_thinker_esp32cam\",\n"
             "  \"pins\": {\"buzzer\": 15},\n"
             "  \"i2c\": {\"default\": {\"port\": 0, \"sda\": 6, \"scl\": 7, \"frequency_hz\": 100000}},\n"
             "  \"uart\": {\"console\": {\"port\": 0, \"tx\": 21, \"rx\": 20, \"baud_rate\": 57600}},\n"
@@ -248,10 +651,10 @@ static void test_board_descriptor_and_task_policy(void)
         "board descriptor override written"
     );
 
-    assert_true(espclaw_board_configure_current(temp_dir, &c3) == 0, "board descriptor configured");
+    assert_true(espclaw_board_configure_current(temp_dir, &cam) == 0, "board descriptor configured");
     current = espclaw_board_current();
     assert_true(current != NULL, "current board descriptor available");
-    assert_true(strcmp(current->variant_id, "seeed_xiao_esp32c3") == 0, "board variant loaded from workspace");
+    assert_true(strcmp(current->variant_id, "ai_thinker_esp32cam") == 0, "board variant loaded from workspace");
     assert_true(strcmp(current->source, "workspace") == 0, "board source indicates workspace");
     assert_true(espclaw_board_resolve_pin_alias("buzzer", &pin) == 0, "buzzer alias resolved");
     assert_true(pin == 15, "board pin override applied");
@@ -262,31 +665,29 @@ static void test_board_descriptor_and_task_policy(void)
     assert_true(espclaw_board_find_adc_channel("battery", &adc) == 0, "board adc channel resolved");
     assert_true(adc.unit == 1 && adc.channel == 3, "board adc override applied");
 
-    espclaw_task_policy_select(&c3);
-    policy = espclaw_task_policy_current();
-    assert_true(policy.cpu_cores == 1, "single-core policy tracks cpu count");
-    assert_true(policy.control_loop_core == -1, "single-core policy leaves control loop unpinned");
-
     espclaw_task_policy_select(&s3);
     policy = espclaw_task_policy_current();
     assert_true(policy.cpu_cores == 2, "dual-core policy tracks cpu count");
     assert_true(policy.telegram_core == 0, "dual-core telegram task pinned to core 0");
     assert_true(policy.control_loop_core == 1, "dual-core control loop pinned to core 1");
+    espclaw_task_policy_select(&cam);
+    policy = espclaw_task_policy_current();
+    assert_true(policy.cpu_cores == 2, "esp32cam policy tracks cpu count");
 
     assert_true(espclaw_render_board_json(current, board_json, sizeof(board_json)) > 0, "board json rendered");
-    assert_string_contains(board_json, "\"variant\":\"seeed_xiao_esp32c3\"", "board json variant rendered");
+    assert_string_contains(board_json, "\"variant\":\"ai_thinker_esp32cam\"", "board json variant rendered");
     assert_string_contains(board_json, "\"control_loop_core\":1", "board json includes task policy");
 
-    assert_true(espclaw_board_preset_count(&c3) >= 2, "c3 preset count available");
-    assert_true(espclaw_board_preset_at(&c3, 1, &preset) == 0, "c3 preset lookup succeeded");
-    assert_true(strcmp(preset.variant_id, "seeed_xiao_esp32c3") == 0, "preset variant matches builtin");
+    assert_true(espclaw_board_preset_count(&cam) >= 1, "esp32cam preset count available");
+    assert_true(espclaw_board_preset_at(&cam, 0, &preset) == 0, "esp32cam preset lookup succeeded");
+    assert_true(strcmp(preset.variant_id, "ai_thinker_esp32cam") == 0, "preset variant matches builtin");
     assert_true(espclaw_board_render_minimal_config_json(&preset, minimal_json, sizeof(minimal_json)) > 0, "minimal board json rendered");
-    assert_string_contains(minimal_json, "\"variant\": \"seeed_xiao_esp32c3\"", "minimal board config variant");
-    assert_true(espclaw_render_board_presets_json(&c3, presets_json, sizeof(presets_json)) > 0, "board presets json rendered");
-    assert_string_contains(presets_json, "\"variant\":\"seeed_xiao_esp32c3\"", "board preset listed");
-    assert_true(espclaw_render_board_config_json(temp_dir, &c3, current, board_config_json, sizeof(board_config_json)) > 0, "board config json rendered");
+    assert_string_contains(minimal_json, "\"variant\": \"ai_thinker_esp32cam\"", "minimal board config variant");
+    assert_true(espclaw_render_board_presets_json(&cam, presets_json, sizeof(presets_json)) > 0, "board presets json rendered");
+    assert_string_contains(presets_json, "\"variant\":\"ai_thinker_esp32cam\"", "board preset listed");
+    assert_true(espclaw_render_board_config_json(temp_dir, &cam, current, board_config_json, sizeof(board_config_json)) > 0, "board config json rendered");
     assert_string_contains(board_config_json, "\"source\":\"workspace\"", "board config source rendered");
-    assert_string_contains(board_config_json, "\\\"variant\\\": \\\"seeed_xiao_esp32c3\\\"", "board config raw json rendered");
+    assert_string_contains(board_config_json, "\\\"variant\\\": \\\"ai_thinker_esp32cam\\\"", "board config raw json rendered");
 }
 
 static void test_workspace_manifest(void)
@@ -319,8 +720,12 @@ static void test_provider_and_channel_registry(void)
 
 static void test_tool_catalog(void)
 {
-    assert_true(espclaw_tool_count() >= 20, "tool catalog size");
+    assert_true(espclaw_tool_count() >= 25, "tool catalog size");
     assert_true(espclaw_find_tool("tool.list") != NULL, "tool list tool exists");
+    assert_true(espclaw_find_tool("hardware.list") != NULL, "hardware list tool exists");
+    assert_true(espclaw_find_tool("behavior.register") != NULL, "behavior register tool exists");
+    assert_true(espclaw_find_tool("task.start") != NULL, "task start tool exists");
+    assert_true(espclaw_find_tool("event.emit") != NULL, "event emit tool exists");
     assert_true(espclaw_tool_requires_confirmation("fs.write"), "fs.write requires confirmation");
     assert_true(!espclaw_tool_requires_confirmation("wifi.scan"), "wifi.scan is read-only");
     assert_true(espclaw_find_tool("camera.capture") != NULL, "camera capture tool exists");
@@ -331,7 +736,7 @@ static void test_default_config_render(void)
     char buffer[4096];
     size_t written;
     espclaw_board_profile_t s3 = espclaw_board_profile_for(ESPCLAW_BOARD_PROFILE_ESP32S3);
-    espclaw_board_profile_t c3 = espclaw_board_profile_for(ESPCLAW_BOARD_PROFILE_ESP32C3);
+    espclaw_board_profile_t cam = espclaw_board_profile_for(ESPCLAW_BOARD_PROFILE_ESP32CAM);
 
     written = espclaw_render_default_config(&s3, buffer, sizeof(buffer));
 
@@ -342,11 +747,11 @@ static void test_default_config_render(void)
     assert_string_contains(buffer, "\"telegram\": {", "telegram section rendered");
     assert_string_contains(buffer, "\"admin_auth_required\": true", "security section rendered");
 
-    written = espclaw_render_default_config(&c3, buffer, sizeof(buffer));
-    assert_true(written > 0, "c3 config render produced data");
-    assert_string_contains(buffer, "\"board_profile\": \"esp32c3\"", "c3 board profile rendered");
-    assert_string_contains(buffer, "\"backend\": \"littlefs\"", "c3 storage backend rendered");
-    assert_string_contains(buffer, "\"enabled\": false", "c3 camera disabled in config");
+    written = espclaw_render_default_config(&cam, buffer, sizeof(buffer));
+    assert_true(written > 0, "esp32cam config render produced data");
+    assert_string_contains(buffer, "\"board_profile\": \"esp32cam\"", "esp32cam board profile rendered");
+    assert_string_contains(buffer, "\"backend\": \"sdcard\"", "esp32cam storage backend rendered");
+    assert_string_contains(buffer, "\"enabled\": true", "esp32cam camera enabled in config");
 }
 
 static void test_storage_backend_description(void)
@@ -358,27 +763,98 @@ static void test_storage_backend_description(void)
 
 static void test_system_monitor_snapshot_and_json(void)
 {
-    espclaw_board_profile_t c3 = espclaw_board_profile_for(ESPCLAW_BOARD_PROFILE_ESP32C3);
+    espclaw_board_profile_t cam = espclaw_board_profile_for(ESPCLAW_BOARD_PROFILE_ESP32CAM);
     espclaw_system_monitor_snapshot_t snapshot;
     char json[1024];
 
-    assert_true(espclaw_system_monitor_init(&c3) == 0, "system monitor init");
+    assert_true(espclaw_system_monitor_init(&cam) == 0, "system monitor init");
     assert_true(
-        espclaw_system_monitor_snapshot(&c3, 1472U * 1024U, 128U * 1024U, &snapshot) == 0,
+        espclaw_system_monitor_snapshot(&cam, 1472U * 1024U, 128U * 1024U, &snapshot) == 0,
         "system monitor snapshot"
     );
     assert_true(snapshot.available, "system monitor available");
-    assert_true(snapshot.cpu_cores == 1U, "system monitor tracks cpu core count");
-    assert_true(!snapshot.dual_core, "c3 monitor reports single core");
+    assert_true(snapshot.cpu_cores == 2U, "system monitor tracks cpu core count");
+    assert_true(snapshot.dual_core, "esp32cam monitor reports dual core");
     assert_true(snapshot.workspace_total_bytes == 1472U * 1024U, "monitor workspace total");
     assert_true(snapshot.workspace_used_bytes == 128U * 1024U, "monitor workspace used");
+    assert_true(strcmp(snapshot.memory_class, "balanced") == 0, "monitor reports memory class");
+    assert_true(snapshot.agent_history_slots == cam.runtime_budget.agent_history_max, "monitor exposes agent history slots");
+    assert_true(snapshot.agent_request_buffer_bytes == cam.runtime_budget.agent_request_buffer_max, "monitor exposes request buffer");
     assert_true(
         espclaw_render_system_monitor_json(&snapshot, json, sizeof(json)) > 0,
         "system monitor json rendered"
     );
-    assert_string_contains(json, "\"cpu_cores\":1", "system monitor json core count");
+    assert_string_contains(json, "\"cpu_cores\":2", "system monitor json core count");
+    assert_string_contains(json, "\"memory_class\":\"balanced\"", "system monitor json memory class");
     assert_string_contains(json, "\"workspace_used_bytes\":131072", "system monitor json workspace used");
-    assert_string_contains(json, "\"cpu_load_percent\":[0]", "system monitor json cpu load");
+    assert_string_contains(json, "\"agent_history_slots\":12", "system monitor json history slots");
+}
+
+static void test_runtime_wifi_boot_deferral_policy(void)
+{
+    espclaw_board_profile_t s3 = espclaw_board_profile_for(ESPCLAW_BOARD_PROFILE_ESP32S3);
+    espclaw_board_profile_t cam = espclaw_board_profile_for(ESPCLAW_BOARD_PROFILE_ESP32CAM);
+
+    assert_true(!espclaw_runtime_should_defer_wifi_boot(&s3, false), "esp32s3 does not defer wifi boot");
+    assert_true(!espclaw_runtime_should_defer_wifi_boot(&cam, true), "esp32cam keeps wifi boot when storage is ready");
+    assert_true(espclaw_runtime_should_defer_wifi_boot(&cam, false), "esp32cam defers wifi boot when storage is unavailable");
+    assert_true(
+        !espclaw_runtime_should_force_softap_only_boot(&s3, false, false),
+        "esp32s3 does not force softap-only boot"
+    );
+    assert_true(
+        !espclaw_runtime_should_force_softap_only_boot(&cam, true, false),
+        "esp32cam does not force softap-only boot when storage is ready"
+    );
+    assert_true(
+        espclaw_runtime_should_force_softap_only_boot(&cam, false, false),
+        "esp32cam forces softap-only boot when storage is unavailable and no Wi-Fi credentials exist"
+    );
+    assert_true(
+        !espclaw_runtime_should_force_softap_only_boot(&cam, false, true),
+        "esp32cam does not force softap-only boot when saved Wi-Fi credentials exist"
+    );
+}
+
+static void test_storage_esp32cam_sdmmc_wiring_policy(void)
+{
+    espclaw_board_profile_t s3 = espclaw_board_profile_for(ESPCLAW_BOARD_PROFILE_ESP32S3);
+    espclaw_board_profile_t cam = espclaw_board_profile_for(ESPCLAW_BOARD_PROFILE_ESP32CAM);
+
+    assert_true(!espclaw_storage_use_esp32cam_sdmmc_wiring(&s3), "esp32s3 does not use esp32cam sdmmc wiring");
+    assert_true(espclaw_storage_use_esp32cam_sdmmc_wiring(&cam), "esp32cam uses explicit slot-1 sdmmc wiring");
+}
+
+static void test_ota_manager_host_state_and_partition_layout(void)
+{
+    char csv_path[512];
+    char csv[1024];
+    char ota_json[512];
+    char message[128];
+    espclaw_ota_snapshot_t snapshot;
+
+    espclaw_ota_manager_init();
+    espclaw_ota_manager_snapshot(&snapshot);
+    assert_true(snapshot.supported, "host ota manager reports support");
+    assert_true(strcmp(snapshot.running_partition_label, "ota_0") == 0, "host ota running partition");
+    assert_true(strcmp(snapshot.target_partition_label, "ota_1") == 0, "host ota target partition");
+
+    assert_true(espclaw_ota_manager_begin(4096, message, sizeof(message)) == ESP_OK, "ota begin succeeds");
+    assert_true(espclaw_ota_manager_write("abcd", 4, message, sizeof(message)) == ESP_OK, "ota write succeeds");
+    assert_true(espclaw_ota_manager_finish(false, message, sizeof(message)) == ESP_OK, "ota finish succeeds");
+
+    espclaw_ota_manager_snapshot(&snapshot);
+    assert_true(snapshot.state.status == ESPCLAW_OTA_STATUS_PENDING_REBOOT, "ota enters pending reboot");
+    assert_true(snapshot.written_bytes == 4, "ota written byte count tracked");
+    assert_true(espclaw_render_ota_status_json(&snapshot, ota_json, sizeof(ota_json)) > 0, "ota status json rendered");
+    assert_string_contains(ota_json, "\"status\":\"pending_reboot\"", "ota status json includes pending reboot");
+    assert_string_contains(ota_json, "\"target_partition\":\"ota_1\"", "ota status json includes target partition");
+
+    snprintf(csv_path, sizeof(csv_path), "%s/firmware/partitions_espclaw.csv", ESPCLAW_SOURCE_DIR);
+    read_text_file(csv_path, csv, sizeof(csv));
+    assert_string_contains(csv, "otadata", "partition table includes otadata");
+    assert_string_contains(csv, "ota_0", "partition table includes ota_0");
+    assert_string_contains(csv, "ota_1", "partition table includes ota_1");
 }
 
 static void test_provisioning_descriptor(void)
@@ -513,6 +989,9 @@ static void test_admin_ui_asset(void)
     assert_string_contains(html, "body: $('app-source').value", "save source posts editor contents");
     assert_string_contains(html, "body: $('app-payload').value", "run app posts payload input");
     assert_string_contains(html, "/api/auth/codex", "auth api wired into ui");
+    assert_string_contains(html, "/api/auth/import-json", "auth json import api wired into ui");
+    assert_string_contains(html, "Choose auth.json", "auth file picker action present");
+    assert_string_contains(html, "Stored in secure device auth storage", "auth persistence note present");
     assert_string_contains(html, "/api/board/presets", "board presets api wired into ui");
     assert_string_contains(html, "/api/board/config", "board config api wired into ui");
     assert_string_contains(html, "/api/network/scan", "network scan api wired into ui");
@@ -522,6 +1001,14 @@ static void test_admin_ui_asset(void)
     assert_string_contains(html, "/api/monitor", "monitor api wired into ui");
     assert_string_contains(html, "/api/tools", "tools api wired into ui");
     assert_string_contains(html, "/api/chat/run", "chat api wired into ui");
+    assert_string_contains(html, "/api/behaviors", "behaviors api wired into ui");
+    assert_string_contains(html, "/api/behaviors/register", "behavior register api wired into ui");
+    assert_string_contains(html, "/api/tasks", "tasks api wired into ui");
+    assert_string_contains(html, "/api/tasks/start", "task start api wired into ui");
+    assert_string_contains(html, "/api/events/emit", "event emit api wired into ui");
+    assert_string_contains(html, "Save Behavior", "behavior action label present");
+    assert_string_contains(html, "Start Task", "task action label present");
+    assert_string_contains(html, "Event-driven", "task schedule selector present");
     assert_string_contains(html, "setScreen('chat');", "chat screen opens by default");
     assert_string_contains(html, "details[data-load-section]", "details-driven lazy loading present");
     assert_true(strstr(html, "Loading board...") == NULL, "old raw loading placeholder removed");
@@ -577,6 +1064,7 @@ static void test_admin_api_json(void)
     char app_detail_json[4096];
     char board_presets_json[1024];
     char board_config_json[2048];
+    char hardware_json[3072];
     char auth_json[1024];
     char transcript_json[2048];
     espclaw_board_profile_t profile = espclaw_board_profile_for(ESPCLAW_BOARD_PROFILE_ESP32S3);
@@ -656,6 +1144,12 @@ static void test_admin_api_json(void)
         "board config json rendered for admin api"
     );
     assert_string_contains(board_config_json, "\"raw_json\":", "board config raw json included");
+    assert_true(
+        espclaw_render_hardware_json(espclaw_board_current(), hardware_json, sizeof(hardware_json)) > 0,
+        "hardware json rendered"
+    );
+    assert_string_contains(hardware_json, "\"capabilities\":[", "hardware capabilities rendered");
+    assert_string_contains(hardware_json, "\"pins\":[", "hardware pins rendered");
 
     espclaw_auth_profile_default(&auth_profile);
     auth_profile.configured = true;
@@ -686,6 +1180,8 @@ static void test_auth_store(void)
     char temp_dir[128];
     char codex_home[256];
     char auth_path[320];
+    char large_token[1801];
+    char large_json[4096];
     espclaw_auth_profile_t profile;
     espclaw_auth_profile_t loaded;
     char message[256];
@@ -702,6 +1198,7 @@ static void test_auth_store(void)
     snprintf(profile.refresh_token, sizeof(profile.refresh_token), "refresh_demo");
     snprintf(profile.account_id, sizeof(profile.account_id), "acc_demo");
     snprintf(profile.source, sizeof(profile.source), "unit_test");
+    profile.expires_at = 21474836480LL;
 
     assert_true(espclaw_auth_profile_is_ready(&profile), "codex auth profile is ready");
     assert_true(espclaw_auth_store_save(&profile) == 0, "auth profile saved");
@@ -711,6 +1208,7 @@ static void test_auth_store(void)
     assert_true(strcmp(loaded.access_token, "token_demo") == 0, "access token loaded");
     assert_true(strcmp(loaded.account_id, "acc_demo") == 0, "account id loaded");
     assert_true(strcmp(loaded.source, "unit_test") == 0, "source loaded");
+    assert_true(loaded.expires_at == 21474836480LL, "64-bit expiry loaded without truncation");
 
     espclaw_auth_profile_default(&profile);
     snprintf(profile.provider_id, sizeof(profile.provider_id), "openai_compat");
@@ -742,6 +1240,82 @@ static void test_auth_store(void)
     assert_true(strcmp(loaded.access_token, "codex_access") == 0, "codex access token imported");
     assert_true(strcmp(loaded.account_id, "acc_codex") == 0, "codex account imported");
     assert_string_contains(message, "imported Codex credentials", "codex import message");
+
+    memset(&loaded, 0, sizeof(loaded));
+    assert_true(
+        espclaw_auth_store_import_json(
+            "{"
+            "\"access_token\":\"imported_access\","
+            "\"refresh_token\":\"imported_refresh\","
+            "\"account_id\":\"acc_imported\""
+            "}",
+            &loaded,
+            message,
+            sizeof(message)
+        ) == 0,
+        "raw auth json imported"
+    );
+    assert_true(strcmp(loaded.provider_id, "openai_codex") == 0, "raw auth import defaults to codex provider");
+    assert_true(strcmp(loaded.model, "gpt-5.3-codex") == 0, "raw auth import keeps codex default model");
+    assert_true(strcmp(loaded.account_id, "acc_imported") == 0, "raw auth import account id");
+    assert_true(strcmp(loaded.source, "imported_json") == 0, "raw auth import source");
+    assert_string_contains(message, "saved them to the device auth store", "raw auth import message");
+
+    memset(&loaded, 0, sizeof(loaded));
+    assert_true(espclaw_auth_store_load(&loaded) == 0, "raw auth import persisted");
+    assert_true(strcmp(loaded.access_token, "imported_access") == 0, "raw auth import persisted token");
+
+    memset(large_token, 'a', sizeof(large_token) - 1);
+    large_token[sizeof(large_token) - 1] = '\0';
+    snprintf(
+        large_json,
+        sizeof(large_json),
+        "{"
+        "\"access_token\":\"%s\","
+        "\"refresh_token\":\"refresh_large\","
+        "\"account_id\":\"acc_large\""
+        "}",
+        large_token
+    );
+    memset(&loaded, 0, sizeof(loaded));
+    assert_true(
+        espclaw_auth_store_import_json(large_json, &loaded, message, sizeof(message)) == 0,
+        "large auth json imported"
+    );
+    assert_true(strcmp(loaded.access_token, large_token) == 0, "large auth import preserves token");
+    assert_true(strcmp(loaded.account_id, "acc_large") == 0, "large auth import preserves account");
+
+    memset(&loaded, 0, sizeof(loaded));
+    assert_true(
+        espclaw_auth_store_import_json(
+            "{"
+            "\"OPENAI_API_KEY\":null,"
+            "\"tokens\":{"
+            "\"id_token\":\"ignored\","
+            "\"access_token\":\"nested_access\","
+            "\"refresh_token\":\"nested_refresh\","
+            "\"account_id\":\"nested_account\""
+            "},"
+            "\"last_refresh\":\"2026-03-13T00:04:16.658878Z\""
+            "}",
+            &loaded,
+            message,
+            sizeof(message)
+        ) == 0,
+        "nested codex auth json imported"
+    );
+    assert_true(strcmp(loaded.provider_id, "openai_codex") == 0, "nested auth import keeps codex provider default");
+    assert_true(strcmp(loaded.model, "gpt-5.3-codex") == 0, "nested auth import keeps codex model default");
+    assert_true(strcmp(loaded.base_url, "https://chatgpt.com/backend-api/codex") == 0, "nested auth import keeps codex base url default");
+    assert_true(strcmp(loaded.access_token, "nested_access") == 0, "nested auth import captures access token");
+    assert_true(strcmp(loaded.refresh_token, "nested_refresh") == 0, "nested auth import captures refresh token");
+    assert_true(strcmp(loaded.account_id, "nested_account") == 0, "nested auth import captures account id");
+
+    assert_true(
+        espclaw_auth_store_import_json("{\"access_token\":\"missing_account\"}", &loaded, message, sizeof(message)) != 0,
+        "invalid codex auth import rejected"
+    );
+    assert_string_contains(message, "missing required fields", "invalid auth import message");
 
     assert_true(espclaw_auth_store_clear() == 0, "auth store cleared");
     assert_true(espclaw_auth_store_clear() == 0, "auth store clear tolerates missing file");
@@ -896,7 +1470,7 @@ static void test_app_runtime_hardware_bindings(void)
 {
     char temp_dir[128];
     char output[256];
-    espclaw_board_profile_t c3 = espclaw_board_profile_for(ESPCLAW_BOARD_PROFILE_ESP32C3);
+    espclaw_board_profile_t cam = espclaw_board_profile_for(ESPCLAW_BOARD_PROFILE_ESP32CAM);
     uint8_t uart_output[64];
     uint8_t i2c_registers[] = {0x12, 0x34};
     espclaw_hw_pwm_state_t pwm_state;
@@ -909,7 +1483,7 @@ static void test_app_runtime_hardware_bindings(void)
             temp_dir,
             "config/board.json",
             "{\n"
-            "  \"variant\": \"seeed_xiao_esp32c3\",\n"
+            "  \"variant\": \"ai_thinker_esp32cam\",\n"
             "  \"pins\": {\"buzzer\": 5, \"servo_main\": 13, \"ppm_out\": 14},\n"
             "  \"i2c\": {\"default\": {\"port\": 0, \"sda\": 21, \"scl\": 22, \"frequency_hz\": 400000}},\n"
             "  \"adc\": {\"battery\": {\"unit\": 1, \"channel\": 3}}\n"
@@ -918,7 +1492,7 @@ static void test_app_runtime_hardware_bindings(void)
         "vehicle app board config written"
     );
     assert_true(
-        espclaw_board_configure_current(temp_dir, &c3) == 0,
+        espclaw_board_configure_current(temp_dir, &cam) == 0,
         "vehicle app board config loaded"
     );
     assert_true(
@@ -926,7 +1500,7 @@ static void test_app_runtime_hardware_bindings(void)
             temp_dir,
             "hardware_app",
             "Hardware App",
-            "gpio.read,gpio.write,pwm.write,adc.read,i2c.read,i2c.write,buzzer.play,uart.read,uart.write",
+            "gpio.read,gpio.write,pwm.write,adc.read,i2c.read,i2c.write,buzzer.play,uart.read,uart.write,task.control",
             "manual"
         ) == 0,
         "hardware app scaffolded"
@@ -948,7 +1522,8 @@ static void test_app_runtime_hardware_bindings(void)
             "  local uart_in = espclaw.uart.read(0, 8)\n"
             "  local uart_written = espclaw.uart.write(0, \"uart:ok\\n\")\n"
             "  local output = espclaw.pid.step(2000, adc, 0, 0, 0.5, 0.1, 0.0, 0.02, 0, 1023)\n"
-            "  return string.format(\"adc=%d temp=%d pin=%d i2c=%d pwm=%d pid=%d uart_in=%s uart_written=%d\", adc, bytes[1] * 256 + bytes[2], pin, #devices, pwm.duty, math.floor(output), uart_in, uart_written)\n"
+            "  local hardware = espclaw.hardware.list()\n"
+            "  return string.format(\"adc=%d temp=%d pin=%d i2c=%d pwm=%d pid=%d uart_in=%s uart_written=%d variant=%s capabilities=%d\", adc, bytes[1] * 256 + bytes[2], pin, #devices, pwm.duty, math.floor(output), uart_in, uart_written, hardware.variant, #hardware.capabilities)\n"
             "end\n"
         ) == 0,
         "hardware app source updated"
@@ -972,6 +1547,7 @@ static void test_app_runtime_hardware_bindings(void)
     assert_string_contains(output, "pid=384", "pid helper returned deterministic output");
     assert_string_contains(output, "uart_in=host:in", "uart input returned to lua");
     assert_string_contains(output, "uart_written=8", "uart write count returned to lua");
+    assert_string_contains(output, "variant=ai_thinker_esp32cam", "hardware list exposed board variant");
     assert_true(espclaw_hw_pwm_state(0, &pwm_state) == 0, "pwm state query succeeded");
     assert_true(pwm_state.configured, "pwm channel configured");
     assert_true(pwm_state.duty == 512, "pwm duty tracked");
@@ -1025,7 +1601,7 @@ static void test_app_runtime_vehicle_bindings(void)
 {
     char temp_dir[128];
     char output[512];
-    espclaw_board_profile_t c3 = espclaw_board_profile_for(ESPCLAW_BOARD_PROFILE_ESP32C3);
+    espclaw_board_profile_t cam = espclaw_board_profile_for(ESPCLAW_BOARD_PROFILE_ESP32CAM);
     uint8_t tmp102_registers[] = {0x19, 0x10};
     uint8_t mpu6050_registers[] = {
         0x10, 0x00,
@@ -1046,7 +1622,7 @@ static void test_app_runtime_vehicle_bindings(void)
             temp_dir,
             "config/board.json",
             "{\n"
-            "  \"variant\": \"seeed_xiao_esp32c3\",\n"
+            "  \"variant\": \"ai_thinker_esp32cam\",\n"
             "  \"pins\": {\"servo_main\": 13, \"ppm_out\": 14},\n"
             "  \"i2c\": {\"default\": {\"port\": 0, \"sda\": 21, \"scl\": 22, \"frequency_hz\": 400000}},\n"
             "  \"adc\": {\"battery\": {\"unit\": 1, \"channel\": 3}}\n"
@@ -1054,7 +1630,7 @@ static void test_app_runtime_vehicle_bindings(void)
         ) == 0,
         "vehicle app board config written"
     );
-    assert_true(espclaw_board_configure_current(temp_dir, &c3) == 0, "vehicle app board configured");
+    assert_true(espclaw_board_configure_current(temp_dir, &cam) == 0, "vehicle app board configured");
     assert_true(
         espclaw_app_scaffold_lua(
             temp_dir,
@@ -1072,7 +1648,7 @@ static void test_app_runtime_vehicle_bindings(void)
             "function handle(trigger, payload)\n"
             "  local board = espclaw.board.describe()\n"
             "  local battery = espclaw.board.adc('battery')\n"
-            "  assert(board.variant == 'seeed_xiao_esp32c3')\n"
+            "  assert(board.variant == 'ai_thinker_esp32cam')\n"
             "  assert(espclaw.i2c.begin_board('default'))\n"
             "  assert(espclaw.imu.mpu6050_begin(0, 0x68))\n"
             "  local sample = espclaw.imu.mpu6050_read(0, 0x68)\n"
@@ -1197,6 +1773,491 @@ static void test_app_vm_and_control_loops(void)
 #endif
 }
 
+static void test_task_runtime(void)
+{
+    char temp_dir[128];
+    char output[256];
+    espclaw_task_status_t tasks[ESPCLAW_TASK_RUNTIME_MAX];
+    size_t count = 0;
+    size_t index = 0;
+    bool found = false;
+
+    make_temp_dir(temp_dir, sizeof(temp_dir));
+    assert_true(
+        espclaw_app_scaffold_lua(temp_dir, "task_app", "Task App", "fs.read", "manual,sensor") == 0,
+        "task app scaffolded"
+    );
+    assert_true(
+        espclaw_app_update_source(
+            temp_dir,
+            "task_app",
+            "counter = counter or 0\n"
+            "event_counter = event_counter or 0\n"
+            "function on_sensor(payload)\n"
+            "  event_counter = event_counter + 1\n"
+            "  return string.format(\"event=%d payload=%s\", event_counter, payload)\n"
+            "end\n"
+            "function handle(trigger, payload)\n"
+            "  counter = counter + 1\n"
+            "  return string.format(\"task=%d payload=%s\", counter, payload)\n"
+            "end\n"
+        ) == 0,
+        "task app source updated"
+    );
+
+#ifdef ESPCLAW_HOST_LUA
+    assert_true(
+        espclaw_task_start("telemetry_task", temp_dir, "task_app", "manual", "ping", 5, 3, output, sizeof(output)) == 0,
+        "task started"
+    );
+    for (index = 0; index < 50; ++index) {
+        espclaw_hw_sleep_ms(5);
+        count = espclaw_task_snapshot_all(tasks, ESPCLAW_TASK_RUNTIME_MAX);
+        found = false;
+        for (size_t task_index = 0; task_index < count; ++task_index) {
+            if (strcmp(tasks[task_index].task_id, "telemetry_task") == 0) {
+                found = tasks[task_index].completed;
+                break;
+            }
+        }
+        if (found) {
+            break;
+        }
+    }
+    assert_true(count > 0, "task snapshot returned data");
+    found = false;
+    for (size_t task_index = 0; task_index < count; ++task_index) {
+        if (strcmp(tasks[task_index].task_id, "telemetry_task") == 0) {
+            assert_true(strcmp(tasks[task_index].schedule, "periodic") == 0, "task schedule tracked");
+            assert_true(tasks[task_index].completed, "task completed");
+            assert_true(tasks[task_index].iterations_completed == 3, "task iteration count tracked");
+            assert_string_contains(tasks[task_index].last_result, "task=3 payload=ping", "task reused persistent lua vm");
+            found = true;
+            break;
+        }
+    }
+    assert_true(found, "telemetry task present in snapshot");
+
+    assert_true(
+        espclaw_task_start("stop_task", temp_dir, "task_app", "manual", "spin", 20, 0, output, sizeof(output)) == 0,
+        "infinite task started"
+    );
+    espclaw_hw_sleep_ms(60);
+    assert_true(espclaw_task_stop("stop_task", output, sizeof(output)) == 0, "task stop requested");
+    for (index = 0; index < 50; ++index) {
+        espclaw_hw_sleep_ms(5);
+        count = espclaw_task_snapshot_all(tasks, ESPCLAW_TASK_RUNTIME_MAX);
+        found = false;
+        for (size_t task_index = 0; task_index < count; ++task_index) {
+            if (strcmp(tasks[task_index].task_id, "stop_task") == 0) {
+                found = tasks[task_index].completed;
+                break;
+            }
+        }
+        if (found) {
+            break;
+        }
+    }
+    found = false;
+    for (size_t task_index = 0; task_index < count; ++task_index) {
+        if (strcmp(tasks[task_index].task_id, "stop_task") == 0) {
+            assert_true(tasks[task_index].stop_requested, "task stop tracked");
+            found = true;
+            break;
+        }
+    }
+    assert_true(found, "stop task present in snapshot");
+
+    assert_true(
+        espclaw_task_start_with_schedule(
+            "sensor_task",
+            temp_dir,
+            "task_app",
+            "event",
+            "sensor",
+            "",
+            0,
+            2,
+            output,
+            sizeof(output)) == 0,
+        "event task started"
+    );
+    assert_true(
+        espclaw_task_emit_event("sensor", "first", output, sizeof(output)) == 0,
+        "first event emitted"
+    );
+    assert_true(
+        espclaw_task_emit_event("sensor", "second", output, sizeof(output)) == 0,
+        "second event emitted"
+    );
+    for (index = 0; index < 50; ++index) {
+        espclaw_hw_sleep_ms(5);
+        count = espclaw_task_snapshot_all(tasks, ESPCLAW_TASK_RUNTIME_MAX);
+        found = false;
+        for (size_t task_index = 0; task_index < count; ++task_index) {
+            if (strcmp(tasks[task_index].task_id, "sensor_task") == 0) {
+                found = tasks[task_index].completed;
+                if (found) {
+                    assert_true(strcmp(tasks[task_index].schedule, "event") == 0, "event task schedule tracked");
+                    assert_true(tasks[task_index].events_received == 2, "event task count tracked");
+                    assert_string_contains(tasks[task_index].last_result, "event=2 payload=second", "event payload delivered");
+                }
+                break;
+            }
+        }
+        if (found) {
+            break;
+        }
+    }
+    assert_true(found, "event task completed");
+    espclaw_task_shutdown_all();
+#else
+    assert_true(true, "task runtime test is host-only");
+#endif
+}
+
+static void test_event_watch_runtime(void)
+{
+    char temp_dir[128];
+    char output[256];
+    char watches_json[2048];
+    espclaw_task_status_t tasks[ESPCLAW_TASK_RUNTIME_MAX];
+    espclaw_board_profile_t cam_profile = espclaw_board_profile_for(ESPCLAW_BOARD_PROFILE_ESP32CAM);
+    size_t count = 0;
+    size_t index;
+    bool found_uart = false;
+    bool found_sensor = false;
+
+    make_temp_dir(temp_dir, sizeof(temp_dir));
+    assert_true(espclaw_workspace_bootstrap(temp_dir) == 0, "workspace bootstrap for event watch runtime");
+    espclaw_hw_sim_reset();
+    espclaw_board_configure_current(temp_dir, &cam_profile);
+    assert_true(espclaw_event_watch_runtime_start() == 0, "event watch runtime started");
+    assert_true(
+        espclaw_app_scaffold_lua(
+            temp_dir,
+            "watch_app",
+            "Watch App",
+            "task.control,uart.read,camera.capture,adc.read",
+            "uart,sensor,manual") == 0,
+        "watch app scaffolded"
+    );
+    assert_true(
+        espclaw_app_update_source(
+            temp_dir,
+            "watch_app",
+            "function on_uart(payload)\n"
+            "  return 'uart:' .. payload\n"
+            "end\n"
+            "function on_sensor(payload)\n"
+            "  return 'sensor:' .. payload\n"
+            "end\n"
+        ) == 0,
+        "watch app source updated"
+    );
+
+#ifdef ESPCLAW_HOST_LUA
+    assert_true(
+        espclaw_task_start_with_schedule(
+            "uart_task",
+            temp_dir,
+            "watch_app",
+            "event",
+            "uart",
+            "",
+            0,
+            1,
+            output,
+            sizeof(output)) == 0,
+        "uart task started"
+    );
+    assert_true(
+        espclaw_task_start_with_schedule(
+            "sensor_task_watch",
+            temp_dir,
+            "watch_app",
+            "event",
+            "sensor",
+            "",
+            0,
+            1,
+            output,
+            sizeof(output)) == 0,
+        "sensor task started"
+    );
+    assert_true(
+        espclaw_event_watch_add_uart("uart_console", "uart", 0, output, sizeof(output)) == 0,
+        "uart watch added"
+    );
+    assert_true(
+        espclaw_event_watch_add_adc_threshold("battery_high", "sensor", 1, 3, 1000, 25, output, sizeof(output)) == 0,
+        "adc watch added"
+    );
+    assert_true(espclaw_event_watch_render_json(watches_json, sizeof(watches_json)) == 0, "watch json rendered");
+    assert_string_contains(watches_json, "\"watch_id\":\"uart_console\"", "uart watch listed");
+    assert_string_contains(watches_json, "\"watch_id\":\"battery_high\"", "adc watch listed");
+
+    espclaw_hw_sim_uart_feed_input(0, (const uint8_t *)"ping\n", 5);
+    espclaw_hw_sim_set_adc_raw(1, 3, 500);
+    espclaw_hw_sleep_ms(75);
+    espclaw_hw_sim_set_adc_raw(1, 3, 1500);
+
+    for (index = 0; index < 80; ++index) {
+        size_t task_index;
+
+        espclaw_hw_sleep_ms(10);
+        count = espclaw_task_snapshot_all(tasks, ESPCLAW_TASK_RUNTIME_MAX);
+        found_uart = false;
+        found_sensor = false;
+        for (task_index = 0; task_index < count; ++task_index) {
+            if (strcmp(tasks[task_index].task_id, "uart_task") == 0 && tasks[task_index].completed) {
+                assert_string_contains(tasks[task_index].last_result, "uart:ping", "uart watch payload delivered");
+                found_uart = true;
+            }
+            if (strcmp(tasks[task_index].task_id, "sensor_task_watch") == 0 && tasks[task_index].completed) {
+                assert_string_contains(tasks[task_index].last_result, "\"state\":\"above\"", "adc threshold payload delivered");
+                found_sensor = true;
+            }
+        }
+        if (found_uart && found_sensor) {
+            break;
+        }
+    }
+
+    assert_true(found_uart, "uart event watch triggered local task");
+    assert_true(found_sensor, "adc event watch triggered local task");
+    assert_true(espclaw_event_watch_remove("uart_console", output, sizeof(output)) == 0, "uart watch removed");
+    assert_true(espclaw_event_watch_remove("battery_high", output, sizeof(output)) == 0, "adc watch removed");
+    espclaw_task_shutdown_all();
+#else
+    assert_true(true, "event watch runtime test is host-only");
+#endif
+}
+
+static void test_behavior_runtime(void)
+{
+    char temp_dir[128];
+    char output[256];
+    char json[2048];
+    espclaw_behavior_spec_t spec;
+    espclaw_behavior_status_t behaviors[ESPCLAW_TASK_RUNTIME_MAX];
+    espclaw_task_status_t tasks[ESPCLAW_TASK_RUNTIME_MAX];
+    size_t count = 0;
+    size_t index = 0;
+    bool found = false;
+
+    make_temp_dir(temp_dir, sizeof(temp_dir));
+    assert_true(espclaw_workspace_bootstrap(temp_dir) == 0, "workspace bootstrapped for behavior runtime");
+    assert_true(
+        espclaw_app_scaffold_lua(temp_dir, "behavior_app", "Behavior App", "task.control", "timer,manual") == 0,
+        "behavior app scaffolded"
+    );
+    assert_true(
+        espclaw_app_update_source(
+            temp_dir,
+            "behavior_app",
+            "counter = counter or 0\n"
+            "function on_timer(payload)\n"
+            "  counter = counter + 1\n"
+            "  return string.format(\"behavior=%d payload=%s\", counter, payload)\n"
+            "end\n"
+            "function handle(trigger, payload)\n"
+            "  return on_timer(payload)\n"
+            "end\n"
+        ) == 0,
+        "behavior app source updated"
+    );
+
+    memset(&spec, 0, sizeof(spec));
+    snprintf(spec.behavior_id, sizeof(spec.behavior_id), "avoidance");
+    snprintf(spec.title, sizeof(spec.title), "Obstacle Avoidance");
+    snprintf(spec.app_id, sizeof(spec.app_id), "behavior_app");
+    snprintf(spec.schedule, sizeof(spec.schedule), "periodic");
+    snprintf(spec.trigger, sizeof(spec.trigger), "timer");
+    snprintf(spec.payload, sizeof(spec.payload), "tick");
+    spec.period_ms = 5;
+    spec.max_iterations = 2;
+    spec.autostart = true;
+
+    assert_true(
+        espclaw_behavior_register(temp_dir, &spec, output, sizeof(output)) == 0,
+        "behavior registered"
+    );
+    assert_true(
+        espclaw_behavior_load(temp_dir, "avoidance", &spec) == 0,
+        "behavior loaded"
+    );
+    assert_true(spec.autostart, "behavior autostart persisted");
+    assert_true(strcmp(spec.app_id, "behavior_app") == 0, "behavior app id persisted");
+
+    assert_true(
+        espclaw_behavior_render_json(temp_dir, json, sizeof(json)) == 0,
+        "behavior json rendered"
+    );
+    assert_string_contains(json, "\"behavior_id\":\"avoidance\"", "behavior json includes id");
+    assert_string_contains(json, "\"autostart\":true", "behavior json includes autostart");
+
+#ifdef ESPCLAW_HOST_LUA
+    assert_true(
+        espclaw_behavior_start_autostart(temp_dir, output, sizeof(output)) == 0,
+        "autostart behaviors started"
+    );
+    for (index = 0; index < 50; ++index) {
+        espclaw_hw_sleep_ms(5);
+        count = espclaw_behavior_snapshot_all(temp_dir, behaviors, ESPCLAW_TASK_RUNTIME_MAX);
+        found = false;
+        for (size_t behavior_index = 0; behavior_index < count; ++behavior_index) {
+            if (strcmp(behaviors[behavior_index].spec.behavior_id, "avoidance") == 0) {
+                found = behaviors[behavior_index].completed;
+                if (found) {
+                    assert_true(behaviors[behavior_index].iterations_completed == 2, "behavior iteration count tracked");
+                    assert_string_contains(behaviors[behavior_index].last_result, "behavior=2 payload=tick", "behavior result tracked");
+                }
+                break;
+            }
+        }
+        if (found) {
+            break;
+        }
+    }
+    assert_true(found, "autostart behavior completed");
+    assert_true(
+        espclaw_behavior_stop("avoidance", output, sizeof(output)) == 0 || strstr(output, "not found") != NULL,
+        "behavior stop path callable"
+    );
+    count = espclaw_task_snapshot_all(tasks, ESPCLAW_TASK_RUNTIME_MAX);
+    assert_true(count > 0, "behavior produced task snapshot");
+    espclaw_task_shutdown_all();
+#else
+    assert_true(true, "behavior runtime test is host-only");
+#endif
+
+    assert_true(
+        espclaw_behavior_remove(temp_dir, "avoidance", output, sizeof(output)) == 0,
+        "behavior removed"
+    );
+    count = espclaw_behavior_snapshot_all(temp_dir, behaviors, ESPCLAW_TASK_RUNTIME_MAX);
+    found = false;
+    for (index = 0; index < count; ++index) {
+        if (strcmp(behaviors[index].spec.behavior_id, "avoidance") == 0) {
+            found = true;
+            break;
+        }
+    }
+    assert_true(!found, "removed behavior absent from snapshot");
+}
+
+static void test_app_runtime_event_handlers(void)
+{
+    char temp_dir[128];
+    char output[256];
+
+    make_temp_dir(temp_dir, sizeof(temp_dir));
+    assert_true(
+        espclaw_app_scaffold_lua(temp_dir, "event_app", "Event App", "task.control", "timer,sensor,manual") == 0,
+        "event app scaffolded"
+    );
+    assert_true(
+        espclaw_app_update_source(
+            temp_dir,
+            "event_app",
+            "function on_timer(payload)\n"
+            "  return 'timer:' .. payload\n"
+            "end\n"
+            "function on_event(trigger, payload)\n"
+            "  return trigger .. ':' .. payload\n"
+            "end\n"
+        ) == 0,
+        "event app source updated"
+    );
+
+#ifdef ESPCLAW_HOST_LUA
+    assert_true(
+        espclaw_app_run(temp_dir, "event_app", "timer", "tick", output, sizeof(output)) == 0,
+        "named timer handler ran"
+    );
+    assert_string_contains(output, "timer:tick", "on_timer handler selected");
+    assert_true(
+        espclaw_app_run(temp_dir, "event_app", "sensor", "near", output, sizeof(output)) == 0,
+        "generic event handler ran"
+    );
+    assert_string_contains(output, "sensor:near", "on_event handler selected");
+#else
+    assert_true(true, "event handler test is host-only");
+#endif
+}
+
+static void test_lua_module_require_paths(void)
+{
+    char temp_dir[128];
+    char path_buffer[256];
+    char output[256];
+    espclaw_app_vm_t *vm = NULL;
+
+    make_temp_dir(temp_dir, sizeof(temp_dir));
+    assert_true(espclaw_workspace_bootstrap(temp_dir) == 0, "workspace bootstrap for lua modules");
+    snprintf(path_buffer, sizeof(path_buffer), "%s/lib", temp_dir);
+    assert_true(mkdir(path_buffer, 0700) == 0, "workspace lib directory created");
+    assert_true(
+        snprintf(path_buffer, sizeof(path_buffer), "%s/lib/sensor_math.lua", temp_dir) < (int)sizeof(path_buffer),
+        "workspace module path fits"
+    );
+    write_text_file(
+        path_buffer,
+        "local M = {}\n"
+        "function M.scale(value)\n"
+        "  return value * 2\n"
+        "end\n"
+        "return M\n"
+    );
+
+    assert_true(
+        espclaw_app_scaffold_lua(temp_dir, "module_app", "Module App", "fs.read", "manual") == 0,
+        "module app scaffolded"
+    );
+    snprintf(path_buffer, sizeof(path_buffer), "%s/apps/module_app/lib", temp_dir);
+    assert_true(mkdir(path_buffer, 0700) == 0, "app lib directory created");
+    assert_true(
+        snprintf(path_buffer, sizeof(path_buffer), "%s/apps/module_app/lib/message_parts.lua", temp_dir) < (int)sizeof(path_buffer),
+        "app module path fits"
+    );
+    write_text_file(
+        path_buffer,
+        "local M = {}\n"
+        "function M.render(label, value)\n"
+        "  return string.format(\"%s=%d\", label, value)\n"
+        "end\n"
+        "return M\n"
+    );
+    assert_true(
+        espclaw_app_update_source(
+            temp_dir,
+            "module_app",
+            "local sensor_math = require('sensor_math')\n"
+            "local message_parts = require('message_parts')\n"
+            "function handle(trigger, payload)\n"
+            "  return message_parts.render(payload, sensor_math.scale(21))\n"
+            "end\n"
+        ) == 0,
+        "module app source updated"
+    );
+
+#ifdef ESPCLAW_HOST_LUA
+    assert_true(
+        espclaw_app_vm_open(temp_dir, "module_app", &vm, output, sizeof(output)) == 0,
+        "module app vm opened"
+    );
+    assert_true(
+        espclaw_app_vm_step(vm, "manual", "scaled", output, sizeof(output)) == 0,
+        "module app vm step succeeded"
+    );
+    assert_string_contains(output, "scaled=42", "module app required workspace and app-local modules");
+    espclaw_app_vm_close(vm);
+#else
+    assert_true(true, "module require test is host-only");
+#endif
+}
+
 static void test_agent_loop(void)
 {
     char temp_dir[128];
@@ -1204,9 +2265,11 @@ static void test_agent_loop(void)
     espclaw_auth_profile_t profile;
     espclaw_agent_run_result_t result;
     test_agent_adapter_state_t adapter_state = {0};
+    espclaw_board_profile_t camera_profile = espclaw_board_profile_for(ESPCLAW_BOARD_PROFILE_ESP32CAM);
 
     make_temp_dir(temp_dir, sizeof(temp_dir));
     assert_true(espclaw_workspace_bootstrap(temp_dir) == 0, "workspace bootstrap for agent loop");
+    espclaw_board_configure_current(temp_dir, &camera_profile);
     assert_true(espclaw_auth_store_init(temp_dir) == 0, "agent loop auth store init");
     assert_true(
         espclaw_app_scaffold_lua(temp_dir, "demo_app", "Demo App", "fs.read", "manual,telegram") == 0,
@@ -1237,6 +2300,32 @@ static void test_agent_loop(void)
     assert_string_contains(transcript, "What apps are installed?", "tool loop stored user message");
     assert_string_contains(transcript, "Requested tools: system.info, app.list", "tool loop stored tool summary");
     assert_string_contains(transcript, "\"role\":\"tool\"", "tool loop stored tool output");
+
+    adapter_state.calls = 0;
+    espclaw_agent_set_http_adapter(sse_wrapped_http_adapter, &adapter_state);
+    memset(&result, 0, sizeof(result));
+    assert_true(
+        espclaw_agent_loop_run(temp_dir, "chat_sse_wrapped", "Say hi.", false, &result) == 0,
+        "sse wrapped loop succeeded"
+    );
+    espclaw_agent_set_http_adapter(NULL, NULL);
+    assert_true(result.ok, "sse wrapped result ok");
+    assert_true(!result.used_tools, "sse wrapped result did not use tools");
+    assert_string_contains(result.response_id, "resp_sse_wrapped", "sse wrapped response id parsed");
+    assert_true(strcmp(result.final_text, "ESPCLAW_BENCH_HI") == 0, "sse wrapped final text parsed");
+
+    adapter_state.calls = 0;
+    espclaw_agent_set_http_adapter(sse_stream_http_adapter, &adapter_state);
+    memset(&result, 0, sizeof(result));
+    assert_true(
+        espclaw_agent_loop_run(temp_dir, "chat_sse_stream", "Say hi from sse stream.", false, &result) == 0,
+        "sse stream fallback loop succeeded"
+    );
+    espclaw_agent_set_http_adapter(NULL, NULL);
+    assert_true(result.ok, "sse stream fallback result ok");
+    assert_true(!result.used_tools, "sse stream fallback result did not use tools");
+    assert_string_contains(result.response_id, "resp_sse_stream", "sse stream fallback response id parsed");
+    assert_true(strcmp(result.final_text, "ESPCLAW_BENCH_HI") == 0, "sse stream fallback final text parsed");
 
     snprintf(profile.base_url, sizeof(profile.base_url), "mock://fs-read");
     assert_true(espclaw_auth_store_save(&profile) == 0, "fs read auth profile saved");
@@ -1288,11 +2377,59 @@ static void test_agent_loop(void)
         "confirmation transcript readable"
     );
     assert_string_contains(transcript, "confirmation_required", "confirmation tool output captured");
+
+    adapter_state.calls = 0;
+    espclaw_agent_set_http_adapter(app_install_http_adapter, &adapter_state);
+    memset(&result, 0, sizeof(result));
+    assert_true(
+        espclaw_agent_loop_run(temp_dir, "chat_install", "Create a sensor agent Lua app and save it.", true, &result) == 0,
+        "app install loop succeeded"
+    );
+    espclaw_agent_set_http_adapter(NULL, NULL);
+    assert_true(result.ok, "app install result ok");
+    assert_true(result.used_tools, "app install used tools");
+    assert_string_contains(result.final_text, "installed the Lua app", "app install assistant reply returned");
+    assert_true(espclaw_app_read_source(temp_dir, "sensor_agent", transcript, sizeof(transcript)) == 0, "installed app source readable");
+    assert_string_contains(transcript, "function on_sensor(payload)", "installed app source persisted");
+
+    adapter_state.calls = 0;
+    espclaw_agent_set_http_adapter(behavior_register_http_adapter, &adapter_state);
+    memset(&result, 0, sizeof(result));
+    assert_true(
+        espclaw_agent_loop_run(temp_dir, "chat_behavior", "Create an autonomous wall watcher behavior that reacts to sensor events.", true, &result) == 0,
+        "behavior register loop succeeded"
+    );
+    espclaw_agent_set_http_adapter(NULL, NULL);
+    assert_true(result.ok, "behavior register result ok");
+    assert_true(result.used_tools, "behavior register used tools");
+    assert_string_contains(result.final_text, "autonomous behavior", "behavior register assistant reply returned");
+    assert_true(
+        espclaw_behavior_render_json(temp_dir, transcript, sizeof(transcript)) == 0,
+        "behavior json readable after model install"
+    );
+    assert_string_contains(transcript, "\"behavior_id\":\"wall_watch\"", "behavior definition persisted");
+    assert_string_contains(transcript, "\"autostart\":true", "behavior autostart persisted");
+
+    adapter_state.calls = 0;
+    espclaw_agent_set_http_adapter(camera_capture_http_adapter, &adapter_state);
+    memset(&result, 0, sizeof(result));
+    assert_true(
+        espclaw_agent_loop_run(temp_dir, "chat_camera", "Capture a camera image and inspect it.", true, &result) == 0,
+        "camera capture loop succeeded"
+    );
+    espclaw_agent_set_http_adapter(NULL, NULL);
+    assert_true(result.ok, "camera capture result ok");
+    assert_true(result.used_tools, "camera capture used tools");
+    assert_string_contains(result.final_text, "captured camera frame", "camera capture assistant reply returned");
+    assert_true(
+        espclaw_session_read_transcript(temp_dir, "chat_camera", transcript, sizeof(transcript)) == 0,
+        "camera transcript readable"
+    );
+    assert_string_contains(transcript, "vision_test.jpg", "camera tool output persisted");
 }
 
 int main(void)
 {
-    test_esp32c3_sdkconfig_defaults_enable_ble();
     test_board_profiles();
     test_board_descriptor_and_task_policy();
     test_workspace_manifest();
@@ -1300,7 +2437,10 @@ int main(void)
     test_tool_catalog();
     test_default_config_render();
     test_storage_backend_description();
+    test_storage_esp32cam_sdmmc_wiring_policy();
+    test_ota_manager_host_state_and_partition_layout();
     test_system_monitor_snapshot_and_json();
+    test_runtime_wifi_boot_deferral_policy();
     test_provisioning_descriptor();
     test_workspace_bootstrap_and_read();
     test_session_store();
@@ -1313,8 +2453,19 @@ int main(void)
     test_telegram_protocol();
     test_app_runtime_manifest_and_scaffold();
     test_app_runtime_hardware_bindings();
+    test_app_runtime_event_handlers();
     test_app_runtime_vehicle_bindings();
     test_app_vm_and_control_loops();
+    test_task_runtime();
+    test_event_watch_runtime();
+    test_behavior_runtime();
+    test_lua_module_require_paths();
+    test_transport_error_formatting();
+    test_sse_completed_extraction_in_place();
+    test_http_chunked_body_extraction();
+    test_incremental_sse_stream_reduction();
+    test_incremental_sse_stream_fallback_text();
+    test_incremental_sse_stream_handles_long_completed_line();
     test_agent_loop();
 
     printf("espclaw core tests passed\n");

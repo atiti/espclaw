@@ -25,7 +25,7 @@ cleanup() {
 
 trap cleanup EXIT
 
-"$SIM_BIN" --workspace "$WORKSPACE" --port "$PORT" --profile esp32c3 >"$SIM_LOG" 2>&1 &
+"$SIM_BIN" --workspace "$WORKSPACE" --port "$PORT" --profile esp32cam >"$SIM_LOG" 2>&1 &
 SIM_PID="$!"
 
 for _ in {1..50}; do
@@ -37,53 +37,51 @@ done
 
 STATUS_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/status")"
 [[ "$STATUS_JSON" == *"telegram"* ]]
-[[ "$STATUS_JSON" == *'"board_profile":"esp32c3"'* ]]
-[[ "$STATUS_JSON" == *'"storage_backend":"littlefs"'* ]]
+[[ "$STATUS_JSON" == *'"board_profile":"esp32cam"'* ]]
+[[ "$STATUS_JSON" == *'"storage_backend":"sdcard"'* ]]
 
 BOARD_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/board")"
 [[ "$BOARD_JSON" == *'"configured":true'* ]]
-[[ "$BOARD_JSON" == *'"variant":"generic_esp32c3"'* ]]
-[[ "$BOARD_JSON" == *'"cpu_cores":1'* ]]
+[[ "$BOARD_JSON" == *'"variant":"ai_thinker_esp32cam"'* ]]
+[[ "$BOARD_JSON" == *'"cpu_cores":2'* ]]
 
 BOARD_PRESETS_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/board/presets")"
-[[ "$BOARD_PRESETS_JSON" == *'"variant":"generic_esp32c3"'* ]]
-[[ "$BOARD_PRESETS_JSON" == *'"variant":"seeed_xiao_esp32c3"'* ]]
+[[ "$BOARD_PRESETS_JSON" == *'"variant":"ai_thinker_esp32cam"'* ]]
 
 BOARD_CONFIG_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/board/config")"
 [[ "$BOARD_CONFIG_JSON" == *'"source":"workspace"'* ]]
 [[ "$BOARD_CONFIG_JSON" == *'"raw_json":"{'* ]]
 [[ "$BOARD_CONFIG_JSON" == *'auto'* ]]
 
-APPLY_BOARD_JSON="$(curl -sf -X POST "http://127.0.0.1:$PORT/api/board/apply?variant_id=seeed_xiao_esp32c3")"
-[[ "$APPLY_BOARD_JSON" == *'"variant":"seeed_xiao_esp32c3"'* ]]
+APPLY_BOARD_JSON="$(curl -sf -X POST "http://127.0.0.1:$PORT/api/board/apply?variant_id=ai_thinker_esp32cam")"
+[[ "$APPLY_BOARD_JSON" == *'"variant":"ai_thinker_esp32cam"'* ]]
 [[ "$APPLY_BOARD_JSON" == *'"source":"workspace"'* ]]
 
 BOARD_CONFIG_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/board/config")"
-[[ "$BOARD_CONFIG_JSON" == *'seeed_xiao_esp32c3'* ]]
+[[ "$BOARD_CONFIG_JSON" == *'ai_thinker_esp32cam'* ]]
 
 SAVE_BOARD_JSON="$(curl -sf -X PUT "http://127.0.0.1:$PORT/api/board/config" \
   -H 'Content-Type: application/json' \
-  --data '{\n  "variant": "seeed_xiao_esp32c3",\n  "pins": {"buzzer": 9}\n}')"
+  --data '{\n  "variant": "ai_thinker_esp32cam",\n  "pins": {"buzzer": 9}\n}')"
 [[ "$SAVE_BOARD_JSON" == *'"source":"workspace"'* ]]
 
 BOARD_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/board")"
-[[ "$BOARD_JSON" == *'"variant":"seeed_xiao_esp32c3"'* ]]
+[[ "$BOARD_JSON" == *'"variant":"ai_thinker_esp32cam"'* ]]
 [[ "$BOARD_JSON" == *'"name":"buzzer","pin":9'* ]]
 
 NETWORK_STATUS_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/network/status")"
 [[ "$NETWORK_STATUS_JSON" == *'"wifi_ready":false'* ]]
 [[ "$NETWORK_STATUS_JSON" == *'"provisioning_active":true'* ]]
-[[ "$NETWORK_STATUS_JSON" == *'"provisioning_transport":"ble"'* ]]
+[[ "$NETWORK_STATUS_JSON" == *'"provisioning_transport":"softap"'* ]]
 [[ "$NETWORK_STATUS_JSON" == *'"onboarding_ssid":"ESPClaw-Sim"'* ]]
-[[ "$NETWORK_STATUS_JSON" == *'"admin_url":""'* ]]
+[[ "$NETWORK_STATUS_JSON" == *'"admin_url":"http://192.168.4.1/"'* ]]
 
 NETWORK_PROVISIONING_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/network/provisioning")"
 [[ "$NETWORK_PROVISIONING_JSON" == *'"active":true'* ]]
-[[ "$NETWORK_PROVISIONING_JSON" == *'"transport":"ble"'* ]]
+[[ "$NETWORK_PROVISIONING_JSON" == *'"transport":"softap"'* ]]
 [[ "$NETWORK_PROVISIONING_JSON" == *'"service_name":"ESPClaw-Sim"'* ]]
-[[ "$NETWORK_PROVISIONING_JSON" == *'"pop":"espclaw-pass"'* ]]
-[[ "$NETWORK_PROVISIONING_JSON" == *'"transport":"ble"'* ]]
-[[ "$NETWORK_PROVISIONING_JSON" == *'esp-jumpstart/qrcode.html?data='* ]]
+[[ "$NETWORK_PROVISIONING_JSON" == *'"pop":""'* ]]
+[[ "$NETWORK_PROVISIONING_JSON" == *'"admin_url":"http://192.168.4.1/"'* ]]
 
 NETWORK_SCAN_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/network/scan")"
 [[ "$NETWORK_SCAN_JSON" == *'"ssid":"ESPClawLab"'* ]]
@@ -103,12 +101,17 @@ WORKSPACE_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/workspace/files")"
 
 MONITOR_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/monitor")"
 [[ "$MONITOR_JSON" == *'"available":true'* ]]
-[[ "$MONITOR_JSON" == *'"cpu_cores":1'* ]]
-[[ "$MONITOR_JSON" == *'"dual_core":false'* ]]
+[[ "$MONITOR_JSON" == *'"cpu_cores":2'* ]]
+[[ "$MONITOR_JSON" == *'"dual_core":true'* ]]
 [[ "$MONITOR_JSON" == *'"workspace_total_bytes":'* ]]
 
 TOOLS_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/tools")"
 [[ "$TOOLS_JSON" == *'"name":"tool.list"'* ]]
+[[ "$TOOLS_JSON" == *'"name":"behavior.register"'* ]]
+
+HARDWARE_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/hardware")"
+[[ "$HARDWARE_JSON" == *'"configured":true'* ]]
+[[ "$HARDWARE_JSON" == *'"capabilities":['* ]]
 
 AUTH_JSON="$(curl -sf -X PUT "http://127.0.0.1:$PORT/api/auth/codex" \
   -H 'Content-Type: application/json' \
@@ -119,6 +122,17 @@ AUTH_JSON="$(curl -sf -X PUT "http://127.0.0.1:$PORT/api/auth/codex" \
 AUTH_STATUS_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/auth/status")"
 [[ "$AUTH_STATUS_JSON" == *'"configured":true'* ]]
 [[ "$AUTH_STATUS_JSON" == *'"account_id":"acc_sim"'* ]]
+
+AUTH_IMPORT_JSON="$(curl -sf -X POST "http://127.0.0.1:$PORT/api/auth/import-json" \
+  -H 'Content-Type: application/json' \
+  --data '{"provider_id":"openai_codex","model":"gpt-5.3-codex","base_url":"mock://tool-loop","access_token":"imported_token","refresh_token":"imported_refresh","account_id":"acc_uploaded"}')"
+[[ "$AUTH_IMPORT_JSON" == *'"configured":true'* ]]
+[[ "$AUTH_IMPORT_JSON" == *'"account_id":"acc_uploaded"'* ]]
+
+AUTH_STATUS_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/auth/status")"
+[[ "$AUTH_STATUS_JSON" == *'"configured":true'* ]]
+[[ "$AUTH_STATUS_JSON" == *'"source":"imported_json"'* ]]
+[[ "$AUTH_STATUS_JSON" == *'"account_id":"acc_uploaded"'* ]]
 
 STATUS_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/status")"
 [[ "$STATUS_JSON" == *'"provider":"openai_codex"'* ]]
@@ -183,6 +197,67 @@ for _ in {1..60}; do
 done
 [[ "$LOOPS_JSON" == *'"loop_id":"stop_loop"'* ]]
 [[ "$LOOPS_JSON" == *'"stop_requested":true'* ]]
+
+TASK_START_JSON="$(curl -sf -X POST "http://127.0.0.1:$PORT/api/tasks/start?task_id=telemetry_task&app_id=loop_app&trigger=manual&period_ms=10&iterations=2" --data 'pulse')"
+[[ "$TASK_START_JSON" == *'"task_id":"telemetry_task"'* ]]
+
+TASKS_JSON=""
+for _ in {1..60}; do
+  TASKS_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/tasks")"
+  if [[ "$TASKS_JSON" == *'"task_id":"telemetry_task"'* && "$TASKS_JSON" == *'"completed":true'* ]]; then
+    break
+  fi
+  sleep 0.05
+done
+[[ "$TASKS_JSON" == *'"task_id":"telemetry_task"'* ]]
+[[ "$TASKS_JSON" == *'"schedule":"periodic"'* ]]
+[[ "$TASKS_JSON" == *'"iterations_completed":2'* ]]
+
+BEHAVIOR_REGISTER_JSON="$(curl -sf -X POST "http://127.0.0.1:$PORT/api/behaviors/register?behavior_id=avoidance&app_id=loop_app&schedule=periodic&trigger=manual&period_ms=10&iterations=2&autostart=1" --data 'avoid')"
+[[ "$BEHAVIOR_REGISTER_JSON" == *'"behavior_id":"avoidance"'* ]]
+[[ "$BEHAVIOR_REGISTER_JSON" == *'"autostart":true'* ]]
+
+BEHAVIORS_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/behaviors")"
+[[ "$BEHAVIORS_JSON" == *'"behavior_id":"avoidance"'* ]]
+[[ "$BEHAVIORS_JSON" == *'"app_id":"loop_app"'* ]]
+
+BEHAVIOR_START_JSON="$(curl -sf -X POST "http://127.0.0.1:$PORT/api/behaviors/start?behavior_id=avoidance")"
+[[ "$BEHAVIOR_START_JSON" == *'"behavior_id":"avoidance"'* ]]
+
+for _ in {1..60}; do
+  BEHAVIORS_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/behaviors")"
+  if [[ "$BEHAVIORS_JSON" == *'"behavior_id":"avoidance"'* && "$BEHAVIORS_JSON" == *'"completed":true'* ]]; then
+    break
+  fi
+  sleep 0.05
+done
+[[ "$BEHAVIORS_JSON" == *'"behavior_id":"avoidance"'* ]]
+[[ "$BEHAVIORS_JSON" == *'"iterations_completed":2'* ]]
+
+BEHAVIOR_REMOVE_JSON="$(curl -sf -X DELETE "http://127.0.0.1:$PORT/api/behaviors?behavior_id=avoidance")"
+[[ "$BEHAVIOR_REMOVE_JSON" != *'"behavior_id":"avoidance"'* ]]
+
+EVENT_TASK_JSON="$(curl -sf -X POST "http://127.0.0.1:$PORT/api/tasks/start?task_id=sensor_task&app_id=loop_app&schedule=event&trigger=manual&iterations=2")"
+[[ "$EVENT_TASK_JSON" == *'"task_id":"sensor_task"'* ]]
+
+curl -sf -X POST "http://127.0.0.1:$PORT/api/events/emit?name=manual" --data 'near' >/tmp/espclaw-sim-event-1.json
+curl -sf -X POST "http://127.0.0.1:$PORT/api/events/emit?name=manual" --data 'far' >/tmp/espclaw-sim-event-2.json
+
+for _ in {1..60}; do
+  TASKS_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/tasks")"
+  if [[ "$TASKS_JSON" == *'"task_id":"sensor_task"'* && "$TASKS_JSON" == *'"completed":true'* ]]; then
+    break
+  fi
+  sleep 0.05
+done
+[[ "$TASKS_JSON" == *'"task_id":"sensor_task"'* ]]
+[[ "$TASKS_JSON" == *'"schedule":"event"'* ]]
+[[ "$TASKS_JSON" == *'"events_received":2'* ]]
+
+curl -sf -X POST "http://127.0.0.1:$PORT/api/tasks/start?task_id=stop_task&app_id=loop_app&trigger=manual&period_ms=20&iterations=0" --data 'spin' >/tmp/espclaw-sim-task-start.json
+sleep 0.1
+TASK_STOP_JSON="$(curl -sf -X POST "http://127.0.0.1:$PORT/api/tasks/stop?task_id=stop_task")"
+[[ "$TASK_STOP_JSON" == *'"ok":true'* ]]
 
 APPS_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/apps")"
 [[ "$APPS_JSON" == *'"id":"loop_app"'* ]]

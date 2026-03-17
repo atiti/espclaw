@@ -8,10 +8,16 @@
 
 #define ESPCLAW_AGENT_SESSION_ID_MAX 63
 #define ESPCLAW_AGENT_RESPONSE_ID_MAX 95
-#define ESPCLAW_AGENT_TEXT_MAX 8191
 #define ESPCLAW_AGENT_TOOL_CALL_MAX 8
 #define ESPCLAW_AGENT_TOOL_NAME_MAX 63
+
+#ifdef ESP_PLATFORM
+#define ESPCLAW_AGENT_TEXT_MAX 8191
 #define ESPCLAW_AGENT_TOOL_ARGS_MAX 1023
+#else
+#define ESPCLAW_AGENT_TEXT_MAX 8191
+#define ESPCLAW_AGENT_TOOL_ARGS_MAX 1023
+#endif
 
 typedef struct {
     char call_id[ESPCLAW_AGENT_RESPONSE_ID_MAX + 1];
@@ -46,5 +52,34 @@ int espclaw_agent_loop_run(
 );
 
 void espclaw_agent_set_http_adapter(espclaw_agent_http_adapter_t adapter, void *user_data);
+
+int espclaw_agent_format_transport_error(
+    int transport_err,
+    int tls_code,
+    int tls_flags,
+    char *buffer,
+    size_t buffer_size
+);
+
+int espclaw_agent_extract_sse_completed_response_json(
+    const char *payload,
+    char *buffer,
+    size_t buffer_size
+);
+
+int espclaw_agent_extract_http_body_in_place(
+    char *buffer,
+    size_t *buffer_len,
+    char *error_text,
+    size_t error_text_size
+);
+
+int espclaw_agent_reduce_sse_stream_to_response_json(
+    const char *payload,
+    char *buffer,
+    size_t buffer_size,
+    char *error_text,
+    size_t error_text_size
+);
 
 #endif

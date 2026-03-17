@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #define ESPCLAW_AUTH_PROVIDER_ID_MAX 31
 #define ESPCLAW_AUTH_MODEL_MAX 95
@@ -20,7 +21,7 @@ typedef struct {
     char refresh_token[ESPCLAW_AUTH_TOKEN_MAX + 1];
     char account_id[ESPCLAW_AUTH_ACCOUNT_ID_MAX + 1];
     char source[ESPCLAW_AUTH_SOURCE_MAX + 1];
-    long expires_at;
+    int64_t expires_at;
 } espclaw_auth_profile_t;
 
 void espclaw_auth_profile_default(espclaw_auth_profile_t *profile);
@@ -30,6 +31,12 @@ int espclaw_auth_store_init(const char *workspace_root);
 int espclaw_auth_store_load(espclaw_auth_profile_t *profile);
 int espclaw_auth_store_save(const espclaw_auth_profile_t *profile);
 int espclaw_auth_store_clear(void);
+int espclaw_auth_store_import_json(
+    const char *json,
+    espclaw_auth_profile_t *profile,
+    char *message,
+    size_t message_size
+);
 int espclaw_auth_store_import_codex_cli(
     const char *codex_home,
     espclaw_auth_profile_t *profile,

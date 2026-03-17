@@ -27,7 +27,8 @@ The current profiles are:
 
 - `esp32s3`: primary feature profile
 - `esp32cam`: constrained compatibility profile
-- `esp32c3`: flash-backed no-SD profile
+
+Each board profile now also carries a runtime memory budget. That keeps the agent loop honest across the supported PSRAM-capable boards: `esp32s3` runs in a `full` class while `esp32cam` uses a more conservative `balanced` budget.
 
 ### Board Descriptors
 
@@ -55,12 +56,11 @@ The workspace store defines the file layout and the bootstrap contents for the c
 
 Session transcripts, media captures, and non-secret config also live under the workspace root.
 
-The workspace module now includes filesystem bootstrap logic so firmware can create the expected structure on SD or LittleFS without re-implementing path handling in the HTTP or agent layers.
+The workspace module now includes filesystem bootstrap logic so firmware can create the expected structure on SD without re-implementing path handling in the HTTP or agent layers.
 
 The current storage backends are:
 
 - `sdcard`, which mounts under `/sdcard/workspace`
-- `littlefs`, which mounts directly at `/workspace`
 
 ### Providers
 
@@ -96,7 +96,7 @@ Tools are described with a safety level so the agent loop can enforce confirmati
 
 ### OTA
 
-OTA state is modeled separately from the transport. This allows the firmware to reuse the same state machine whether updates are loaded from a local upload or a remote manifest later.
+OTA state is modeled separately from the transport. The current firmware transport is direct local HTTP upload into the inactive OTA slot, while the state machine stays reusable for future manifest-driven update flows.
 
 ### Admin UI
 

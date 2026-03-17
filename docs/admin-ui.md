@@ -31,6 +31,8 @@ Current routes:
 Current UI behavior:
 
 - `Send To Model` runs the iterative tool-using loop for the current session.
+- local admin chat runs with mutation-enabled tools, so the model can install Lua apps, start tasks, and emit events from the browser.
+- local admin chat can now also register and start persisted autonomous behaviors from the same tool loop.
 - `Refresh` reloads the stored transcript.
 - the transcript is rendered as user / assistant / tool bubbles rather than raw JSONL.
 
@@ -89,9 +91,25 @@ Allows:
 - selecting the active model backend
 - editing model, base URL, and account id
 - saving or clearing tokens
+- importing a pasted or uploaded `auth.json` payload directly from the browser
 - importing Codex CLI credentials in simulator mode
 
-Token textareas are tucked behind a `Token fields` details panel so they do not dominate the normal setup view.
+Token textareas and raw auth import are tucked behind an `Advanced token fields and raw import` details panel so they do not dominate the normal setup view.
+
+Current routes:
+
+- `GET /api/auth/status`
+- `PUT /api/auth/codex`
+- `DELETE /api/auth/codex`
+- `POST /api/auth/import-json`
+- `POST /api/auth/import-codex-cli`
+
+Current UI behavior:
+
+- the default setup path is provider/model/account metadata plus a one-click auth import
+- `Choose auth.json` lets the user load a local Codex/OpenClaw-style auth file into the browser and import it without copying individual fields
+- `Import Pasted JSON` accepts the same payload pasted into the textarea
+- credentials are stored in secure device auth storage and persist across normal reflashes unless NVS is erased
 
 ### Device
 
@@ -101,12 +119,14 @@ Allows:
 - applying a built-in preset into `/workspace/config/board.json`
 - editing the raw board descriptor JSON for custom carrier boards
 - seeing the resolved board descriptor and current task-placement policy
+- inspecting the live hardware capability map exposed to Lua and to the model tool loop
 - checking workspace bootstrap state
 - checking flash, RAM, CPU, and workspace usage through the system monitor
 
 Current routes:
 
 - `GET /api/board`
+- `GET /api/hardware`
 - `GET /api/board/presets`
 - `GET /api/board/config`
 - `PUT /api/board/config`
@@ -144,6 +164,9 @@ Allows:
 - checking flash capacity and current firmware image size
 - checking workspace capacity and usage
 - checking RAM total/free/minimum-free/largest-block values
+- seeing the active board memory class (`full` or `balanced`)
+- seeing the current agent-loop budget for request/response buffers, instructions, tool-result slots, and history depth
+- comparing the estimated agent working set with the recommended free-heap watermark for the active board profile
 
 Current route:
 
@@ -183,27 +206,42 @@ Current UI behavior:
 - `Run App` posts the payload textarea to the runtime and shows the returned result JSON.
 - `Delete App` removes the app bundle from the workspace and clears the editor state.
 
-### Control Loops
+### Behaviors And Tasks
 
 Allows:
 
-- starting a persistent scheduled Lua loop by loop id, app id, trigger, payload, and period
-- stopping a running loop without rebooting the device
-- inspecting loop completion state, iteration counts, and the last app result
+- saving a persisted behavior definition that survives reboot
+- marking a behavior `autostart` so it comes back after boot without calling the model
+- starting or stopping a saved behavior without re-entering its config
+- starting a persistent Lua task by task id, app id, schedule, trigger, payload, and period
+- stopping a running task without rebooting the device
+- emitting named events into event-driven tasks
+- inspecting task completion state, event counts, iteration counts, and the last app result
 
-This is the current path for keeping a Lua VM warm for control-oriented apps such as self-balancing robots, rovers, and actuator test rigs.
+This is the current path for keeping a Lua VM warm for control-oriented or reactive apps such as self-balancing robots, rovers, UART bridges, and sensor watchers.
 
 Current routes:
 
-- `GET /api/loops`
-- `POST /api/loops/start?loop_id=<id>&app_id=<id>&trigger=<name>&period_ms=<n>&iterations=<n>`
-- `POST /api/loops/stop?loop_id=<id>`
+- `GET /api/behaviors`
+- `POST /api/behaviors/register?behavior_id=<id>&app_id=<id>&schedule=<periodic|event>&trigger=<name>&period_ms=<n>&iterations=<n>&autostart=<0|1>`
+- `POST /api/behaviors/start?behavior_id=<id>`
+- `POST /api/behaviors/stop?behavior_id=<id>`
+- `DELETE /api/behaviors?behavior_id=<id>`
+- `GET /api/tasks`
+- `POST /api/tasks/start?task_id=<id>&app_id=<id>&schedule=<periodic|event>&trigger=<name>&period_ms=<n>&iterations=<n>`
+- `POST /api/tasks/stop?task_id=<id>`
+- `POST /api/events/emit?name=<event>`
 
 Current UI behavior:
 
-- `Start Loop` launches a persistent Lua VM and begins calling `handle(trigger, payload)` on the requested schedule.
-- `Stop Loop` sets `stop_requested` and lets the worker exit cleanly after the current iteration.
-- `Refresh Loops` reloads the current loop inventory and status JSON.
+- `Save Behavior` persists an autonomous runtime definition to the workspace.
+- `Autostart on boot` marks the behavior for automatic start after the device mounts storage and runs boot apps.
+- `Start` and `Stop` act on the saved behavior definition instead of forcing the user to restate the whole task config.
+- the behavior list shows whether the saved behavior is idle, running, or completed.
+- `Start Task` launches a persistent Lua VM on either a periodic or event-driven schedule.
+- `Emit` sends a named payload to event-driven tasks without restarting them.
+- `Stop` sets `stop_requested` and lets the worker exit cleanly.
+- `Refresh` reloads both the persisted behavior list and the live task inventory.
 
 ### Logs And Diagnostics
 
@@ -215,6 +253,19 @@ Shows:
 - memory budget hints based on the active board profile
 
 ### OTA
+
+The `Firmware OTA` card now performs a real firmware upload on device builds.
+
+Flow:
+
+1. Open the `Device` section.
+2. Check the current OTA status.
+3. Choose the built `espclaw_firmware.bin`.
+4. Click `Upload and Reboot`.
+
+The device writes the image to the inactive OTA slot, marks it as the next boot target, and schedules a reboot.
+
+Existing boards still require one serial migration flash before this works, because the new OTA-capable partition table must be installed once.
 
 Allows:
 

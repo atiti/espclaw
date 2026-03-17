@@ -8,3 +8,5 @@ firmware/sdkconfig.old
 firmware/managed_components/
 .DS_Store
 .espclaw-sim-workspace/
+__pycache__/
+*.pyc

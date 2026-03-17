@@ -2,6 +2,7 @@
 #define ESPCLAW_STORAGE_H
 
 #include <stddef.h>
+#include <stdbool.h>
 
 #include "espclaw/board_profile.h"
 
@@ -13,6 +14,7 @@ typedef struct {
 } espclaw_storage_mount_t;
 
 const char *espclaw_storage_describe_workspace_root(const char *workspace_root);
+bool espclaw_storage_use_esp32cam_sdmmc_wiring(const espclaw_board_profile_t *profile);
 
 #ifdef ESP_PLATFORM
 #include "esp_err.h"

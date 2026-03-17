@@ -2,6 +2,7 @@
 #include "espclaw/admin_server.h"
 #include "espclaw/admin_ui.h"
 #include "espclaw/config_render.h"
+#include "espclaw/ota_manager.h"
 #include "espclaw/ota_state.h"
 #include "espclaw/runtime.h"
 #include "espclaw/storage.h"
@@ -13,20 +14,18 @@ static char s_status_buffer[512];
 
 void app_main(void)
 {
-    espclaw_ota_state_t ota_state = espclaw_ota_state_init();
     espclaw_runtime_status_t runtime_status;
+    espclaw_ota_snapshot_t ota_snapshot;
+    char ota_message[128];
     espclaw_board_profile_id_t profile_id =
-#if defined(CONFIG_IDF_TARGET_ESP32C3) && CONFIG_IDF_TARGET_ESP32C3
-        ESPCLAW_BOARD_PROFILE_ESP32C3;
-#elif CONFIG_ESPCLAW_BOARD_PROFILE_ESP32CAM
+#if CONFIG_ESPCLAW_BOARD_PROFILE_ESP32CAM
         ESPCLAW_BOARD_PROFILE_ESP32CAM;
-#elif CONFIG_ESPCLAW_BOARD_PROFILE_ESP32C3
-        ESPCLAW_BOARD_PROFILE_ESP32C3;
 #elif defined(CONFIG_IDF_TARGET_ESP32S3) && CONFIG_IDF_TARGET_ESP32S3
         ESPCLAW_BOARD_PROFILE_ESP32S3;
 #else
         ESPCLAW_BOARD_PROFILE_ESP32S3;
 #endif
+    espclaw_ota_manager_init();
     if (espclaw_runtime_start(profile_id, &runtime_status) != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start runtime");
         return;
@@ -34,6 +33,12 @@ void app_main(void)
     if (espclaw_admin_server_start() != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start admin server");
     }
+    if (espclaw_ota_manager_confirm_running(ota_message, sizeof(ota_message)) == ESP_OK) {
+        ESP_LOGI(TAG, "%s", ota_message);
+    } else {
+        ESP_LOGW(TAG, "%s", ota_message);
+    }
+    espclaw_ota_manager_snapshot(&ota_snapshot);
 
     size_t written = espclaw_render_default_config(
         &runtime_status.profile,
@@ -46,7 +51,7 @@ void app_main(void)
         "openai_compat",
         "telegram",
         runtime_status.storage_ready,
-        &ota_state,
+        &ota_snapshot.state,
         s_status_buffer,
         sizeof(s_status_buffer)
     );

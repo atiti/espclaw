@@ -7,6 +7,7 @@
 #include "espclaw/auth_store.h"
 #include "espclaw/board_config.h"
 #include "espclaw/board_profile.h"
+#include "espclaw/ota_manager.h"
 #include "espclaw/ota_state.h"
 #include "espclaw/system_monitor.h"
 
@@ -35,6 +36,11 @@ size_t espclaw_render_tools_json(
     char *buffer,
     size_t buffer_size
 );
+size_t espclaw_render_behaviors_json(
+    const char *workspace_root,
+    char *buffer,
+    size_t buffer_size
+);
 size_t espclaw_render_app_detail_json(
     const char *workspace_root,
     const char *app_id,
@@ -47,6 +53,11 @@ size_t espclaw_render_auth_profile_json(
     size_t buffer_size
 );
 size_t espclaw_render_board_json(
+    const espclaw_board_descriptor_t *board,
+    char *buffer,
+    size_t buffer_size
+);
+size_t espclaw_render_hardware_json(
     const espclaw_board_descriptor_t *board,
     char *buffer,
     size_t buffer_size
@@ -71,6 +82,11 @@ size_t espclaw_render_session_transcript_json(
 );
 size_t espclaw_render_system_monitor_json(
     const espclaw_system_monitor_snapshot_t *snapshot,
+    char *buffer,
+    size_t buffer_size
+);
+size_t espclaw_render_ota_status_json(
+    const espclaw_ota_snapshot_t *snapshot,
     char *buffer,
     size_t buffer_size
 );

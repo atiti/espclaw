@@ -2,12 +2,15 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <sys/time.h>
+#include <time.h>
 
 #include "esp_event.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_netif.h"
+#include "esp_netif_sntp.h"
 #include "esp_wifi.h"
 #include "esp_wifi_default.h"
 #include "freertos/FreeRTOS.h"
@@ -28,7 +31,9 @@
 #include "espclaw/admin_ops.h"
 #include "espclaw/app_runtime.h"
 #include "espclaw/auth_store.h"
+#include "espclaw/behavior_runtime.h"
 #include "espclaw/board_config.h"
+#include "espclaw/event_watch.h"
 #include "espclaw/board_profile.h"
 #include "espclaw/session_store.h"
 #include "espclaw/storage.h"
@@ -70,6 +75,62 @@ static long s_telegram_offset;
 static bool s_softap_onboarding_active;
 static bool s_ble_provisioning_active;
 static bool s_sta_connect_enabled;
+static bool s_time_sync_started;
+static bool s_time_sync_completed;
+static esp_sntp_config_t s_sntp_config;
+
+bool espclaw_runtime_should_defer_wifi_boot(const espclaw_board_profile_t *profile, bool storage_ready)
+{
+    if (profile == NULL) {
+        return false;
+    }
+
+    /* ESP32-CAM boards often brown out when failed SD bootstrap is followed
+     * immediately by STA Wi-Fi start and full RF calibration. */
+    return profile->profile_id == ESPCLAW_BOARD_PROFILE_ESP32CAM && !storage_ready;
+}
+
+bool espclaw_runtime_should_force_softap_only_boot(
+    const espclaw_board_profile_t *profile,
+    bool storage_ready,
+    bool has_saved_wifi_credentials
+)
+{
+    return espclaw_runtime_should_defer_wifi_boot(profile, storage_ready) && !has_saved_wifi_credentials;
+}
+
+static bool system_time_sane(void)
+{
+    time_t now = 0;
+
+    time(&now);
+    return now >= 1704067200; /* 2024-01-01 UTC */
+}
+
+static void maybe_start_time_sync(void)
+{
+    const esp_sntp_config_t default_config = ESP_NETIF_SNTP_DEFAULT_CONFIG("time.google.com");
+
+    if (s_time_sync_started) {
+        return;
+    }
+    if (!s_runtime_status.wifi_ready) {
+        ESP_LOGW(TAG, "Deferring SNTP start until Wi-Fi is ready");
+        return;
+    }
+
+    s_time_sync_completed = false;
+    s_sntp_config = default_config;
+    /* Keep the config in static storage and rely on sync_wait() instead of an
+     * async callback so time-sync startup stays predictable on constrained boards. */
+    s_sntp_config.sync_cb = NULL;
+    if (esp_netif_sntp_init(&s_sntp_config) != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to start SNTP time sync");
+        return;
+    }
+    s_time_sync_started = true;
+    ESP_LOGI(TAG, "Starting SNTP time sync");
+}
 
 static esp_err_t build_runtime_provisioning_descriptor(espclaw_provisioning_descriptor_t *descriptor)
 {
@@ -125,6 +186,17 @@ static void refresh_wifi_ssid(void)
     }
 
     snprintf(s_runtime_status.wifi_ssid, sizeof(s_runtime_status.wifi_ssid), "%s", (const char *)wifi_cfg.sta.ssid);
+}
+
+static bool has_saved_sta_credentials(void)
+{
+    wifi_config_t wifi_cfg = {0};
+
+    if (esp_wifi_get_config(WIFI_IF_STA, &wifi_cfg) != ESP_OK) {
+        return false;
+    }
+
+    return wifi_cfg.sta.ssid[0] != '\0';
 }
 
 static void provisioning_event_cb(void *user_data, wifi_prov_cb_event_t event, void *event_data)
@@ -262,14 +334,16 @@ static esp_err_t init_wifi_stack(void)
     return ESP_OK;
 }
 
-static esp_err_t start_softap_onboarding(void)
+static esp_err_t start_softap_onboarding(bool force_ap_only)
 {
     wifi_config_t sta_cfg = {0};
     wifi_config_t ap_cfg = {0};
     uint8_t mac[6] = {0};
     char service_name[32];
 
-    if (esp_wifi_get_config(WIFI_IF_STA, &sta_cfg) == ESP_OK && sta_cfg.sta.ssid[0] != '\0') {
+    if (!force_ap_only &&
+        esp_wifi_get_config(WIFI_IF_STA, &sta_cfg) == ESP_OK &&
+        sta_cfg.sta.ssid[0] != '\0') {
         ESP_LOGI(TAG, "Wi-Fi already configured, starting station mode");
         s_sta_connect_enabled = true;
         ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
@@ -295,10 +369,10 @@ static esp_err_t start_softap_onboarding(void)
     s_runtime_status.provisioning_active = true;
     snprintf(s_runtime_status.onboarding_ssid, sizeof(s_runtime_status.onboarding_ssid), "%s", service_name);
 
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
+    ESP_ERROR_CHECK(esp_wifi_set_mode(force_ap_only ? WIFI_MODE_AP : WIFI_MODE_APSTA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_cfg));
     ESP_ERROR_CHECK(esp_wifi_start());
-    ESP_LOGI(TAG, "Starting onboarding SoftAP %s", service_name);
+    ESP_LOGI(TAG, "Starting onboarding SoftAP %s%s", service_name, force_ap_only ? " (AP-only safe-start)" : "");
     ESP_LOGI(TAG, "Admin UI available at http://192.168.4.1/");
     return ESP_OK;
 }
@@ -321,7 +395,7 @@ static esp_err_t start_wifi_provisioning(const espclaw_board_profile_t *profile)
             ESP_LOGW(TAG, "BLE provisioning requested by board profile but BT is disabled in sdkconfig, using ESPClaw SoftAP onboarding");
             s_runtime_status.profile.provisioning = "softap";
         }
-        return start_softap_onboarding();
+        return start_softap_onboarding(false);
     }
     config.app_event_handler.event_cb = provisioning_event_cb;
     config.app_event_handler.user_data = NULL;
@@ -826,14 +900,22 @@ static esp_err_t maybe_start_telegram(void)
 
 esp_err_t espclaw_runtime_start(espclaw_board_profile_id_t profile_id, espclaw_runtime_status_t *status)
 {
+    bool saved_wifi_credentials = false;
+
     memset(&s_runtime_status, 0, sizeof(s_runtime_status));
     s_softap_onboarding_active = false;
     s_ble_provisioning_active = false;
     s_sta_connect_enabled = false;
+    s_time_sync_started = false;
+    s_time_sync_completed = false;
+    memset(&s_sntp_config, 0, sizeof(s_sntp_config));
     s_runtime_status.profile = espclaw_board_profile_for(profile_id);
     espclaw_task_policy_select(&s_runtime_status.profile);
     espclaw_board_configure_current(NULL, &s_runtime_status.profile);
     if (espclaw_system_monitor_init(&s_runtime_status.profile) != 0) {
+        return ESP_FAIL;
+    }
+    if (espclaw_event_watch_runtime_start() != 0) {
         return ESP_FAIL;
     }
 
@@ -846,11 +928,13 @@ esp_err_t espclaw_runtime_start(espclaw_board_profile_id_t profile_id, espclaw_r
 
     ESP_ERROR_CHECK(init_nvs_flash_store());
     ESP_ERROR_CHECK(init_wifi_stack());
+    saved_wifi_credentials = has_saved_sta_credentials();
 
     if (mount_workspace_storage(&s_runtime_status.profile) != ESP_OK) {
         ESP_LOGW(TAG, "Continuing without workspace storage");
     } else {
         char boot_log[512];
+        char behavior_log[512];
 
         espclaw_board_configure_current(s_runtime_status.workspace_root, &s_runtime_status.profile);
         espclaw_auth_store_init(s_runtime_status.workspace_root);
@@ -858,10 +942,40 @@ esp_err_t espclaw_runtime_start(espclaw_board_profile_id_t profile_id, espclaw_r
             boot_log[0] != '\0') {
             ESP_LOGI(TAG, "Boot apps: %s", boot_log);
         }
+        if (espclaw_behavior_start_autostart(s_runtime_status.workspace_root, behavior_log, sizeof(behavior_log)) == 0 &&
+            behavior_log[0] != '\0') {
+            ESP_LOGI(TAG, "Autostart behaviors: %s", behavior_log);
+        }
     }
 
-    ESP_ERROR_CHECK(start_wifi_provisioning(&s_runtime_status.profile));
-    ESP_ERROR_CHECK(maybe_start_telegram());
+    if (espclaw_runtime_should_defer_wifi_boot(&s_runtime_status.profile, s_runtime_status.storage_ready)) {
+        s_runtime_status.wifi_boot_deferred = true;
+        if (saved_wifi_credentials) {
+            ESP_LOGW(
+                TAG,
+                "ESP32-CAM safe-start active: workspace storage is unavailable, but saved Wi-Fi credentials exist. Preferring station boot over AP-only onboarding."
+            );
+            if (start_softap_onboarding(false) != ESP_OK) {
+                ESP_LOGW(TAG, "Failed to start station boot with saved Wi-Fi credentials during safe-start");
+            } else {
+                ESP_ERROR_CHECK(maybe_start_telegram());
+            }
+        } else if (espclaw_runtime_should_force_softap_only_boot(
+                       &s_runtime_status.profile,
+                       s_runtime_status.storage_ready,
+                       saved_wifi_credentials)) {
+            ESP_LOGW(
+                TAG,
+                "ESP32-CAM safe-start active: workspace storage is unavailable, deferring Wi-Fi boot. Check SD card media/wiring and board power, then reboot."
+            );
+            if (start_softap_onboarding(true) != ESP_OK) {
+                ESP_LOGW(TAG, "Failed to start AP-only onboarding during safe-start");
+            }
+        }
+    } else {
+        ESP_ERROR_CHECK(start_wifi_provisioning(&s_runtime_status.profile));
+        ESP_ERROR_CHECK(maybe_start_telegram());
+    }
 
     if (status != NULL) {
         *status = s_runtime_status;
@@ -872,6 +986,29 @@ esp_err_t espclaw_runtime_start(espclaw_board_profile_id_t profile_id, espclaw_r
 const espclaw_runtime_status_t *espclaw_runtime_status(void)
 {
     return &s_runtime_status;
+}
+
+bool espclaw_runtime_time_is_sane(void)
+{
+    return system_time_sane();
+}
+
+bool espclaw_runtime_wait_for_time_sync(uint32_t timeout_ms)
+{
+    if (system_time_sane() && s_time_sync_completed) {
+        return true;
+    }
+    if (!s_time_sync_started) {
+        maybe_start_time_sync();
+    }
+    if (!s_time_sync_started) {
+        return false;
+    }
+    if (esp_netif_sntp_sync_wait(pdMS_TO_TICKS(timeout_ms)) != ESP_OK) {
+        return system_time_sane() && s_time_sync_completed;
+    }
+    s_time_sync_completed = system_time_sane();
+    return system_time_sane();
 }
 
 esp_err_t espclaw_runtime_get_provisioning_descriptor(espclaw_provisioning_descriptor_t *descriptor)

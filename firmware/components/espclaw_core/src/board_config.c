@@ -30,29 +30,6 @@ static const espclaw_board_pin_alias_t AI_THINKER_ESP32CAM_PINS[] = {
     {"flash_led", 4},
 };
 
-static const espclaw_board_pin_alias_t SEEED_XIAO_ESP32C3_PINS[] = {
-    {"power_ctl", 2},
-    {"battery_adc_pin", 3},
-    {"imu_int", 4},
-    {"buzzer", 5},
-    {"i2c_sda", 6},
-    {"i2c_scl", 7},
-    {"uart_tx", 21},
-    {"uart_rx", 20},
-};
-
-static const espclaw_board_i2c_bus_t SEEED_XIAO_ESP32C3_I2C[] = {
-    {"default", 0, 6, 7, 400000},
-};
-
-static const espclaw_board_uart_t SEEED_XIAO_ESP32C3_UARTS[] = {
-    {"console", 0, 21, 20, 115200},
-};
-
-static const espclaw_board_adc_channel_t SEEED_XIAO_ESP32C3_ADC[] = {
-    {"battery", 1, 3},
-};
-
 static const espclaw_builtin_board_t BUILTIN_BOARDS[] = {
     {
         .variant_id = "generic_esp32s3",
@@ -79,32 +56,6 @@ static const espclaw_builtin_board_t BUILTIN_BOARDS[] = {
         .uart_count = 0,
         .adc_channels = NULL,
         .adc_count = 0,
-    },
-    {
-        .variant_id = "generic_esp32c3",
-        .display_name = "Generic ESP32-C3 Board",
-        .profile_id = ESPCLAW_BOARD_PROFILE_ESP32C3,
-        .pins = NULL,
-        .pin_count = 0,
-        .i2c_buses = NULL,
-        .i2c_bus_count = 0,
-        .uarts = NULL,
-        .uart_count = 0,
-        .adc_channels = NULL,
-        .adc_count = 0,
-    },
-    {
-        .variant_id = "seeed_xiao_esp32c3",
-        .display_name = "Seeed XIAO ESP32-C3",
-        .profile_id = ESPCLAW_BOARD_PROFILE_ESP32C3,
-        .pins = SEEED_XIAO_ESP32C3_PINS,
-        .pin_count = sizeof(SEEED_XIAO_ESP32C3_PINS) / sizeof(SEEED_XIAO_ESP32C3_PINS[0]),
-        .i2c_buses = SEEED_XIAO_ESP32C3_I2C,
-        .i2c_bus_count = sizeof(SEEED_XIAO_ESP32C3_I2C) / sizeof(SEEED_XIAO_ESP32C3_I2C[0]),
-        .uarts = SEEED_XIAO_ESP32C3_UARTS,
-        .uart_count = sizeof(SEEED_XIAO_ESP32C3_UARTS) / sizeof(SEEED_XIAO_ESP32C3_UARTS[0]),
-        .adc_channels = SEEED_XIAO_ESP32C3_ADC,
-        .adc_count = sizeof(SEEED_XIAO_ESP32C3_ADC) / sizeof(SEEED_XIAO_ESP32C3_ADC[0]),
     },
 };
 
@@ -150,8 +101,6 @@ static const espclaw_builtin_board_t *builtin_board_for_profile(espclaw_board_pr
     switch (profile_id) {
     case ESPCLAW_BOARD_PROFILE_ESP32CAM:
         return builtin_board_for_variant("ai_thinker_esp32cam");
-    case ESPCLAW_BOARD_PROFILE_ESP32C3:
-        return builtin_board_for_variant("generic_esp32c3");
     case ESPCLAW_BOARD_PROFILE_ESP32S3:
     default:
         return builtin_board_for_variant("generic_esp32s3");
