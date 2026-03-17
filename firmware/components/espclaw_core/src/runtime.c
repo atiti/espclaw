@@ -698,6 +698,16 @@ void espclaw_runtime_reboot(void)
     esp_restart();
 }
 
+static void uart_console_write_raw(const char *text)
+{
+    size_t written = 0;
+
+    if (text == NULL || text[0] == '\0') {
+        return;
+    }
+    espclaw_hw_uart_write(0, (const uint8_t *)text, strlen(text), &written);
+}
+
 static void uart_console_write_text(const char *text)
 {
     size_t written = 0;
@@ -762,12 +772,12 @@ static void uart_console_task(void *arg)
 
                 if (c == '\r' || c == '\n') {
                     if (line_length == 0) {
-                        uart_console_prompt();
                         continue;
                     }
                     line[line_length] = '\0';
                     trim_trailing_whitespace(line);
                     if (line[0] != '\0') {
+                        uart_console_write_raw("\r\n");
                         memset(result, 0, sizeof(*result));
                         if (espclaw_console_run(
                                 s_runtime_status.storage_ready ? s_runtime_status.workspace_root : NULL,
@@ -1144,6 +1154,8 @@ static esp_err_t maybe_start_uart_console(void)
 {
     int core = espclaw_task_policy_core_for(ESPCLAW_TASK_KIND_CONSOLE);
 
+    esp_log_level_set("wifi", ESP_LOG_WARN);
+    esp_log_level_set("esp_netif_handlers", ESP_LOG_WARN);
     if (xTaskCreatePinnedToCore(
             uart_console_task,
             "espclaw_uart",

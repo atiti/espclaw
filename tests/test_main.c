@@ -510,6 +510,68 @@ static int app_install_wrong_tool_retry_http_adapter(
     return 0;
 }
 
+static int web_search_fetch_retry_http_adapter(
+    const char *url,
+    const espclaw_auth_profile_t *profile,
+    const char *body,
+    char *response,
+    size_t response_size,
+    void *user_data
+)
+{
+    test_agent_adapter_state_t *state = (test_agent_adapter_state_t *)user_data;
+
+    (void)url;
+    (void)profile;
+
+    if (state != NULL) {
+        state->calls++;
+    }
+
+    if (state != NULL && state->calls == 1) {
+        snprintf(
+            response,
+            response_size,
+            "{"
+            "\"id\":\"resp_web_first\","
+            "\"status\":\"completed\","
+            "\"output\":["
+            "{\"type\":\"function_call\",\"call_id\":\"call_web_search\",\"name\":\"web.search\",\"arguments\":\"{\\\"query\\\":\\\"ms5611 datasheet\\\"}\",\"status\":\"completed\"}"
+            "]"
+            "}"
+        );
+        return 0;
+    }
+
+    if (state != NULL && state->calls == 2) {
+        assert_string_contains(body, "explicitly requires both web.search and web.fetch", "web retry injects correction");
+        snprintf(
+            response,
+            response_size,
+            "{"
+            "\"id\":\"resp_web_second\","
+            "\"status\":\"completed\","
+            "\"output\":["
+            "{\"type\":\"function_call\",\"call_id\":\"call_web_fetch\",\"name\":\"web.fetch\",\"arguments\":\"{\\\"url\\\":\\\"https://example.com/doc.pdf\\\"}\",\"status\":\"completed\"}"
+            "]"
+            "}"
+        );
+        return 0;
+    }
+
+    assert_string_contains(body, "\"type\":\"function_call_output\"", "web retry final follow-up includes tool output");
+    snprintf(
+        response,
+        response_size,
+        "{"
+        "\"id\":\"resp_web_final\","
+        "\"status\":\"completed\","
+        "\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Used both web.search and web.fetch successfully.\"}]}]"
+        "}"
+    );
+    return 0;
+}
+
 static void test_transport_error_formatting(void)
 {
     char message[256];
@@ -3363,6 +3425,27 @@ static void test_agent_loop(void)
     );
     assert_string_contains(transcript, "detour-ok", "retry-after-detour app source persisted");
 
+    espclaw_web_set_http_adapter(web_tool_http_adapter, NULL);
+    adapter_state.calls = 0;
+    espclaw_agent_set_http_adapter(web_search_fetch_retry_http_adapter, &adapter_state);
+    memset(&result, 0, sizeof(result));
+    assert_true(
+        espclaw_agent_loop_run(
+            temp_dir,
+            "chat_web_retry",
+            "Use web search and fetch to inspect the ms5611 datasheet, then summarize it.",
+            true,
+            true,
+            &result) == 0,
+        "web search/fetch retry loop succeeded"
+    );
+    espclaw_agent_set_http_adapter(NULL, NULL);
+    espclaw_web_set_http_adapter(NULL, NULL);
+    assert_true(result.ok, "web search/fetch retry result ok");
+    assert_true(result.used_tools, "web search/fetch retry used tools");
+    assert_string_contains(result.final_text, "Used both web.search and web.fetch successfully.", "web retry final text returned");
+    assert_true(adapter_state.calls == 3, "web retry adapter saw corrective third turn");
+
     adapter_state.calls = 0;
     espclaw_agent_set_http_adapter(behavior_register_http_adapter, &adapter_state);
     memset(&result, 0, sizeof(result));
@@ -3415,6 +3498,13 @@ static void test_agent_loop(void)
     );
     assert_string_contains(transcript, "Requested tools: tool.list", "empty completion stored tool summary");
     assert_string_contains(transcript, "\"role\":\"assistant\",\"content\":\"\"", "empty completion stored blank assistant message");
+
+    {
+        espclaw_esp32cam_sd_attempt_t attempt = {0};
+
+        assert_true(espclaw_storage_get_esp32cam_attempt(0, &attempt), "esp32cam first sd attempt available");
+        assert_true(strcmp(attempt.label, "sdspi") == 0, "esp32cam prefers sdspi first");
+    }
 }
 
 static void test_console_chat_and_web_tools(void)
@@ -3512,6 +3602,15 @@ static void test_console_chat_and_web_tools(void)
     assert_string_contains(transcript, "esp_http_client_fetch_headers(client)", "web tools fetches headers before reads");
     assert_string_contains(transcript, "esp_http_client_close(client)", "web tools closes explicit http session");
     assert_string_contains(transcript, "config.crt_bundle_attach = esp_crt_bundle_attach", "web tools attaches cert bundle");
+
+    read_text_file(
+        ESPCLAW_SOURCE_DIR "/firmware/components/espclaw_core/src/runtime.c",
+        transcript,
+        sizeof(transcript)
+    );
+    assert_string_contains(transcript, "esp_log_level_set(\"wifi\", ESP_LOG_WARN)", "uart console suppresses noisy wifi info logs");
+    assert_string_contains(transcript, "esp_log_level_set(\"esp_netif_handlers\", ESP_LOG_WARN)", "uart console suppresses noisy netif info logs");
+    assert_string_contains(transcript, "uart_console_write_raw(\"\\r\\n\")", "uart console emits newline before running commands");
 
     memset(&result, 0, sizeof(result));
     assert_true(

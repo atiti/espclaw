@@ -173,4 +173,7 @@
 - fix(agent): accumulate streamed `response.output_text.delta` segments on embedded Codex runs so long plain-text replies still synthesize correctly when `response.completed` lacks inline output text
 - fix(console): normalize UART console output to CRLF so `screen` and ESP-IDF logger output render consistently on serial terminals
 - fix(agent): remove the small per-segment output-text parser cap so a single large `output_text` block no longer truncates mid-reply on UART chat
+- fix(console): isolate UART prompt rendering from background logs and redraw the prompt after asynchronous ESP-IDF log output
+- fix(agent): require a corrective retry when a request explicitly requires both web.search and web.fetch but one tool is skipped
+- fix(storage): prefer the proven ESP32-CAM SDSPI workspace mount path before retrying the noisy sdmmc-1bit fallback
 - fix(web): use explicit esp_http_client open/read flow for embedded web.search and web.fetch, with cert bundle attachment and live response status checks

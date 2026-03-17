@@ -39,19 +39,6 @@ bool espclaw_storage_get_esp32cam_attempt(size_t index, espclaw_esp32cam_sd_atte
     switch (index) {
     case 0:
         *attempt = (espclaw_esp32cam_sd_attempt_t){
-            .label = "sdmmc-1bit",
-            .mode = ESPCLAW_ESP32CAM_SD_MODE_SDMMC,
-            .width = 1U,
-            .clk_gpio = 14,
-            .cmd_mosi_gpio = 15,
-            .d0_miso_gpio = 2,
-            .d1_gpio = -1,
-            .d2_gpio = -1,
-            .d3_cs_gpio = -1,
-        };
-        return true;
-    case 1:
-        *attempt = (espclaw_esp32cam_sd_attempt_t){
             .label = "sdspi",
             .mode = ESPCLAW_ESP32CAM_SD_MODE_SDSPI,
             .width = 1U,
@@ -61,6 +48,19 @@ bool espclaw_storage_get_esp32cam_attempt(size_t index, espclaw_esp32cam_sd_atte
             .d1_gpio = -1,
             .d2_gpio = -1,
             .d3_cs_gpio = 13,
+        };
+        return true;
+    case 1:
+        *attempt = (espclaw_esp32cam_sd_attempt_t){
+            .label = "sdmmc-1bit",
+            .mode = ESPCLAW_ESP32CAM_SD_MODE_SDMMC,
+            .width = 1U,
+            .clk_gpio = 14,
+            .cmd_mosi_gpio = 15,
+            .d0_miso_gpio = 2,
+            .d1_gpio = -1,
+            .d2_gpio = -1,
+            .d3_cs_gpio = -1,
         };
         return true;
     default:

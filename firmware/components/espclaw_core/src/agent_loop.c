@@ -954,6 +954,24 @@ static bool user_message_requests_app_install(const char *user_message)
            contains_case_insensitive_text(user_message, "update");
 }
 
+static bool user_message_requests_web_search_and_fetch(const char *user_message)
+{
+    bool wants_search;
+    bool wants_fetch;
+
+    if (user_message == NULL || user_message[0] == '\0') {
+        return false;
+    }
+
+    wants_search = contains_case_insensitive_text(user_message, "web.search") ||
+                   contains_case_insensitive_text(user_message, "web search") ||
+                   contains_case_insensitive_text(user_message, "search");
+    wants_fetch = contains_case_insensitive_text(user_message, "web.fetch") ||
+                  contains_case_insensitive_text(user_message, "web fetch") ||
+                  contains_case_insensitive_text(user_message, "fetch");
+    return wants_search && wants_fetch;
+}
+
 static void history_append_message(
     espclaw_history_message_t *history,
     size_t max_messages,
@@ -1016,6 +1034,61 @@ static int build_app_install_retry_request_body(
     status = build_initial_request_body(profile, instructions, history, history_count, buffer, buffer_size);
     free(history);
     return status;
+}
+
+static int build_web_search_fetch_retry_request_body(
+    const espclaw_auth_profile_t *profile,
+    const char *workspace_root,
+    const char *session_id,
+    const char *instructions,
+    const char *assistant_reply,
+    bool need_search,
+    bool need_fetch,
+    char *buffer,
+    size_t buffer_size,
+    size_t history_max
+)
+{
+    char retry_user_message[320];
+    espclaw_history_message_t *history = NULL;
+    size_t history_count = 0;
+    int status;
+
+    if (profile == NULL || instructions == NULL || buffer == NULL || buffer_size == 0 || history_max == 0) {
+        return -1;
+    }
+
+    snprintf(
+        retry_user_message,
+        sizeof(retry_user_message),
+        "This request explicitly requires both web.search and web.fetch. You have not yet successfully called%s%s%s in this run. Call the missing tool%s now, then answer concisely using the tool output%s.",
+        need_search ? " web.search" : "",
+        need_search && need_fetch ? " and" : "",
+        need_fetch ? " web.fetch" : "",
+        (need_search && need_fetch) ? "s" : "",
+        (need_search && need_fetch) ? "s" : ""
+    );
+
+    history = (espclaw_history_message_t *)agent_calloc(history_max, sizeof(*history));
+    if (history == NULL) {
+        return -1;
+    }
+
+    if (workspace_root != NULL && workspace_root[0] != '\0') {
+        load_history(workspace_root, session_id, history, history_max, &history_count);
+    }
+    if (assistant_reply != NULL && assistant_reply[0] != '\0') {
+        history_append_message(history, history_max, &history_count, "assistant", assistant_reply);
+    }
+    history_append_message(history, history_max, &history_count, "user", retry_user_message);
+    status = build_initial_request_body(profile, instructions, history, history_count, buffer, buffer_size);
+    free(history);
+    return status;
+}
+
+static bool tool_result_reports_success(const char *tool_result)
+{
+    return tool_result != NULL && strstr(tool_result, "\"ok\":true") != NULL;
 }
 
 static int load_system_prompt(
@@ -5508,6 +5581,10 @@ int espclaw_agent_loop_run(
     bool enforce_app_install = user_message_requests_app_install(user_message);
     bool saw_app_install_tool = false;
     unsigned int app_install_retry_count = 0;
+    bool enforce_web_search_fetch = user_message_requests_web_search_and_fetch(user_message);
+    bool saw_web_search_success = false;
+    bool saw_web_fetch_success = false;
+    unsigned int web_search_fetch_retry_count = 0;
 
     if (session_id == NULL || user_message == NULL || result == NULL) {
         return -1;
@@ -5710,6 +5787,42 @@ int espclaw_agent_loop_run(
         result->iterations = iteration;
 
         if (!has_tools) {
+            if (enforce_web_search_fetch &&
+                (!saw_web_search_success || !saw_web_fetch_success) &&
+                web_search_fetch_retry_count == 0) {
+                request_body = (char *)agent_calloc(1, runtime_budget.agent_request_buffer_max);
+                if (request_body == NULL) {
+                    free(instructions);
+                    free(codex_items_json);
+                    free(history);
+                    free(response_body);
+                    free_embedded_auth_profile(profile);
+                    copy_text(result->final_text, sizeof(result->final_text), "Out of memory retrying required web tool request.");
+                    return -1;
+                }
+                if (build_web_search_fetch_retry_request_body(
+                        profile,
+                        workspace_root,
+                        session_id,
+                        instructions,
+                        result->final_text,
+                        !saw_web_search_success,
+                        !saw_web_fetch_success,
+                        request_body,
+                        runtime_budget.agent_request_buffer_max,
+                        runtime_budget.agent_history_max) != 0) {
+                    free(instructions);
+                    free(codex_items_json);
+                    free(history);
+                    free(request_body);
+                    free(response_body);
+                    free_embedded_auth_profile(profile);
+                    copy_text(result->final_text, sizeof(result->final_text), "Failed to retry the required web tool request.");
+                    return -1;
+                }
+                web_search_fetch_retry_count++;
+                continue;
+            }
             if (enforce_app_install && !saw_app_install_tool && app_install_retry_count == 0) {
                 request_body = (char *)agent_calloc(1, runtime_budget.agent_request_buffer_max);
                 if (request_body == NULL) {
@@ -5805,6 +5918,7 @@ int espclaw_agent_loop_run(
 
         for (tool_index = 0; tool_index < provider_response->tool_call_count; ++tool_index) {
             espclaw_agent_media_ref_t tool_media = {0};
+            char *tool_result_buffer = tool_result_at(tool_results, tool_result_stride, tool_index);
 
             if (strcmp(provider_response->tool_calls[tool_index].name, "app.install") == 0) {
                 saw_app_install_tool = true;
@@ -5815,9 +5929,17 @@ int espclaw_agent_loop_run(
                 &provider_response->tool_calls[tool_index],
                 allow_mutations,
                 &tool_media,
-                tool_result_at(tool_results, tool_result_stride, tool_index),
+                tool_result_buffer,
                 tool_result_stride
             );
+            if (strcmp(provider_response->tool_calls[tool_index].name, "web.search") == 0 &&
+                tool_result_reports_success(tool_result_buffer)) {
+                saw_web_search_success = true;
+            }
+            if (strcmp(provider_response->tool_calls[tool_index].name, "web.fetch") == 0 &&
+                tool_result_reports_success(tool_result_buffer)) {
+                saw_web_fetch_success = true;
+            }
             if (tool_media.active && media_count < ESPCLAW_AGENT_MEDIA_MAX) {
                 media_refs[media_count++] = tool_media;
             }
@@ -5826,9 +5948,58 @@ int espclaw_agent_loop_run(
                     workspace_root,
                     session_id,
                     "tool",
-                    tool_result_at(tool_results, tool_result_stride, tool_index)
+                    tool_result_buffer
                 );
             }
+        }
+
+        if (enforce_web_search_fetch &&
+            (!saw_web_search_success || !saw_web_fetch_success) &&
+            web_search_fetch_retry_count == 0) {
+            request_body = (char *)agent_calloc(1, runtime_budget.agent_request_buffer_max);
+            if (request_body == NULL) {
+                free(media_refs);
+                free(tool_results);
+                free(provider_response);
+                free(instructions);
+                free(codex_items_json);
+                free(history);
+                free(response_body);
+                free_embedded_auth_profile(profile);
+                copy_text(result->final_text, sizeof(result->final_text), "Out of memory retrying required web tool request.");
+                return -1;
+            }
+            if (build_web_search_fetch_retry_request_body(
+                    profile,
+                    workspace_root,
+                    session_id,
+                    instructions,
+                    NULL,
+                    !saw_web_search_success,
+                    !saw_web_fetch_success,
+                    request_body,
+                    runtime_budget.agent_request_buffer_max,
+                    runtime_budget.agent_history_max) != 0) {
+                free(media_refs);
+                free(tool_results);
+                free(provider_response);
+                free(instructions);
+                free(codex_items_json);
+                free(history);
+                free(request_body);
+                free(response_body);
+                free_embedded_auth_profile(profile);
+                copy_text(result->final_text, sizeof(result->final_text), "Failed to retry the required web tool request.");
+                return -1;
+            }
+            web_search_fetch_retry_count++;
+            free(media_refs);
+            free(tool_results);
+            free(provider_response);
+            media_refs = NULL;
+            tool_results = NULL;
+            provider_response = NULL;
+            continue;
         }
 
         if (enforce_app_install && !saw_app_install_tool && app_install_retry_count == 0) {
