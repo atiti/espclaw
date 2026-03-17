@@ -101,6 +101,7 @@ typedef struct {
 static espclaw_runtime_status_t s_console_status;
 static bool s_console_reboot_requested;
 static bool s_console_factory_reset_requested;
+static espclaw_telegram_config_t s_console_telegram_config;
 
 static const espclaw_runtime_status_t *console_status_adapter(void)
 {
@@ -139,6 +140,32 @@ static int console_factory_reset_adapter(char *message, size_t message_size)
 {
     s_console_factory_reset_requested = true;
     snprintf(message, message_size, "Factory reset requested.");
+    return 0;
+}
+
+static int console_telegram_get_config_adapter(espclaw_telegram_config_t *config)
+{
+    assert_true(config != NULL, "console telegram get config buffer provided");
+    *config = s_console_telegram_config;
+    return 0;
+}
+
+static int console_telegram_set_config_adapter(
+    const espclaw_telegram_config_t *config,
+    char *message,
+    size_t message_size
+)
+{
+    assert_true(config != NULL, "console telegram set config provided");
+    s_console_telegram_config = *config;
+    s_console_telegram_config.configured = s_console_telegram_config.bot_token[0] != '\0';
+    snprintf(
+        message,
+        message_size,
+        "Telegram config saved (%s, %lu s poll interval).",
+        s_console_telegram_config.configured ? "configured" : "cleared",
+        (unsigned long)s_console_telegram_config.poll_interval_seconds
+    );
     return 0;
 }
 
@@ -1264,6 +1291,72 @@ static int explicit_tool_retry_http_adapter(
         "\"id\":\"resp_explicit_retry_final\","
         "\"status\":\"completed\","
         "\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Called task.list and confirmed the result.\"}]}]"
+        "}"
+    );
+    return 0;
+}
+
+static int explicit_tool_alias_retry_http_adapter(
+    const char *url,
+    const espclaw_auth_profile_t *profile,
+    const char *body,
+    char *response,
+    size_t response_size,
+    void *user_data
+)
+{
+    test_agent_adapter_state_t *state = (test_agent_adapter_state_t *)user_data;
+
+    (void)url;
+    (void)profile;
+
+    if (state != NULL) {
+        state->calls++;
+    }
+
+    if (state != NULL && state->calls == 1U) {
+        assert_string_contains(body, "yes try that", "alias retry first turn keeps user approval");
+        snprintf(
+            response,
+            response_size,
+            "{"
+            "\"id\":\"resp_explicit_alias_retry_1\","
+            "\"status\":\"completed\","
+            "\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"I can emit an event and then check task.list next.\"}]}]"
+            "}"
+        );
+        return 0;
+    }
+
+    if (state != NULL && state->calls == 2U) {
+        assert_string_contains(body, "explicitly told you to call these tools", "alias retry corrective prompt included");
+        assert_string_contains(body, "event.emit", "alias retry includes event emit");
+        assert_string_contains(body, "task.list", "alias retry includes task list");
+        snprintf(
+            response,
+            response_size,
+            "{"
+            "\"id\":\"resp_explicit_alias_retry_2\","
+            "\"status\":\"completed\","
+            "\"output\":["
+            "{\"type\":\"function_call\",\"call_id\":\"call_event_emit_retry\",\"name\":\"event_x2E_emit\",\"arguments\":\"{\\\"name\\\":\\\"test.ping\\\",\\\"payload\\\":\\\"hello 1\\\"}\",\"status\":\"completed\"},"
+            "{\"type\":\"function_call\",\"call_id\":\"call_task_list_retry_alias\",\"name\":\"task_x2E_list\",\"arguments\":\"{}\",\"status\":\"completed\"}"
+            "]"
+            "}"
+        );
+        return 0;
+    }
+
+    assert_string_contains(body, "\"type\":\"function_call_output\"", "alias retry follow-up includes tool output");
+    assert_string_contains(body, "call_event_emit_retry", "alias retry follow-up contains event emit output");
+    assert_string_contains(body, "call_task_list_retry_alias", "alias retry follow-up contains task list output");
+    snprintf(
+        response,
+        response_size,
+        "{"
+        "\"id\":\"resp_explicit_alias_retry_final\","
+        "\"status\":\"completed\","
+        "\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Called event.emit and task.list and confirmed the result.\"}]}]"
         "}"
     );
     return 0;
@@ -3644,6 +3737,37 @@ static void test_agent_loop(void)
     assert_string_contains(result.final_text, "Called task.list", "explicit tool retry final text returned");
 
     {
+        char explicit_alias_retry_session_path[256];
+        FILE *explicit_alias_retry_session = NULL;
+
+        snprintf(
+            explicit_alias_retry_session_path,
+            sizeof(explicit_alias_retry_session_path),
+            "%s/sessions/%s.jsonl",
+            temp_dir,
+            "chat_explicit_tool_alias_retry");
+        explicit_alias_retry_session = fopen(explicit_alias_retry_session_path, "w");
+        assert_true(explicit_alias_retry_session != NULL, "explicit alias retry session file opened");
+        fputs(
+            "{\"role\":\"assistant\",\"content\":\"Great. I can emit an event and then check task.list to confirm it.\"}\n",
+            explicit_alias_retry_session);
+        fclose(explicit_alias_retry_session);
+    }
+
+    adapter_state.calls = 0;
+    espclaw_agent_set_http_adapter(explicit_tool_alias_retry_http_adapter, &adapter_state);
+    memset(&result, 0, sizeof(result));
+    assert_true(
+        espclaw_agent_loop_run(temp_dir, "chat_explicit_tool_alias_retry", "yes try that", true, true, &result) == 0,
+        "explicit alias retry loop succeeded"
+    );
+    espclaw_agent_set_http_adapter(NULL, NULL);
+    assert_true(result.ok, "explicit alias retry result ok");
+    assert_true(result.used_tools, "explicit alias retry used tools");
+    assert_true(adapter_state.calls == 3U, "explicit alias retry used corrective second turn");
+    assert_string_contains(result.final_text, "event.emit and task.list", "explicit alias retry final text returned");
+
+    {
         espclaw_esp32cam_sd_attempt_t attempt = {0};
 
         assert_true(espclaw_storage_get_esp32cam_attempt(0, &attempt), "esp32cam first sd attempt available");
@@ -3662,6 +3786,8 @@ static void test_console_chat_and_web_tools(void)
         .status = console_status_adapter,
         .wifi_scan = console_wifi_scan_adapter,
         .wifi_join = console_wifi_join_adapter,
+        .telegram_get_config = console_telegram_get_config_adapter,
+        .telegram_set_config = console_telegram_set_config_adapter,
         .factory_reset = console_factory_reset_adapter,
         .reboot = console_reboot_adapter,
     };
@@ -3679,6 +3805,10 @@ static void test_console_chat_and_web_tools(void)
     snprintf(s_console_status.wifi_ssid, sizeof(s_console_status.wifi_ssid), "LabNet");
     s_console_reboot_requested = false;
     s_console_factory_reset_requested = false;
+    memset(&s_console_telegram_config, 0, sizeof(s_console_telegram_config));
+    s_console_telegram_config.enabled = true;
+    s_console_telegram_config.poll_interval_seconds = 5;
+    snprintf(s_console_telegram_config.token_hint, sizeof(s_console_telegram_config.token_hint), "unset");
 
     espclaw_console_set_runtime_adapter(&adapter);
     espclaw_web_set_http_adapter(web_tool_http_adapter, NULL);
@@ -3710,6 +3840,29 @@ static void test_console_chat_and_web_tools(void)
         "console wifi join succeeded"
     );
     assert_string_contains(result.final_text, "connecting to LabNet", "console wifi join response returned");
+
+    memset(&result, 0, sizeof(result));
+    assert_true(
+        espclaw_console_run(temp_dir, "console_tg_status", "/telegram status", true, false, &result) == 0,
+        "console telegram status succeeded"
+    );
+    assert_string_contains(result.final_text, "Telegram: enabled", "console telegram status shows enabled");
+    assert_string_contains(result.final_text, "Token: unset", "console telegram status shows unset token");
+
+    memset(&result, 0, sizeof(result));
+    assert_true(
+        espclaw_console_run(temp_dir, "console_tg_token", "/telegram token 123456:ABCDEF", true, false, &result) == 0,
+        "console telegram token succeeded"
+    );
+    assert_string_contains(result.final_text, "Telegram config saved", "console telegram token response returned");
+    assert_true(strcmp(s_console_telegram_config.bot_token, "123456:ABCDEF") == 0, "console telegram token stored");
+
+    memset(&result, 0, sizeof(result));
+    assert_true(
+        espclaw_console_run(temp_dir, "console_tg_poll", "/telegram poll 11", true, false, &result) == 0,
+        "console telegram poll succeeded"
+    );
+    assert_true(s_console_telegram_config.poll_interval_seconds == 11U, "console telegram poll interval updated");
 
     memset(&result, 0, sizeof(result));
     assert_true(
@@ -3755,6 +3908,24 @@ static void test_console_chat_and_web_tools(void)
     assert_string_contains(transcript, "esp_log_level_set(\"wifi\", ESP_LOG_WARN)", "uart console suppresses noisy wifi info logs");
     assert_string_contains(transcript, "esp_log_level_set(\"esp_netif_handlers\", ESP_LOG_WARN)", "uart console suppresses noisy netif info logs");
     assert_string_contains(transcript, "uart_console_write_raw(\"\\r\\n\")", "uart console emits newline before running commands");
+    assert_string_contains(transcript, "Telegram polling idle: empty bot token", "runtime reports idle telegram state");
+    assert_string_contains(transcript, "espclaw_runtime_set_telegram_config", "runtime exposes telegram setter");
+
+    read_text_file(
+        ESPCLAW_SOURCE_DIR "/firmware/components/espclaw_core/src/admin_ui.c",
+        transcript,
+        sizeof(transcript)
+    );
+    assert_string_contains(transcript, "/api/telegram/config", "admin ui loads telegram config endpoint");
+    assert_string_contains(transcript, "saveTelegramConfig", "admin ui exposes telegram save action");
+
+    read_text_file(
+        ESPCLAW_SOURCE_DIR "/firmware/components/espclaw_core/src/admin_server.c",
+        transcript,
+        sizeof(transcript)
+    );
+    assert_string_contains(transcript, "telegram_config_get_handler", "admin server exposes telegram config get handler");
+    assert_string_contains(transcript, "telegram_config_post_handler", "admin server exposes telegram config post handler");
 
     read_text_file(
         ESPCLAW_SOURCE_DIR "/firmware/components/espclaw_core/src/agent_loop.c",

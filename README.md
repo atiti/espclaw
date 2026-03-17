@@ -276,10 +276,10 @@ Configure runtime options with `idf.py menuconfig` under `ESPClaw`, including:
 - storage backend override
 - SD mount point and SDSPI pins
 - flash workspace mount point and partition label
-- Telegram bot token
-- Telegram polling interval
 
 Provisioning transport is selected at runtime from the board profile. `esp32s3` uses BLE-first onboarding, while `esp32cam` uses SoftAP onboarding.
+
+Telegram bot token and poll interval are now runtime-configured from either the admin UI (`Advanced -> Channels`) or the serial console with `/telegram status`, `/telegram token <token>`, `/telegram poll <seconds>`, `/telegram enable`, `/telegram disable`, and `/telegram clear-token`.
 
 For BLE-first boards such as the default `esp32s3` build:
 

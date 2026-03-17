@@ -68,7 +68,10 @@ The board file can now be populated in three ways:
 
 ## Telegram
 
-Telegram polling is enabled when a bot token is configured in `menuconfig`.
+Telegram polling is now configured at runtime from either:
+
+- the admin UI `Advanced -> Channels` card
+- the serial console via `/telegram ...` commands
 
 Current behavior:
 

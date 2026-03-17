@@ -162,6 +162,111 @@ static uint32_t load_query_u32(httpd_req_t *req, const char *key, uint32_t fallb
     return fallback;
 }
 
+static bool json_bool_value(const char *json, const char *key, bool *value_out)
+{
+    char pattern[64];
+    const char *cursor;
+
+    if (json == NULL || key == NULL || value_out == NULL) {
+        return false;
+    }
+    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
+    cursor = strstr(json, pattern);
+    if (cursor == NULL || (cursor = strchr(cursor, ':')) == NULL) {
+        return false;
+    }
+    cursor++;
+    while (*cursor != '\0' && (*cursor == ' ' || *cursor == '\n' || *cursor == '\r' || *cursor == '\t')) {
+        cursor++;
+    }
+    if (strncmp(cursor, "true", 4) == 0) {
+        *value_out = true;
+        return true;
+    }
+    if (strncmp(cursor, "false", 5) == 0) {
+        *value_out = false;
+        return true;
+    }
+    return false;
+}
+
+static bool json_u32_value(const char *json, const char *key, uint32_t *value_out)
+{
+    char pattern[64];
+    const char *cursor;
+    char *end = NULL;
+    unsigned long value;
+
+    if (json == NULL || key == NULL || value_out == NULL) {
+        return false;
+    }
+    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
+    cursor = strstr(json, pattern);
+    if (cursor == NULL || (cursor = strchr(cursor, ':')) == NULL) {
+        return false;
+    }
+    cursor++;
+    while (*cursor != '\0' && (*cursor == ' ' || *cursor == '\n' || *cursor == '\r' || *cursor == '\t')) {
+        cursor++;
+    }
+    value = strtoul(cursor, &end, 10);
+    if (end == cursor) {
+        return false;
+    }
+    *value_out = (uint32_t)value;
+    return true;
+}
+
+static bool json_string_value(const char *json, const char *key, char *buffer, size_t buffer_size)
+{
+    char pattern[64];
+    const char *cursor;
+    size_t used = 0;
+
+    if (json == NULL || key == NULL || buffer == NULL || buffer_size == 0) {
+        return false;
+    }
+    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
+    cursor = strstr(json, pattern);
+    if (cursor == NULL || (cursor = strchr(cursor, ':')) == NULL) {
+        buffer[0] = '\0';
+        return false;
+    }
+    cursor++;
+    while (*cursor != '\0' && (*cursor == ' ' || *cursor == '\n' || *cursor == '\r' || *cursor == '\t')) {
+        cursor++;
+    }
+    if (*cursor != '"') {
+        buffer[0] = '\0';
+        return false;
+    }
+    cursor++;
+    while (*cursor != '\0' && *cursor != '"' && used + 1 < buffer_size) {
+        if (*cursor == '\\' && cursor[1] != '\0') {
+            cursor++;
+            switch (*cursor) {
+            case 'n':
+                buffer[used++] = '\n';
+                break;
+            case 'r':
+                buffer[used++] = '\r';
+                break;
+            case 't':
+                buffer[used++] = '\t';
+                break;
+            default:
+                buffer[used++] = *cursor;
+                break;
+            }
+        } else {
+            buffer[used++] = *cursor;
+        }
+        cursor++;
+    }
+    buffer[used] = '\0';
+    return *cursor == '"';
+}
+
 static void copy_text(char *buffer, size_t buffer_size, const char *value)
 {
     if (buffer == NULL || buffer_size == 0) {
@@ -286,6 +391,67 @@ static esp_err_t auth_status_get_handler(httpd_req_t *req)
     espclaw_render_auth_profile_json(profile, buffer, sizeof(buffer));
     free(profile);
     return send_json(req, buffer);
+}
+
+static esp_err_t telegram_config_get_handler(httpd_req_t *req)
+{
+    char buffer[512];
+    espclaw_telegram_config_t config;
+
+    memset(&config, 0, sizeof(config));
+    if (espclaw_runtime_get_telegram_config(&config) != ESP_OK) {
+        return send_json_status(req, "{\"ok\":false,\"message\":\"telegram config unavailable\"}", 503, "Service Unavailable");
+    }
+
+    snprintf(
+        buffer,
+        sizeof(buffer),
+        "{\"enabled\":%s,\"configured\":%s,\"ready\":%s,\"poll_interval_seconds\":%lu,\"token_hint\":",
+        config.enabled ? "true" : "false",
+        config.configured ? "true" : "false",
+        config.ready ? "true" : "false",
+        (unsigned long)config.poll_interval_seconds
+    );
+    append_escaped_json(buffer, sizeof(buffer), strlen(buffer), config.token_hint);
+    append_text(buffer, sizeof(buffer), "}");
+    return send_json(req, buffer);
+}
+
+static esp_err_t telegram_config_post_handler(httpd_req_t *req)
+{
+    char body[1024];
+    char response[512];
+    char message[256];
+    espclaw_telegram_config_t config;
+    bool enabled = false;
+    uint32_t poll_interval_seconds = 0;
+    char token[sizeof(config.bot_token)];
+
+    memset(&config, 0, sizeof(config));
+    memset(token, 0, sizeof(token));
+    if (read_request_body(req, body, sizeof(body)) != ESP_OK) {
+        espclaw_admin_render_result_json(false, "failed to read telegram config body", response, sizeof(response));
+        return send_json_status(req, response, 400, "Bad Request");
+    }
+    if (espclaw_runtime_get_telegram_config(&config) != ESP_OK) {
+        espclaw_admin_render_result_json(false, "telegram config unavailable", response, sizeof(response));
+        return send_json_status(req, response, 503, "Service Unavailable");
+    }
+    if (json_bool_value(body, "enabled", &enabled)) {
+        config.enabled = enabled;
+    }
+    if (json_u32_value(body, "poll_interval_seconds", &poll_interval_seconds)) {
+        config.poll_interval_seconds = poll_interval_seconds;
+    }
+    if (json_string_value(body, "bot_token", token, sizeof(token))) {
+        copy_text(config.bot_token, sizeof(config.bot_token), token);
+    }
+    if (espclaw_runtime_set_telegram_config(&config, message, sizeof(message)) != ESP_OK) {
+        espclaw_admin_render_result_json(false, message[0] != '\0' ? message : "failed to save telegram config", response, sizeof(response));
+        return send_json_status(req, response, 400, "Bad Request");
+    }
+    espclaw_admin_render_result_json(true, message, response, sizeof(response));
+    return send_json(req, response);
 }
 
 static esp_err_t tools_get_handler(httpd_req_t *req)
@@ -1476,6 +1642,8 @@ esp_err_t espclaw_admin_server_start(void)
         {.uri = "/api/network/scan", .method = HTTP_GET, .handler = network_scan_get_handler, .user_ctx = NULL},
         {.uri = "/api/network/join", .method = HTTP_POST, .handler = network_join_post_handler, .user_ctx = NULL},
         {.uri = "/api/auth/status", .method = HTTP_GET, .handler = auth_status_get_handler, .user_ctx = NULL},
+        {.uri = "/api/telegram/config", .method = HTTP_GET, .handler = telegram_config_get_handler, .user_ctx = NULL},
+        {.uri = "/api/telegram/config", .method = HTTP_POST, .handler = telegram_config_post_handler, .user_ctx = NULL},
         {.uri = "/api/auth/codex", .method = HTTP_PUT, .handler = auth_put_handler, .user_ctx = NULL},
         {.uri = "/api/auth/codex", .method = HTTP_DELETE, .handler = auth_delete_handler, .user_ctx = NULL},
         {.uri = "/api/auth/import-json", .method = HTTP_POST, .handler = auth_import_json_post_handler, .user_ctx = NULL},
@@ -1520,7 +1688,7 @@ esp_err_t espclaw_admin_server_start(void)
 
     config.server_port = CONFIG_ESPCLAW_ADMIN_PORT;
     config.stack_size = ESPCLAW_ADMIN_HTTPD_STACK_SIZE;
-    config.max_uri_handlers = 48;
+    config.max_uri_handlers = 52;
     config.max_open_sockets = 4;
     config.lru_purge_enable = true;
     config.core_id = admin_core >= 0 ? admin_core : tskNO_AFFINITY;

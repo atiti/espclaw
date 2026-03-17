@@ -19,6 +19,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/task.h"
+#include "nvs.h"
 #include "nvs_flash.h"
 #include "wifi_provisioning/manager.h"
 #if defined(CONFIG_BT_ENABLED) && CONFIG_BT_ENABLED
@@ -49,6 +50,7 @@
 
 static const char *TAG = "espclaw_runtime";
 static const char *ESPCLAW_PROVISIONING_POP = "espclaw-pass";
+static const char *ESPCLAW_TELEGRAM_NAMESPACE = "espclaw_tg";
 
 #ifndef CONFIG_ESPCLAW_TELEGRAM_BOT_TOKEN
 #define CONFIG_ESPCLAW_TELEGRAM_BOT_TOKEN ""
@@ -77,6 +79,8 @@ enum {
 static EventGroupHandle_t s_runtime_event_group;
 static espclaw_runtime_status_t s_runtime_status;
 static long s_telegram_offset;
+static espclaw_telegram_config_t s_telegram_config;
+static bool s_telegram_task_started;
 static bool s_softap_onboarding_active;
 static bool s_ble_provisioning_active;
 static bool s_sta_connect_enabled;
@@ -84,6 +88,7 @@ static bool s_time_sync_started;
 static bool s_time_sync_completed;
 static esp_sntp_config_t s_sntp_config;
 static bool s_console_yolo_mode;
+static esp_err_t maybe_start_telegram(void);
 
 #ifdef ESP_PLATFORM
 #define ESPCLAW_BEHAVIOR_AUTOSTART_DELAY_MS 8000
@@ -111,6 +116,126 @@ static void trim_trailing_whitespace(char *text)
     while (length > 0 && isspace((unsigned char)text[length - 1])) {
         text[--length] = '\0';
     }
+}
+
+static void copy_text(char *buffer, size_t buffer_size, const char *value)
+{
+    if (buffer == NULL || buffer_size == 0) {
+        return;
+    }
+    snprintf(buffer, buffer_size, "%s", value != NULL ? value : "");
+}
+
+static void telegram_token_hint(const char *token, char *buffer, size_t buffer_size)
+{
+    size_t length;
+
+    if (buffer == NULL || buffer_size == 0) {
+        return;
+    }
+    buffer[0] = '\0';
+    if (token == NULL || token[0] == '\0') {
+        return;
+    }
+    length = strlen(token);
+    if (length <= 8U) {
+        snprintf(buffer, buffer_size, "configured");
+        return;
+    }
+    snprintf(buffer, buffer_size, "%.4s...%.4s", token, token + length - 4U);
+}
+
+static void telegram_config_defaults(espclaw_telegram_config_t *config)
+{
+    if (config == NULL) {
+        return;
+    }
+    memset(config, 0, sizeof(*config));
+    config->enabled = CONFIG_ESPCLAW_ENABLE_TELEGRAM != 0;
+    config->poll_interval_seconds = CONFIG_ESPCLAW_TELEGRAM_POLL_INTERVAL_SECONDS > 0
+        ? (uint32_t)CONFIG_ESPCLAW_TELEGRAM_POLL_INTERVAL_SECONDS
+        : 5U;
+    copy_text(config->bot_token, sizeof(config->bot_token), CONFIG_ESPCLAW_TELEGRAM_BOT_TOKEN);
+    config->configured = config->bot_token[0] != '\0';
+    config->ready = false;
+    telegram_token_hint(config->bot_token, config->token_hint, sizeof(config->token_hint));
+}
+
+static void refresh_telegram_config_derived_fields(espclaw_telegram_config_t *config)
+{
+    if (config == NULL) {
+        return;
+    }
+    if (config->poll_interval_seconds == 0U) {
+        config->poll_interval_seconds = 5U;
+    }
+    config->configured = config->bot_token[0] != '\0';
+    telegram_token_hint(config->bot_token, config->token_hint, sizeof(config->token_hint));
+}
+
+static void telegram_config_to_runtime_snapshot(const espclaw_telegram_config_t *source, espclaw_telegram_config_t *target)
+{
+    if (target == NULL) {
+        return;
+    }
+    if (source == NULL) {
+        telegram_config_defaults(target);
+        return;
+    }
+    *target = *source;
+    refresh_telegram_config_derived_fields(target);
+    target->ready = s_runtime_status.telegram_ready;
+}
+
+static esp_err_t load_telegram_config_from_nvs(espclaw_telegram_config_t *config)
+{
+    nvs_handle_t handle;
+    espclaw_telegram_config_t loaded;
+    uint8_t enabled = 0;
+    size_t required = 0;
+
+    telegram_config_defaults(&loaded);
+    if (nvs_open(ESPCLAW_TELEGRAM_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) {
+        if (config != NULL) {
+            *config = loaded;
+        }
+        return ESP_OK;
+    }
+    if (nvs_get_u8(handle, "enabled", &enabled) == ESP_OK) {
+        loaded.enabled = enabled != 0U;
+    }
+    nvs_get_u32(handle, "poll", &loaded.poll_interval_seconds);
+    required = sizeof(loaded.bot_token);
+    if (nvs_get_str(handle, "token", loaded.bot_token, &required) != ESP_OK) {
+        loaded.bot_token[0] = '\0';
+    }
+    nvs_close(handle);
+    refresh_telegram_config_derived_fields(&loaded);
+    if (config != NULL) {
+        *config = loaded;
+    }
+    return ESP_OK;
+}
+
+static esp_err_t save_telegram_config_to_nvs(const espclaw_telegram_config_t *config)
+{
+    nvs_handle_t handle;
+
+    if (config == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (nvs_open(ESPCLAW_TELEGRAM_NAMESPACE, NVS_READWRITE, &handle) != ESP_OK) {
+        return ESP_FAIL;
+    }
+    if (nvs_set_u8(handle, "enabled", config->enabled ? 1U : 0U) != ESP_OK ||
+        nvs_set_u32(handle, "poll", config->poll_interval_seconds) != ESP_OK ||
+        nvs_set_str(handle, "token", config->bot_token) != ESP_OK ||
+        nvs_commit(handle) != ESP_OK) {
+        nvs_close(handle);
+        return ESP_FAIL;
+    }
+    nvs_close(handle);
+    return ESP_OK;
 }
 
 bool espclaw_runtime_should_defer_wifi_boot(const espclaw_board_profile_t *profile, bool storage_ready)
@@ -670,6 +795,66 @@ static esp_err_t telegram_send_message(const char *token, const char *chat_id, c
     return ESP_OK;
 }
 
+esp_err_t espclaw_runtime_get_telegram_config(espclaw_telegram_config_t *config)
+{
+    if (config == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    telegram_config_to_runtime_snapshot(&s_telegram_config, config);
+    return ESP_OK;
+}
+
+esp_err_t espclaw_runtime_set_telegram_config(
+    const espclaw_telegram_config_t *config,
+    char *message,
+    size_t message_size
+)
+{
+#if CONFIG_ESPCLAW_ENABLE_TELEGRAM
+    espclaw_telegram_config_t next;
+
+    if (config == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    next = *config;
+    refresh_telegram_config_derived_fields(&next);
+    if (save_telegram_config_to_nvs(&next) != ESP_OK) {
+        if (message != NULL && message_size > 0U) {
+            snprintf(message, message_size, "failed to save Telegram config");
+        }
+        return ESP_FAIL;
+    }
+    s_telegram_config = next;
+    if (!s_telegram_config.enabled || !s_telegram_config.configured) {
+        s_runtime_status.telegram_ready = false;
+    } else {
+        maybe_start_telegram();
+    }
+    if (message != NULL && message_size > 0U) {
+        if (!s_telegram_config.enabled) {
+            snprintf(message, message_size, "Telegram polling disabled.");
+        } else if (!s_telegram_config.configured) {
+            snprintf(message, message_size, "Telegram token cleared. Polling idle until a token is saved.");
+        } else {
+            snprintf(
+                message,
+                message_size,
+                "Telegram config saved (%s, %lu s poll interval).",
+                s_telegram_config.token_hint[0] != '\0' ? s_telegram_config.token_hint : "configured",
+                (unsigned long)s_telegram_config.poll_interval_seconds
+            );
+        }
+    }
+    return ESP_OK;
+#else
+    (void)config;
+    if (message != NULL && message_size > 0U) {
+        snprintf(message, message_size, "Telegram support is disabled in this firmware build.");
+    }
+    return ESP_ERR_NOT_SUPPORTED;
+#endif
+}
+
 esp_err_t espclaw_runtime_factory_reset(char *message, size_t message_size)
 {
     if (espclaw_auth_store_clear() != 0) {
@@ -982,9 +1167,10 @@ static bool parse_remove_app_command(
 
 static void telegram_polling_task(void *arg)
 {
-    const char *token = (const char *)arg;
+    (void)arg;
 
     while (true) {
+        espclaw_telegram_config_t config;
         EventBits_t bits = xEventGroupWaitBits(
             s_runtime_event_group,
             ESPCLAW_WIFI_CONNECTED_BIT,
@@ -998,11 +1184,23 @@ static void telegram_polling_task(void *arg)
             continue;
         }
 
+        telegram_config_to_runtime_snapshot(&s_telegram_config, &config);
+        if (!config.enabled) {
+            s_runtime_status.telegram_ready = false;
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
+        if (!config.configured) {
+            s_runtime_status.telegram_ready = false;
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
+
         {
             char url[512];
             char response[8192];
             char reply[768];
-            esp_http_client_config_t config = {0};
+            esp_http_client_config_t client_config = {0};
             esp_http_client_handle_t client;
             espclaw_telegram_update_t update;
 
@@ -1010,14 +1208,14 @@ static void telegram_polling_task(void *arg)
                 url,
                 sizeof(url),
                 "https://api.telegram.org/bot%s/getUpdates?timeout=5&offset=%ld",
-                token,
+                config.bot_token,
                 s_telegram_offset
             );
 
-            config.url = url;
-            config.transport_type = HTTP_TRANSPORT_OVER_SSL;
-            config.timeout_ms = 15000;
-            client = esp_http_client_init(&config);
+            client_config.url = url;
+            client_config.transport_type = HTTP_TRANSPORT_OVER_SSL;
+            client_config.timeout_ms = 15000;
+            client = esp_http_client_init(&client_config);
             if (client == NULL) {
                 vTaskDelay(pdMS_TO_TICKS(2000));
                 continue;
@@ -1091,9 +1289,9 @@ static void telegram_polling_task(void *arg)
                                    false,
                                    false,
                                    &run_result) == 0 || run_result.ok) {
-                        snprintf(reply, sizeof(reply), "%s", run_result.final_text);
+                        copy_text(reply, sizeof(reply), run_result.final_text);
                     } else {
-                        snprintf(reply, sizeof(reply), "%s", run_result.final_text);
+                        copy_text(reply, sizeof(reply), run_result.final_text);
                     }
                 }
 
@@ -1112,7 +1310,7 @@ static void telegram_polling_task(void *arg)
                     );
                 }
 
-                if (telegram_send_message(token, update.chat_id, reply) == ESP_OK) {
+                if (telegram_send_message(config.bot_token, update.chat_id, reply) == ESP_OK) {
                     s_runtime_status.telegram_ready = true;
                 }
             }
@@ -1120,7 +1318,7 @@ static void telegram_polling_task(void *arg)
             esp_http_client_cleanup(client);
         }
 
-        vTaskDelay(pdMS_TO_TICKS(CONFIG_ESPCLAW_TELEGRAM_POLL_INTERVAL_SECONDS * 1000));
+        vTaskDelay(pdMS_TO_TICKS(config.poll_interval_seconds * 1000U));
     }
 }
 
@@ -1129,8 +1327,14 @@ static esp_err_t maybe_start_telegram(void)
 #if CONFIG_ESPCLAW_ENABLE_TELEGRAM
     int core = espclaw_task_policy_core_for(ESPCLAW_TASK_KIND_TELEGRAM);
 
-    if (strlen(CONFIG_ESPCLAW_TELEGRAM_BOT_TOKEN) == 0) {
-        ESP_LOGI(TAG, "Telegram polling disabled: empty bot token");
+    if (s_telegram_task_started) {
+        return ESP_OK;
+    }
+    if (!s_telegram_config.enabled) {
+        ESP_LOGI(TAG, "Telegram polling disabled.");
+        return ESP_OK;
+    } else if (!s_telegram_config.configured) {
+        ESP_LOGI(TAG, "Telegram polling idle: empty bot token");
         return ESP_OK;
     }
 
@@ -1138,12 +1342,13 @@ static esp_err_t maybe_start_telegram(void)
             telegram_polling_task,
             "espclaw_tg",
             8192,
-            (void *)CONFIG_ESPCLAW_TELEGRAM_BOT_TOKEN,
+            NULL,
             5,
             NULL,
             core >= 0 ? core : tskNO_AFFINITY) != pdPASS) {
         return ESP_FAIL;
     }
+    s_telegram_task_started = true;
     return ESP_OK;
 #else
     return ESP_ERR_NOT_SUPPORTED;
@@ -1179,8 +1384,10 @@ esp_err_t espclaw_runtime_start(espclaw_board_profile_id_t profile_id, espclaw_r
     s_sta_connect_enabled = false;
     s_time_sync_started = false;
     s_time_sync_completed = false;
+    s_telegram_task_started = false;
     s_console_yolo_mode = false;
     memset(&s_sntp_config, 0, sizeof(s_sntp_config));
+    telegram_config_defaults(&s_telegram_config);
     s_runtime_status.profile = espclaw_board_profile_for(profile_id);
     espclaw_task_policy_select(&s_runtime_status.profile);
     espclaw_board_configure_current(NULL, &s_runtime_status.profile);
@@ -1202,6 +1409,7 @@ esp_err_t espclaw_runtime_start(espclaw_board_profile_id_t profile_id, espclaw_r
     }
 
     ESP_ERROR_CHECK(init_nvs_flash_store());
+    load_telegram_config_from_nvs(&s_telegram_config);
     ESP_ERROR_CHECK(init_wifi_stack());
     saved_wifi_credentials = has_saved_sta_credentials();
 

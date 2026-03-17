@@ -1031,7 +1031,10 @@ static bool user_message_is_short_affirmative_tool_followup(const char *user_mes
            contains_case_insensitive_text(user_message, "okay") ||
            contains_case_insensitive_text(user_message, "sure") ||
            contains_case_insensitive_text(user_message, "do it") ||
+           contains_case_insensitive_text(user_message, "do that") ||
            contains_case_insensitive_text(user_message, "go ahead") ||
+           contains_case_insensitive_text(user_message, "try that") ||
+           contains_case_insensitive_text(user_message, "please try") ||
            contains_case_insensitive_text(user_message, "you can") ||
            contains_case_insensitive_text(user_message, "run it") ||
            contains_case_insensitive_text(user_message, "run the tool") ||
@@ -1065,6 +1068,52 @@ static bool add_required_tool_name(
     return true;
 }
 
+typedef struct {
+    const char *phrase;
+    const char *tool_name;
+} espclaw_tool_phrase_alias_t;
+
+static size_t collect_required_tool_names_from_aliases(
+    const char *text,
+    char names[][ESPCLAW_AGENT_TOOL_NAME_MAX + 1],
+    size_t count,
+    size_t max_count
+)
+{
+    static const espclaw_tool_phrase_alias_t ALIASES[] = {
+        {"task list", "task.list"},
+        {"list tasks", "task.list"},
+        {"show tasks", "task.list"},
+        {"run task list", "task.list"},
+        {"start task", "task.start"},
+        {"run task", "task.start"},
+        {"emit an event", "event.emit"},
+        {"emit event", "event.emit"},
+        {"trigger an event", "event.emit"},
+        {"trigger event", "event.emit"},
+        {"list apps", "app.list"},
+        {"show apps", "app.list"},
+        {"list behaviors", "behavior.list"},
+        {"show behaviors", "behavior.list"},
+        {"list tools", "tool.list"},
+        {"show tools", "tool.list"},
+        {"what tools", "tool.list"},
+    };
+    size_t index;
+
+    if (text == NULL || text[0] == '\0' || names == NULL || max_count == 0U) {
+        return count;
+    }
+
+    for (index = 0; index < sizeof(ALIASES) / sizeof(ALIASES[0]); ++index) {
+        if (contains_case_insensitive_text(text, ALIASES[index].phrase)) {
+            add_required_tool_name(names, &count, max_count, ALIASES[index].tool_name);
+        }
+    }
+
+    return count;
+}
+
 static size_t collect_required_tool_names_from_text(
     const char *text,
     char names[][ESPCLAW_AGENT_TOOL_NAME_MAX + 1],
@@ -1089,7 +1138,7 @@ static size_t collect_required_tool_names_from_text(
         }
     }
 
-    return count;
+    return collect_required_tool_names_from_aliases(text, names, count, max_count);
 }
 
 static size_t collect_required_tool_names(
@@ -1428,7 +1477,7 @@ static int load_system_prompt(
         "\nUse hardware.list when board-specific pins, buses, or capabilities matter.\n"
         "Use lua_api.list when generating or debugging Lua apps and you need exact espclaw.* signatures or handler rules.\n"
         "If the operator explicitly tells you to run a tool by name, call that tool in this turn instead of asking them to paste its output.\n"
-        "If your previous reply said a named tool still needs to be run and the next operator turn is an approval like yes/ok/do it/go ahead, treat that as approval to call the named tool immediately.\n"
+        "If your previous reply said a named tool still needs to be run, or described a concrete next tool step like emit an event or check task.list, and the next operator turn is an approval like yes/ok/do it/do that/try that/go ahead, treat that as approval to call the missing tool immediately.\n"
         "If the user says this is a tool-call compliance test, says the transcript is audited, or explicitly lists tools you must use, call every applicable listed tool before replying, even if some of those tool calls fail.\n"
     );
     if (user_message_requests_lua_app_contract(user_message)) {

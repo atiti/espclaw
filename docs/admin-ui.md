@@ -112,6 +112,20 @@ Current UI behavior:
 - `Import Pasted JSON` accepts the same payload pasted into the textarea
 - credentials are stored in secure device auth storage and persist across normal reflashes unless NVS is erased
 
+### Advanced
+
+The `Channels` card now exposes Telegram runtime config:
+
+- masked token status
+- enable / disable toggle
+- poll interval
+- token save / clear actions
+
+Current routes:
+
+- `GET /api/telegram/config`
+- `POST /api/telegram/config`
+
 ### Device
 
 Allows:

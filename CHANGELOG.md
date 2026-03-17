@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Moved Telegram bot setup from compile-time `menuconfig` into runtime NVS-backed config, exposed through both the admin UI and the serial `/telegram ...` commands, so boards can be provisioned and updated without rebuilding firmware just to change the bot token or poll interval.
+- Expanded explicit tool-call enforcement so plain-language requests like "emit an event" map to the right runtime tools, and short follow-ups like `yes try that` / `do that` now approve the assistant's previously proposed concrete tool step instead of being treated as narration prompts.
 - Hardened transcript history loading so malformed or stale rows with missing/invalid roles are ignored instead of poisoning future Codex requests with `role:""`.
 - Added explicit-tool request enforcement for local operator chat: if the user names a tool directly, or approves a previously requested named tool with a short `yes/ok/do it` follow-up, the runtime now retries until the model actually calls the missing tool.
 - Moved the `agent alloc preflight` heap budget line to debug level so normal UART sessions keep the high-signal operational logs.

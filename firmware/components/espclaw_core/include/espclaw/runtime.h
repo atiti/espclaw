@@ -38,6 +38,15 @@ typedef struct {
     bool secure;
 } espclaw_wifi_network_t;
 
+typedef struct {
+    bool enabled;
+    bool configured;
+    bool ready;
+    uint32_t poll_interval_seconds;
+    char bot_token[192];
+    char token_hint[24];
+} espclaw_telegram_config_t;
+
 esp_err_t espclaw_runtime_start(espclaw_board_profile_id_t profile_id, espclaw_runtime_status_t *status);
 const espclaw_runtime_status_t *espclaw_runtime_status(void);
 esp_err_t espclaw_runtime_wifi_scan(
@@ -48,6 +57,12 @@ esp_err_t espclaw_runtime_wifi_scan(
 esp_err_t espclaw_runtime_wifi_join(
     const char *ssid,
     const char *password,
+    char *message,
+    size_t message_size
+);
+esp_err_t espclaw_runtime_get_telegram_config(espclaw_telegram_config_t *config);
+esp_err_t espclaw_runtime_set_telegram_config(
+    const espclaw_telegram_config_t *config,
     char *message,
     size_t message_size
 );

@@ -143,6 +143,36 @@ static esp_err_t console_wifi_join(const char *ssid, const char *password, char 
 #endif
 }
 
+static esp_err_t console_telegram_get_config(espclaw_telegram_config_t *config)
+{
+#ifdef ESP_PLATFORM
+    if (s_runtime_adapter.telegram_get_config != NULL) {
+        return s_runtime_adapter.telegram_get_config(config);
+    }
+    return espclaw_runtime_get_telegram_config(config);
+#else
+    return s_runtime_adapter.telegram_get_config != NULL ? s_runtime_adapter.telegram_get_config(config) : -1;
+#endif
+}
+
+static esp_err_t console_telegram_set_config(
+    const espclaw_telegram_config_t *config,
+    char *message,
+    size_t message_size
+)
+{
+#ifdef ESP_PLATFORM
+    if (s_runtime_adapter.telegram_set_config != NULL) {
+        return s_runtime_adapter.telegram_set_config(config, message, message_size);
+    }
+    return espclaw_runtime_set_telegram_config(config, message, message_size);
+#else
+    return s_runtime_adapter.telegram_set_config != NULL
+        ? s_runtime_adapter.telegram_set_config(config, message, message_size)
+        : -1;
+#endif
+}
+
 static esp_err_t console_factory_reset(char *message, size_t message_size)
 {
 #ifdef ESP_PLATFORM
@@ -183,6 +213,10 @@ static size_t render_help(char *buffer, size_t buffer_size)
         "/wifi status\n"
         "/wifi scan\n"
         "/wifi join <ssid> [password]\n"
+        "/telegram status\n"
+        "/telegram token <bot_token>\n"
+        "/telegram poll <seconds>\n"
+        "/telegram enable | disable | clear-token\n"
         "/memory\n"
         "/reboot\n"
         "/factory-reset\n\n"
@@ -270,6 +304,27 @@ static size_t render_wifi_status(char *buffer, size_t buffer_size)
         status != NULL && status->wifi_ssid[0] != '\0' ? " to " : "",
         status != NULL && status->wifi_ssid[0] != '\0' ? status->wifi_ssid : "",
         status != NULL && status->provisioning_active ? "active" : "inactive"
+    );
+}
+
+static size_t render_telegram_status(char *buffer, size_t buffer_size)
+{
+    espclaw_telegram_config_t config;
+
+    memset(&config, 0, sizeof(config));
+    if (console_telegram_get_config(&config) != 0) {
+        return (size_t)snprintf(buffer, buffer_size, "Telegram config is unavailable.");
+    }
+
+    return (size_t)snprintf(
+        buffer,
+        buffer_size,
+        "Telegram: %s\nConfigured: %s\nReady: %s\nToken: %s\nPoll interval: %lu s",
+        config.enabled ? "enabled" : "disabled",
+        config.configured ? "yes" : "no",
+        config.ready ? "yes" : "no",
+        config.token_hint[0] != '\0' ? config.token_hint : "unset",
+        (unsigned long)config.poll_interval_seconds
     );
 }
 
@@ -393,6 +448,71 @@ int espclaw_console_run(
             }
         } else {
             copy_text(result->final_text, sizeof(result->final_text), "Usage: /wifi status | /wifi scan | /wifi join <ssid> [password]");
+        }
+    } else if (strcmp(command, "telegram") == 0) {
+        char subcommand[32];
+        espclaw_telegram_config_t config;
+
+        memset(&config, 0, sizeof(config));
+        if (!extract_token(&cursor, subcommand, sizeof(subcommand)) || strcmp(subcommand, "status") == 0) {
+            render_telegram_status(result->final_text, sizeof(result->final_text));
+        } else if (console_telegram_get_config(&config) != 0) {
+            copy_text(result->final_text, sizeof(result->final_text), "Telegram config is unavailable.");
+        } else if (strcmp(subcommand, "token") == 0) {
+            char token[sizeof(config.bot_token)];
+
+            if (!extract_token(&cursor, token, sizeof(token))) {
+                copy_text(result->final_text, sizeof(result->final_text), "Usage: /telegram token <bot_token>");
+            } else {
+                copy_text(config.bot_token, sizeof(config.bot_token), token);
+                config.enabled = true;
+                if (console_telegram_set_config(&config, result->final_text, sizeof(result->final_text)) != 0 &&
+                    result->final_text[0] == '\0') {
+                    copy_text(result->final_text, sizeof(result->final_text), "Failed to save Telegram token.");
+                }
+            }
+        } else if (strcmp(subcommand, "poll") == 0) {
+            char seconds_text[16];
+            unsigned long seconds;
+
+            if (!extract_token(&cursor, seconds_text, sizeof(seconds_text))) {
+                copy_text(result->final_text, sizeof(result->final_text), "Usage: /telegram poll <seconds>");
+            } else {
+                seconds = strtoul(seconds_text, NULL, 10);
+                if (seconds == 0U) {
+                    copy_text(result->final_text, sizeof(result->final_text), "Poll interval must be greater than 0.");
+                } else {
+                    config.poll_interval_seconds = (uint32_t)seconds;
+                    if (console_telegram_set_config(&config, result->final_text, sizeof(result->final_text)) != 0 &&
+                        result->final_text[0] == '\0') {
+                        copy_text(result->final_text, sizeof(result->final_text), "Failed to save Telegram poll interval.");
+                    }
+                }
+            }
+        } else if (strcmp(subcommand, "enable") == 0) {
+            config.enabled = true;
+            if (console_telegram_set_config(&config, result->final_text, sizeof(result->final_text)) != 0 &&
+                result->final_text[0] == '\0') {
+                copy_text(result->final_text, sizeof(result->final_text), "Failed to enable Telegram.");
+            }
+        } else if (strcmp(subcommand, "disable") == 0) {
+            config.enabled = false;
+            if (console_telegram_set_config(&config, result->final_text, sizeof(result->final_text)) != 0 &&
+                result->final_text[0] == '\0') {
+                copy_text(result->final_text, sizeof(result->final_text), "Failed to disable Telegram.");
+            }
+        } else if (strcmp(subcommand, "clear-token") == 0) {
+            config.bot_token[0] = '\0';
+            if (console_telegram_set_config(&config, result->final_text, sizeof(result->final_text)) != 0 &&
+                result->final_text[0] == '\0') {
+                copy_text(result->final_text, sizeof(result->final_text), "Failed to clear Telegram token.");
+            }
+        } else {
+            copy_text(
+                result->final_text,
+                sizeof(result->final_text),
+                "Usage: /telegram status | /telegram token <bot_token> | /telegram poll <seconds> | /telegram enable | /telegram disable | /telegram clear-token"
+            );
         }
     } else if (strcmp(command, "tool") == 0) {
         char tool_name[ESPCLAW_AGENT_TOOL_NAME_MAX + 1];
