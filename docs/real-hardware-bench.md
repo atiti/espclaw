@@ -20,10 +20,20 @@ Additional stress and audit stages are available:
   - runs many smaller, audited prompts instead of one giant sweep
   - checks which tool names the model actually requested in the transcript
   - is the preferred way to measure real tool-call coverage on hardware
+  - now exercises the broader executor surface one case at a time, including:
+    - `tool.list`, `system.info`, `hardware.list`
+    - `wifi.status`, `wifi.scan`, `ble.scan`
+    - `fs.list`, `fs.write`, `fs.read`, `fs.delete`
+    - app / behavior / task / event-watch lifecycle tools
+    - `ota.check`, `camera.capture`
+    - `gpio.read/write`, `pwm.write`, `ppm.write`
+    - `adc.read`, `uart.read/write`
+    - `i2c.scan/read/write`, `temperature.read`, `imu.read`
+    - `buzzer.play`, `pid.compute`, `control.mix`, `spi.transfer`
 - `large_lua_app`
   - asks the live model to build progressively larger Lua apps through `app.install`
   - verifies the installed source size and the app's runtime behavior
-  - currently exposes model tool-call compliance limits before it hits a proven device RAM ceiling on `esp32cam`
+  - currently reaches real `app.install` calls on `esp32cam`, but the remaining failure is the generated app contract rather than a proven device RAM ceiling
 
 ## Usage
 
@@ -99,10 +109,11 @@ python3 scripts/real_device_bench.py \
   - the bench sends many smaller tool-compliance prompts with YOLO mode enabled
   - each case audits the stored transcript and compares the requested tool names with the expected set
   - this is intended to catch catalog-vs-executor gaps, not just generic chat success
+  - cases are intentionally separated so the model cannot satisfy a grouped prompt by only calling the first tool successfully
 - `large_lua_app`
   - the bench asks the live model to install progressively larger Lua apps
   - each threshold validates the saved source length plus a real `app.run` result
-  - failures currently indicate tool-call compliance or parser issues before a confirmed embedded RAM ceiling
+  - failures currently indicate generated Lua entrypoint mismatches or tool-call compliance issues before a confirmed embedded RAM ceiling
 
 ## Current Bring-Up Note
 

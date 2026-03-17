@@ -123,6 +123,7 @@ static int confirmation_http_adapter(
     assert_string_contains(body, "behavior.register", "system prompt includes behavior tool");
     assert_string_contains(body, "task.start", "system prompt includes task tool");
     assert_string_contains(body, "Mutating tools require explicit confirmation", "read-only runs preserve confirmation policy");
+    assert_string_contains(body, "tool-call compliance test", "system prompt includes compliance guidance");
 
     if (state != NULL && state->calls > 1) {
         assert_string_contains(body, "\"instructions\":", "follow-up codex requests retain instructions");
@@ -189,6 +190,7 @@ static int tool_list_http_adapter(
     assert_string_contains(body, "Tool Inventory Snapshot", "tool list prompt includes tool inventory snapshot");
     assert_string_contains(body, "hardware.list", "tool list prompt includes hardware tool");
     assert_string_contains(body, "behavior.register", "tool list prompt includes behavior tool");
+    assert_string_contains(body, "tool-call compliance test", "tool list prompt includes compliance guidance");
 
     if (state != NULL && state->calls > 1) {
         assert_string_contains(body, "\"type\":\"function_call\"", "tool list follow-up retains function call item");
@@ -229,8 +231,8 @@ static int app_install_http_adapter(
 )
 {
     test_agent_adapter_state_t *state = (test_agent_adapter_state_t *)user_data;
-    char source[2048];
-    char banner[1400];
+    char source[4096];
+    char banner[3400];
     int written = 0;
 
     (void)url;
@@ -272,7 +274,7 @@ static int app_install_http_adapter(
         "end\\\\n",
         banner
     );
-    assert_true(written > 1023, "app install source exceeds legacy tool args budget");
+    assert_true(written > 3000, "app install source exceeds larger app threshold");
     written = snprintf(
         response,
         response_size,

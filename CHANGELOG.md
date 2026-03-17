@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Expanded the model tool executor to cover the broader advertised hardware/runtime surface, including `fs.write`, `fs.delete`, `wifi.status`, `wifi.scan`, `ble.scan`, `gpio.read/write`, `pwm.write`, `ppm.write`, `adc.read`, `i2c.scan/read/write`, `temperature.read`, `imu.read`, `buzzer.play`, `pid.compute`, `control.mix`, `spi.transfer`, and `ota.check`.
+- Tightened the system prompt for audited tool-compliance runs so the model is explicitly instructed to call every applicable listed tool when the user marks the run as a tool-call compliance test or says the transcript is being audited.
+- Fixed function-call parsing for large tool payloads by extracting the exact `function_call` JSON object span before decoding `call_id`, `name`, and `arguments`, which prevents large `app.install` envelopes from losing their tool name on real hardware.
+- Increased the `app.install` and `behavior.register` source-handling budget to the full tool-argument limit so larger model-generated Lua sources can reach the runtime without being truncated by smaller fixed local buffers.
+- Refactored the real-device `tool_matrix_full` stage into smaller YOLO compliance cases that validate the expanded executor surface one tool at a time, making catalog-vs-executor gaps and partial model compliance visible on the live AI Thinker board.
+- Advanced the real-device `large_lua_app` stage from a parser/compliance failure to a real installed-app validation path, exposing that the current remaining limit is the generated Lua entrypoint contract rather than a proven `esp32cam` RAM ceiling.
 - Fixed ESP32-CAM camera capture consistency by normalizing `media/...` filenames before workspace resolution, resetting the camera runtime after capture failures, and retrying camera initialization at smaller frame sizes when the original DMA allocation cannot fit in fragmented internal RAM.
 - Added direct `/media/<relative-path>` serving from the workspace so admin camera captures can be opened directly instead of returning a 404 after a successful save.
 - Added `YOLO mode` to the local admin chat and simulator chat APIs, letting trusted operator runs ask the model to execute permitted tools immediately without another approval hop.

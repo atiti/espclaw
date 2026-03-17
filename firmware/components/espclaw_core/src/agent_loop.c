@@ -47,8 +47,10 @@
 #include "espclaw/app_runtime.h"
 #include "espclaw/auth_store.h"
 #include "espclaw/behavior_runtime.h"
+#include "espclaw/board_config.h"
 #include "espclaw/event_watch.h"
 #include "espclaw/hardware.h"
+#include "espclaw/ota_manager.h"
 #include "espclaw/provider.h"
 #include "espclaw/runtime.h"
 #include "espclaw/session_store.h"
@@ -756,11 +758,11 @@ static bool extract_json_object_from(
     return false;
 }
 
-static bool extract_json_object_containing(
+static bool find_json_object_containing_span(
     const char *json,
     const char *needle,
-    char *buffer,
-    size_t buffer_size
+    const char **start_out,
+    size_t *length_out
 )
 {
     const char *cursor = needle;
@@ -770,7 +772,7 @@ static bool extract_json_object_containing(
     bool in_string = false;
     bool escaped = false;
 
-    if (json == NULL || needle == NULL || buffer == NULL || buffer_size == 0) {
+    if (json == NULL || needle == NULL || start_out == NULL || length_out == NULL) {
         return false;
     }
 
@@ -782,7 +784,6 @@ static bool extract_json_object_containing(
         }
     }
     if (start == NULL) {
-        buffer[0] = '\0';
         return false;
     }
 
@@ -814,19 +815,13 @@ static bool extract_json_object_containing(
             }
             depth--;
             if (depth == 0) {
-                size_t length = (size_t)(scan - start + 1);
-
-                if (length >= buffer_size) {
-                    length = buffer_size - 1;
-                }
-                memcpy(buffer, start, length);
-                buffer[length] = '\0';
+                *start_out = start;
+                *length_out = (size_t)(scan - start + 1);
                 return true;
             }
         }
     }
 
-    buffer[0] = '\0';
     return false;
 }
 
@@ -1001,6 +996,7 @@ static int load_system_prompt(
         buffer + used,
         buffer_size - used,
         "\nUse hardware.list when board-specific pins, buses, or capabilities matter.\n"
+        "If the user says this is a tool-call compliance test, says the transcript is audited, or explicitly lists tools you must use, call every applicable listed tool before replying, even if some of those tool calls fail.\n"
     );
     return 0;
 }
@@ -1510,16 +1506,25 @@ static int parse_provider_response(const char *json, espclaw_provider_response_t
     while ((cursor = strstr(cursor, "\"type\":\"function_call\"")) != NULL &&
            response->tool_call_count < ESPCLAW_AGENT_TOOL_CALL_MAX) {
         espclaw_agent_tool_call_t *tool_call = &response->tool_calls[response->tool_call_count];
-        char function_call_json[ESPCLAW_AGENT_TOOL_ARGS_MAX + 512];
+        const char *function_call_start = NULL;
+        size_t function_call_length = 0;
+        char *function_call_json = NULL;
         char wire_name[sizeof(tool_call->name)];
 
-        if (extract_json_object_containing(json, cursor, function_call_json, sizeof(function_call_json)) &&
+        if (find_json_object_containing_span(json, cursor, &function_call_start, &function_call_length) &&
+            function_call_length > 0 &&
+            (function_call_json = (char *)calloc(1, function_call_length + 1U)) != NULL) {
+            memcpy(function_call_json, function_call_start, function_call_length);
+            function_call_json[function_call_length] = '\0';
+        }
+        if (function_call_json != NULL &&
             extract_json_string_from(function_call_json, "call_id", NULL, tool_call->call_id, sizeof(tool_call->call_id)) &&
             extract_json_string_from(function_call_json, "name", NULL, wire_name, sizeof(wire_name)) &&
             extract_json_string_from(function_call_json, "arguments", NULL, tool_call->arguments_json, sizeof(tool_call->arguments_json))) {
             decode_tool_name(wire_name, tool_call->name, sizeof(tool_call->name));
             response->tool_call_count++;
         }
+        free(function_call_json);
         cursor += strlen("\"type\":\"function_call\"");
     }
 
@@ -1691,6 +1696,132 @@ static bool json_argument_bool(const char *arguments_json, const char *key, bool
     return false;
 }
 
+static bool json_argument_double(const char *arguments_json, const char *key, double *value_out)
+{
+    const char *cursor = find_json_key_after(arguments_json, key, NULL);
+    char *end_ptr = NULL;
+    double parsed = 0.0;
+
+    if (cursor == NULL || value_out == NULL) {
+        return false;
+    }
+
+    cursor = strchr(cursor, ':');
+    if (cursor == NULL) {
+        return false;
+    }
+    cursor++;
+    while (*cursor != '\0' && isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+
+    parsed = strtod(cursor, &end_ptr);
+    if (end_ptr == cursor) {
+        return false;
+    }
+
+    *value_out = parsed;
+    return true;
+}
+
+static int resolve_default_i2c_bus(int *port_out, int *sda_pin_out, int *scl_pin_out, int *frequency_hz_out)
+{
+    espclaw_board_i2c_bus_t bus;
+
+    if (port_out == NULL || sda_pin_out == NULL || scl_pin_out == NULL || frequency_hz_out == NULL) {
+        return -1;
+    }
+    if (espclaw_board_find_i2c_bus("default", &bus) != 0) {
+        return -1;
+    }
+
+    *port_out = bus.port;
+    *sda_pin_out = bus.sda_pin;
+    *scl_pin_out = bus.scl_pin;
+    *frequency_hz_out = bus.frequency_hz;
+    return 0;
+}
+
+static int ensure_i2c_ready(const char *arguments_json, int *port_out)
+{
+    int port = 0;
+    int sda_pin = -1;
+    int scl_pin = -1;
+    int frequency_hz = 400000;
+
+    if (port_out == NULL) {
+        return -1;
+    }
+    (void)json_argument_int(arguments_json, "port", &port);
+    (void)json_argument_int(arguments_json, "sda_pin", &sda_pin);
+    (void)json_argument_int(arguments_json, "scl_pin", &scl_pin);
+    (void)json_argument_int(arguments_json, "frequency_hz", &frequency_hz);
+    if (sda_pin < 0 || scl_pin < 0) {
+        (void)resolve_default_i2c_bus(&port, &sda_pin, &scl_pin, &frequency_hz);
+    }
+    if (sda_pin < 0 || scl_pin < 0 || espclaw_hw_i2c_begin(port, sda_pin, scl_pin, frequency_hz) != 0) {
+        return -1;
+    }
+
+    *port_out = port;
+    return 0;
+}
+
+static bool parse_hex_bytes(const char *text, uint8_t *data, size_t max_length, size_t *length_out)
+{
+    size_t count = 0;
+    const char *cursor = text;
+
+    if (text == NULL || data == NULL || length_out == NULL || max_length == 0) {
+        return false;
+    }
+
+    while (*cursor != '\0') {
+        unsigned int value = 0;
+        int consumed = 0;
+
+        while (*cursor != '\0' &&
+               (isspace((unsigned char)*cursor) || *cursor == ',' || *cursor == '[' || *cursor == ']')) {
+            cursor++;
+        }
+        if (*cursor == '\0') {
+            break;
+        }
+        if (count >= max_length) {
+            return false;
+        }
+        if (sscanf(cursor, "%x%n", &value, &consumed) != 1 || consumed <= 0 || value > 0xFFU) {
+            return false;
+        }
+        data[count++] = (uint8_t)value;
+        cursor += consumed;
+    }
+
+    *length_out = count;
+    return count > 0;
+}
+
+static size_t append_json_hex_string(char *buffer, size_t buffer_size, size_t used, const uint8_t *data, size_t length)
+{
+    size_t index;
+
+    if (used >= buffer_size) {
+        return used;
+    }
+    buffer[used++] = '"';
+    for (index = 0; index < length && used + 3 < buffer_size; ++index) {
+        if (index > 0) {
+            buffer[used++] = ' ';
+        }
+        used += (size_t)snprintf(buffer + used, buffer_size - used, "%02X", data[index]);
+    }
+    if (used < buffer_size) {
+        buffer[used++] = '"';
+        buffer[used] = '\0';
+    }
+    return used;
+}
+
 static bool normalize_app_id_text(const char *input, char *buffer, size_t buffer_size)
 {
     size_t used = 0;
@@ -1790,6 +1921,50 @@ static int tool_fs_list(const char *workspace_root, const char *arguments_json, 
     return 0;
 }
 
+static int tool_fs_write(const char *workspace_root, const char *arguments_json, char *buffer, size_t buffer_size)
+{
+    char path[256];
+    char content[2048];
+
+    if (!json_argument_string(arguments_json, "path", path, sizeof(path))) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"missing path\"}");
+        return -1;
+    }
+    if (!json_argument_string(arguments_json, "content", content, sizeof(content))) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"missing content\"}");
+        return -1;
+    }
+    if (espclaw_workspace_write_file(workspace_root, path, content) != 0) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"failed to write file\"}");
+        return -1;
+    }
+
+    snprintf(buffer, buffer_size, "{\"ok\":true,\"path\":\"%s\",\"bytes_written\":%u}", path, (unsigned)strlen(content));
+    return 0;
+}
+
+static int tool_fs_delete(const char *workspace_root, const char *arguments_json, char *buffer, size_t buffer_size)
+{
+    char path[256];
+    char absolute_path[512];
+
+    if (!json_argument_string(arguments_json, "path", path, sizeof(path))) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"missing path\"}");
+        return -1;
+    }
+    if (espclaw_workspace_resolve_path(workspace_root, path, absolute_path, sizeof(absolute_path)) != 0) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"invalid path\"}");
+        return -1;
+    }
+    if (unlink(absolute_path) != 0) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"failed to delete file\"}");
+        return -1;
+    }
+
+    snprintf(buffer, buffer_size, "{\"ok\":true,\"path\":\"%s\",\"deleted\":true}", path);
+    return 0;
+}
+
 static int tool_system_info(const char *workspace_root, char *buffer, size_t buffer_size)
 {
     struct stat statbuf;
@@ -1819,6 +1994,241 @@ static int tool_hardware_list(char *buffer, size_t buffer_size)
 static int tool_list_tools(char *buffer, size_t buffer_size)
 {
     espclaw_render_tools_json(buffer, buffer_size);
+    return 0;
+}
+
+static int tool_wifi_status(char *buffer, size_t buffer_size)
+{
+#ifdef ESP_PLATFORM
+    const espclaw_runtime_status_t *status = espclaw_runtime_status();
+
+    if (status == NULL) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"runtime unavailable\"}");
+        return -1;
+    }
+
+    snprintf(
+        buffer,
+        buffer_size,
+        "{\"ok\":true,\"connected\":%s,\"mode\":",
+        status->wifi_ready ? "true" : "false"
+    );
+    append_escaped_json(buffer, buffer_size, strlen(buffer), status->wifi_ready ? "sta" : (status->provisioning_active ? "provisioning" : "offline"));
+    append_text_segment(buffer, buffer_size, ",\"ssid\":");
+    append_escaped_json(buffer, buffer_size, strlen(buffer), status->wifi_ssid);
+    append_text_segment(buffer, buffer_size, "}");
+    return 0;
+#else
+    snprintf(buffer, buffer_size, "{\"ok\":true,\"connected\":false,\"mode\":\"simulated\",\"ssid\":\"\"}");
+    return 0;
+#endif
+}
+
+static int tool_wifi_scan(char *buffer, size_t buffer_size)
+{
+#ifdef ESP_PLATFORM
+    espclaw_wifi_network_t networks[16];
+    size_t count = 0;
+    size_t used = 0;
+    size_t index;
+
+    if (espclaw_runtime_wifi_scan(networks, sizeof(networks) / sizeof(networks[0]), &count) != ESP_OK) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"wifi scan failed\"}");
+        return -1;
+    }
+
+    used += (size_t)snprintf(buffer + used, buffer_size - used, "{\"ok\":true,\"networks\":[");
+    for (index = 0; index < count && used + 32 < buffer_size; ++index) {
+        if (index > 0) {
+            used += (size_t)snprintf(buffer + used, buffer_size - used, ",");
+        }
+        used += (size_t)snprintf(buffer + used, buffer_size - used, "{\"ssid\":");
+        used = append_escaped_json(buffer, buffer_size, used, networks[index].ssid);
+        used += (size_t)snprintf(
+            buffer + used,
+            buffer_size - used,
+            ",\"rssi\":%d,\"channel\":%d,\"secure\":%s}",
+            networks[index].rssi,
+            networks[index].channel,
+            networks[index].secure ? "true" : "false"
+        );
+    }
+    used += (size_t)snprintf(buffer + used, buffer_size - used, "]}");
+    return 0;
+#else
+    snprintf(buffer, buffer_size, "{\"ok\":true,\"networks\":[]}");
+    return 0;
+#endif
+}
+
+static int tool_ble_scan(char *buffer, size_t buffer_size)
+{
+    snprintf(buffer, buffer_size, "{\"ok\":true,\"supported\":false,\"devices\":[]}");
+    return 0;
+}
+
+static int tool_gpio_read(const char *arguments_json, char *buffer, size_t buffer_size)
+{
+    int pin = -1;
+    int value = 0;
+
+    if (!json_argument_int(arguments_json, "pin", &pin)) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"missing pin\"}");
+        return -1;
+    }
+    if (espclaw_hw_gpio_read(pin, &value) != 0) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"gpio read failed\"}");
+        return -1;
+    }
+
+    snprintf(buffer, buffer_size, "{\"ok\":true,\"pin\":%d,\"value\":%d}", pin, value);
+    return 0;
+}
+
+static int tool_gpio_write(const char *arguments_json, char *buffer, size_t buffer_size)
+{
+    int pin = -1;
+    int value = 0;
+
+    if (!json_argument_int(arguments_json, "pin", &pin) || !json_argument_int(arguments_json, "value", &value)) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"missing pin or value\"}");
+        return -1;
+    }
+    if (espclaw_hw_gpio_write(pin, value != 0 ? 1 : 0) != 0) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"gpio write failed\"}");
+        return -1;
+    }
+
+    snprintf(buffer, buffer_size, "{\"ok\":true,\"pin\":%d,\"value\":%d}", pin, value != 0 ? 1 : 0);
+    return 0;
+}
+
+static int tool_pwm_write(const char *arguments_json, char *buffer, size_t buffer_size)
+{
+    int channel = 0;
+    int duty = -1;
+    int pin = -1;
+    int frequency_hz = 4000;
+    int resolution_bits = 10;
+    int pulse_width_us = -1;
+    espclaw_hw_pwm_state_t state;
+
+    if (!json_argument_int(arguments_json, "channel", &channel)) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"missing channel\"}");
+        return -1;
+    }
+    (void)json_argument_int(arguments_json, "pin", &pin);
+    (void)json_argument_int(arguments_json, "frequency_hz", &frequency_hz);
+    (void)json_argument_int(arguments_json, "resolution_bits", &resolution_bits);
+    (void)json_argument_int(arguments_json, "pulse_width_us", &pulse_width_us);
+    (void)json_argument_int(arguments_json, "duty", &duty);
+    if (pin < 0) {
+        (void)espclaw_board_resolve_pin_alias("flash_led", &pin);
+    }
+    if (espclaw_hw_pwm_state(channel, &state) != 0 || !state.configured) {
+        if (pin < 0 || espclaw_hw_pwm_setup(channel, pin, frequency_hz, resolution_bits) != 0) {
+            snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"pwm setup failed\"}");
+            return -1;
+        }
+    }
+    if (pulse_width_us > 0) {
+        if (espclaw_hw_pwm_write_us(channel, pulse_width_us) != 0) {
+            snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"pwm pulse write failed\"}");
+            return -1;
+        }
+    } else if (duty >= 0) {
+        if (espclaw_hw_pwm_write(channel, duty) != 0) {
+            snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"pwm duty write failed\"}");
+            return -1;
+        }
+    } else {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"missing duty or pulse_width_us\"}");
+        return -1;
+    }
+    if (espclaw_hw_pwm_state(channel, &state) != 0) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"pwm state failed\"}");
+        return -1;
+    }
+
+    snprintf(
+        buffer,
+        buffer_size,
+        "{\"ok\":true,\"channel\":%d,\"pin\":%d,\"duty\":%d,\"pulse_width_us\":%d,\"frequency_hz\":%d}",
+        channel,
+        state.pin,
+        state.duty,
+        state.pulse_width_us,
+        state.frequency_hz
+    );
+    return 0;
+}
+
+static int tool_ppm_write(const char *arguments_json, char *buffer, size_t buffer_size)
+{
+    int channel = 0;
+    int pin = -1;
+    int value_us = 1500;
+    int frame_us = 20000;
+    int pulse_us = 300;
+    uint16_t outputs[1];
+    espclaw_hw_ppm_state_t state;
+
+    if (!json_argument_int(arguments_json, "channel", &channel)) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"missing channel\"}");
+        return -1;
+    }
+    if (!json_argument_int(arguments_json, "value_us", &value_us)) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"missing value_us\"}");
+        return -1;
+    }
+    (void)json_argument_int(arguments_json, "pin", &pin);
+    (void)json_argument_int(arguments_json, "frame_us", &frame_us);
+    (void)json_argument_int(arguments_json, "pulse_us", &pulse_us);
+    if (pin < 0) {
+        (void)espclaw_board_resolve_pin_alias("flash_led", &pin);
+    }
+    if (espclaw_hw_ppm_state(channel, &state) != 0 || !state.configured) {
+        if (pin < 0 || espclaw_hw_ppm_begin(channel, pin, frame_us, pulse_us) != 0) {
+            snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"ppm setup failed\"}");
+            return -1;
+        }
+    }
+    outputs[0] = (uint16_t)value_us;
+    if (espclaw_hw_ppm_write(channel, outputs, 1) != 0 || espclaw_hw_ppm_state(channel, &state) != 0) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"ppm write failed\"}");
+        return -1;
+    }
+
+    snprintf(buffer, buffer_size, "{\"ok\":true,\"channel\":%d,\"pin\":%d,\"value_us\":%u}", channel, state.pin, (unsigned)state.outputs[0]);
+    return 0;
+}
+
+static int tool_adc_read(const char *arguments_json, char *buffer, size_t buffer_size)
+{
+    int unit = 1;
+    int channel = -1;
+    int raw = 0;
+    int millivolts = 0;
+    char name[ESPCLAW_BOARD_ALIAS_MAX + 1];
+
+    (void)json_argument_int(arguments_json, "unit", &unit);
+    if (!json_argument_int(arguments_json, "channel", &channel)) {
+        espclaw_board_adc_channel_t board_channel;
+
+        if (!json_argument_string(arguments_json, "name", name, sizeof(name)) ||
+            espclaw_board_find_adc_channel(name, &board_channel) != 0) {
+            snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"missing channel\"}");
+            return -1;
+        }
+        unit = board_channel.unit;
+        channel = board_channel.channel;
+    }
+    if (espclaw_hw_adc_read_raw(unit, channel, &raw) != 0 || espclaw_hw_adc_read_mv(unit, channel, &millivolts) != 0) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"adc read failed\"}");
+        return -1;
+    }
+
+    snprintf(buffer, buffer_size, "{\"ok\":true,\"unit\":%d,\"channel\":%d,\"raw\":%d,\"millivolts\":%d}", unit, channel, raw, millivolts);
     return 0;
 }
 
@@ -1861,7 +2271,7 @@ static int tool_app_install(const char *workspace_root, const char *arguments_js
 {
     char app_id[ESPCLAW_APP_ID_MAX + 1];
     char raw_name[ESPCLAW_APP_TITLE_MAX + 1];
-    char source[3072];
+    char *source = NULL;
     char title[ESPCLAW_APP_TITLE_MAX + 1];
     char permissions[256];
     char triggers[128];
@@ -1870,20 +2280,28 @@ static int tool_app_install(const char *workspace_root, const char *arguments_js
     bool app_exists = false;
 
     raw_name[0] = '\0';
+    source = (char *)calloc(1, ESPCLAW_AGENT_TOOL_ARGS_MAX + 1U);
+    if (source == NULL) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"out of memory\"}");
+        return -1;
+    }
     if (!json_argument_string_any(arguments_json, (const char *[]){"app_id", "name", "title"}, 3, raw_name, sizeof(raw_name))) {
         snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"missing app_id\"}");
+        free(source);
         return -1;
     }
     if (!espclaw_app_id_is_valid(raw_name)) {
         if (!normalize_app_id_text(raw_name, app_id, sizeof(app_id))) {
             snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"invalid app_id\"}");
+            free(source);
             return -1;
         }
     } else {
         copy_text(app_id, sizeof(app_id), raw_name);
     }
-    if (!json_argument_string_any(arguments_json, (const char *[]){"source", "lua", "code"}, 3, source, sizeof(source))) {
+    if (!json_argument_string_any(arguments_json, (const char *[]){"source", "lua", "code"}, 3, source, ESPCLAW_AGENT_TOOL_ARGS_MAX + 1U)) {
         snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"missing source\"}");
+        free(source);
         return -1;
     }
     if (!json_argument_string_any(arguments_json, (const char *[]){"title", "name", "app_id"}, 3, title, sizeof(title))) {
@@ -1925,20 +2343,24 @@ static int tool_app_install(const char *workspace_root, const char *arguments_js
         append_text_segment(buffer, buffer_size, ",\"app_id\":");
         append_escaped_json(buffer, buffer_size, strlen(buffer), app_id);
         append_text_segment(buffer, buffer_size, "}");
+        free(source);
         return -1;
     }
     if (espclaw_app_update_source(workspace_root, app_id, source) != 0) {
         snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"failed to save source\"}");
+        free(source);
         return -1;
     }
     if (espclaw_app_run(workspace_root, app_id, "manual", "", result, sizeof(result)) != 0) {
         snprintf(buffer, buffer_size, "{\"ok\":true,\"app_id\":\"%s\",\"saved\":true,\"validated\":false}", app_id);
+        free(source);
         return 0;
     }
 
     snprintf(buffer, buffer_size, "{\"ok\":true,\"app_id\":\"%s\",\"saved\":true,\"validated\":true,\"result\":", app_id);
     append_escaped_json(buffer, buffer_size, strlen(buffer), result);
     append_text_segment(buffer, buffer_size, "}");
+    free(source);
     return 0;
 }
 
@@ -2024,7 +2446,7 @@ static int tool_behavior_register(const char *workspace_root, const char *argume
     char behavior_id[ESPCLAW_BEHAVIOR_ID_MAX + 1];
     char app_id[ESPCLAW_APP_ID_MAX + 1];
     char title[ESPCLAW_BEHAVIOR_TITLE_MAX + 1];
-    char source[3072];
+    char *source = NULL;
     char permissions[256];
     char triggers[128];
     char schedule[ESPCLAW_TASK_SCHEDULE_MAX + 1];
@@ -2035,8 +2457,15 @@ static int tool_behavior_register(const char *workspace_root, const char *argume
     int iterations = 0;
     bool autostart = false;
 
+    source = (char *)calloc(1, ESPCLAW_AGENT_TOOL_ARGS_MAX + 1U);
+    if (source == NULL) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"out of memory\"}");
+        return -1;
+    }
+
     if (!json_argument_string(arguments_json, "behavior_id", behavior_id, sizeof(behavior_id))) {
         snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"missing behavior_id\"}");
+        free(source);
         return -1;
     }
     if (!json_argument_string(arguments_json, "app_id", app_id, sizeof(app_id))) {
@@ -2058,7 +2487,7 @@ static int tool_behavior_register(const char *workspace_root, const char *argume
     (void)json_argument_int(arguments_json, "iterations", &iterations);
     (void)json_argument_bool(arguments_json, "autostart", &autostart);
 
-    if (json_argument_string(arguments_json, "source", source, sizeof(source))) {
+    if (json_argument_string(arguments_json, "source", source, ESPCLAW_AGENT_TOOL_ARGS_MAX + 1U)) {
         if (!json_argument_string(arguments_json, "permissions_csv", permissions, sizeof(permissions))) {
             copy_text(
                 permissions,
@@ -2072,10 +2501,12 @@ static int tool_behavior_register(const char *workspace_root, const char *argume
         if (espclaw_app_read_source(workspace_root, app_id, message, sizeof(message)) != 0 &&
             espclaw_app_scaffold_lua(workspace_root, app_id, title, permissions, triggers) != 0) {
             snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"failed to scaffold app\"}");
+            free(source);
             return -1;
         }
         if (espclaw_app_update_source(workspace_root, app_id, source) != 0) {
             snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"failed to save source\"}");
+            free(source);
             return -1;
         }
     }
@@ -2095,10 +2526,12 @@ static int tool_behavior_register(const char *workspace_root, const char *argume
         snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":");
         append_escaped_json(buffer, buffer_size, strlen(buffer), message);
         append_text_segment(buffer, buffer_size, "}");
+        free(source);
         return -1;
     }
 
     espclaw_behavior_render_json(workspace_root, buffer, buffer_size);
+    free(source);
     return 0;
 }
 
@@ -2382,6 +2815,316 @@ static int tool_uart_write(const char *arguments_json, char *buffer, size_t buff
     return 0;
 }
 
+static int tool_i2c_scan(const char *arguments_json, char *buffer, size_t buffer_size)
+{
+    uint8_t addresses[ESPCLAW_HW_I2C_SCAN_MAX];
+    size_t count = 0;
+    size_t used = 0;
+    size_t index;
+    int port = 0;
+
+    if (ensure_i2c_ready(arguments_json, &port) != 0 || espclaw_hw_i2c_scan(port, addresses, sizeof(addresses), &count) != 0) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"i2c scan failed\"}");
+        return -1;
+    }
+
+    used += (size_t)snprintf(buffer + used, buffer_size - used, "{\"ok\":true,\"port\":%d,\"addresses\":[", port);
+    for (index = 0; index < count && used + 8 < buffer_size; ++index) {
+        if (index > 0) {
+            used += (size_t)snprintf(buffer + used, buffer_size - used, ",");
+        }
+        used += (size_t)snprintf(buffer + used, buffer_size - used, "%u", (unsigned)addresses[index]);
+    }
+    used += (size_t)snprintf(buffer + used, buffer_size - used, "]}");
+    return 0;
+}
+
+static int tool_i2c_read(const char *arguments_json, char *buffer, size_t buffer_size)
+{
+    int port = 0;
+    int address = -1;
+    int reg = -1;
+    int length = 0;
+    uint8_t data[64];
+    size_t used = 0;
+
+    if (!json_argument_int(arguments_json, "address", &address) ||
+        !json_argument_int(arguments_json, "register", &reg) ||
+        !json_argument_int(arguments_json, "length", &length) ||
+        length <= 0 || length > (int)sizeof(data)) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"missing address/register/length\"}");
+        return -1;
+    }
+    if (ensure_i2c_ready(arguments_json, &port) != 0 ||
+        espclaw_hw_i2c_read_reg(port, (uint8_t)address, (uint8_t)reg, data, (size_t)length) != 0) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"i2c read failed\"}");
+        return -1;
+    }
+
+    used += (size_t)snprintf(buffer + used, buffer_size - used, "{\"ok\":true,\"port\":%d,\"address\":%d,\"register\":%d,\"length\":%d,\"data_hex\":", port, address, reg, length);
+    used = append_json_hex_string(buffer, buffer_size, used, data, (size_t)length);
+    used += (size_t)snprintf(buffer + used, buffer_size - used, "}");
+    return 0;
+}
+
+static int tool_i2c_write(const char *arguments_json, char *buffer, size_t buffer_size)
+{
+    int port = 0;
+    int address = -1;
+    int reg = -1;
+    char data_text[256];
+    uint8_t data[64];
+    size_t length = 0;
+
+    if (!json_argument_int(arguments_json, "address", &address) ||
+        !json_argument_int(arguments_json, "register", &reg) ||
+        !json_argument_string(arguments_json, "data", data_text, sizeof(data_text)) ||
+        !parse_hex_bytes(data_text, data, sizeof(data), &length)) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"missing address/register/data\"}");
+        return -1;
+    }
+    if (ensure_i2c_ready(arguments_json, &port) != 0 ||
+        espclaw_hw_i2c_write_reg(port, (uint8_t)address, (uint8_t)reg, data, length) != 0) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"i2c write failed\"}");
+        return -1;
+    }
+
+    snprintf(buffer, buffer_size, "{\"ok\":true,\"port\":%d,\"address\":%d,\"register\":%d,\"bytes_written\":%u}", port, address, reg, (unsigned)length);
+    return 0;
+}
+
+static int tool_temperature_read(const char *arguments_json, char *buffer, size_t buffer_size)
+{
+    int port = 0;
+    int address = 0x48;
+    char sensor[32];
+    double temperature_c = 0.0;
+
+    if (!json_argument_string(arguments_json, "sensor", sensor, sizeof(sensor))) {
+        copy_text(sensor, sizeof(sensor), "tmp102");
+    }
+    (void)json_argument_int(arguments_json, "address", &address);
+    if (strcmp(sensor, "tmp102") != 0) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"unsupported temperature sensor\"}");
+        return -1;
+    }
+    if (ensure_i2c_ready(arguments_json, &port) != 0 || espclaw_hw_tmp102_read_c(port, (uint8_t)address, &temperature_c) != 0) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"temperature read failed\"}");
+        return -1;
+    }
+
+    snprintf(buffer, buffer_size, "{\"ok\":true,\"sensor\":\"tmp102\",\"port\":%d,\"address\":%d,\"temperature_c\":%.4f}", port, address, temperature_c);
+    return 0;
+}
+
+static int tool_imu_read(const char *arguments_json, char *buffer, size_t buffer_size)
+{
+    int port = 0;
+    int address = 0x68;
+    char sensor[32];
+    espclaw_hw_mpu6050_sample_t sample;
+
+    if (!json_argument_string(arguments_json, "sensor", sensor, sizeof(sensor))) {
+        copy_text(sensor, sizeof(sensor), "mpu6050");
+    }
+    (void)json_argument_int(arguments_json, "address", &address);
+    if (strcmp(sensor, "mpu6050") != 0) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"unsupported imu sensor\"}");
+        return -1;
+    }
+    if (ensure_i2c_ready(arguments_json, &port) != 0 ||
+        espclaw_hw_mpu6050_begin(port, (uint8_t)address) != 0 ||
+        espclaw_hw_mpu6050_read(port, (uint8_t)address, &sample) != 0) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"imu read failed\"}");
+        return -1;
+    }
+
+    snprintf(
+        buffer,
+        buffer_size,
+        "{\"ok\":true,\"sensor\":\"mpu6050\",\"port\":%d,\"address\":%d,\"accel_g\":{\"x\":%.6f,\"y\":%.6f,\"z\":%.6f},\"gyro_dps\":{\"x\":%.6f,\"y\":%.6f,\"z\":%.6f},\"temperature_c\":%.6f}",
+        port,
+        address,
+        sample.accel_x_g,
+        sample.accel_y_g,
+        sample.accel_z_g,
+        sample.gyro_x_dps,
+        sample.gyro_y_dps,
+        sample.gyro_z_dps,
+        sample.temperature_c
+    );
+    return 0;
+}
+
+static int tool_buzzer_play(const char *arguments_json, char *buffer, size_t buffer_size)
+{
+    int channel = 0;
+    int pin = -1;
+    int frequency_hz = 0;
+    int duration_ms = 0;
+    int duty_percent = 50;
+
+    (void)json_argument_int(arguments_json, "channel", &channel);
+    if (!json_argument_int(arguments_json, "pin", &pin) ||
+        !json_argument_int(arguments_json, "frequency_hz", &frequency_hz) ||
+        !json_argument_int(arguments_json, "duration_ms", &duration_ms)) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"missing pin/frequency_hz/duration_ms\"}");
+        return -1;
+    }
+    (void)json_argument_int(arguments_json, "duty_percent", &duty_percent);
+    if (espclaw_hw_buzzer_tone(channel, pin, frequency_hz, duration_ms, duty_percent) != 0) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"buzzer play failed\"}");
+        return -1;
+    }
+
+    snprintf(buffer, buffer_size, "{\"ok\":true,\"channel\":%d,\"pin\":%d,\"frequency_hz\":%d,\"duration_ms\":%d}", channel, pin, frequency_hz, duration_ms);
+    return 0;
+}
+
+static int tool_pid_compute(const char *arguments_json, char *buffer, size_t buffer_size)
+{
+    double setpoint = 0.0;
+    double measurement = 0.0;
+    double dt_seconds = 0.0;
+    double kp = 0.0;
+    double ki = 0.0;
+    double kd = 0.0;
+    double integral = 0.0;
+    double previous_error = 0.0;
+    double output_min = -1000000000.0;
+    double output_max = 1000000000.0;
+    double integral_out = 0.0;
+    double error_out = 0.0;
+    double output = 0.0;
+
+    if (!json_argument_double(arguments_json, "setpoint", &setpoint) ||
+        !json_argument_double(arguments_json, "measurement", &measurement) ||
+        !json_argument_double(arguments_json, "dt_seconds", &dt_seconds) ||
+        !json_argument_double(arguments_json, "kp", &kp) ||
+        !json_argument_double(arguments_json, "ki", &ki) ||
+        !json_argument_double(arguments_json, "kd", &kd)) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"missing pid parameters\"}");
+        return -1;
+    }
+    (void)json_argument_double(arguments_json, "integral", &integral);
+    (void)json_argument_double(arguments_json, "previous_error", &previous_error);
+    (void)json_argument_double(arguments_json, "output_min", &output_min);
+    (void)json_argument_double(arguments_json, "output_max", &output_max);
+    output = espclaw_hw_pid_step(
+        setpoint,
+        measurement,
+        integral,
+        previous_error,
+        kp,
+        ki,
+        kd,
+        dt_seconds,
+        output_min,
+        output_max,
+        &integral_out,
+        &error_out);
+    snprintf(buffer, buffer_size, "{\"ok\":true,\"output\":%.6f,\"integral\":%.6f,\"error\":%.6f}", output, integral_out, error_out);
+    return 0;
+}
+
+static int tool_control_mix(const char *arguments_json, char *buffer, size_t buffer_size)
+{
+    char mode[32];
+    double throttle = 0.0;
+    double steering = 0.0;
+    double roll = 0.0;
+    double pitch = 0.0;
+    double yaw = 0.0;
+    double output_min = -1.0;
+    double output_max = 1.0;
+
+    if (!json_argument_string(arguments_json, "mode", mode, sizeof(mode))) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"missing mode\"}");
+        return -1;
+    }
+    (void)json_argument_double(arguments_json, "throttle", &throttle);
+    (void)json_argument_double(arguments_json, "steering", &steering);
+    (void)json_argument_double(arguments_json, "turn", &steering);
+    (void)json_argument_double(arguments_json, "roll", &roll);
+    (void)json_argument_double(arguments_json, "pitch", &pitch);
+    (void)json_argument_double(arguments_json, "yaw", &yaw);
+    (void)json_argument_double(arguments_json, "output_min", &output_min);
+    (void)json_argument_double(arguments_json, "output_max", &output_max);
+
+    if (strcmp(mode, "differential") == 0 || strcmp(mode, "rover") == 0) {
+        double left = 0.0;
+        double right = 0.0;
+
+        if (espclaw_hw_mix_differential_drive(throttle, steering, output_min, output_max, &left, &right) != 0) {
+            snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"differential mix failed\"}");
+            return -1;
+        }
+        snprintf(buffer, buffer_size, "{\"ok\":true,\"mode\":\"differential\",\"left\":%.6f,\"right\":%.6f}", left, right);
+        return 0;
+    }
+    if (strcmp(mode, "quad_x") == 0 || strcmp(mode, "quad") == 0) {
+        double front_left = 0.0;
+        double front_right = 0.0;
+        double rear_right = 0.0;
+        double rear_left = 0.0;
+
+        if (espclaw_hw_mix_quad_x(throttle, roll, pitch, yaw, output_min, output_max, &front_left, &front_right, &rear_right, &rear_left) != 0) {
+            snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"quad mix failed\"}");
+            return -1;
+        }
+        snprintf(
+            buffer,
+            buffer_size,
+            "{\"ok\":true,\"mode\":\"quad_x\",\"front_left\":%.6f,\"front_right\":%.6f,\"rear_right\":%.6f,\"rear_left\":%.6f}",
+            front_left,
+            front_right,
+            rear_right,
+            rear_left
+        );
+        return 0;
+    }
+
+    snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"unsupported control mix mode\"}");
+    return -1;
+}
+
+static int tool_spi_transfer(const char *arguments_json, char *buffer, size_t buffer_size)
+{
+    int bus = 0;
+    char data[256];
+
+    (void)json_argument_int(arguments_json, "bus", &bus);
+    if (!json_argument_string(arguments_json, "data", data, sizeof(data))) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"missing data\"}");
+        return -1;
+    }
+    snprintf(buffer, buffer_size, "{\"ok\":false,\"supported\":false,\"bus\":%d,\"error\":\"spi transfer not implemented\"}", bus);
+    return -1;
+}
+
+static int tool_ota_check(char *buffer, size_t buffer_size)
+{
+#ifdef ESP_PLATFORM
+    espclaw_ota_snapshot_t snapshot;
+
+    espclaw_ota_manager_snapshot(&snapshot);
+    snprintf(
+        buffer,
+        buffer_size,
+        "{\"ok\":true,\"supported\":true,\"running_partition\":\"%s\",\"target_partition\":\"%s\",\"upload_in_progress\":%s,\"status\":",
+        snapshot.running_partition_label,
+        snapshot.target_partition_label,
+        snapshot.upload_in_progress ? "true" : "false"
+    );
+    append_escaped_json(buffer, buffer_size, strlen(buffer), snapshot.last_message[0] != '\0' ? snapshot.last_message : "ready");
+    append_text_segment(buffer, buffer_size, "}");
+    return 0;
+#else
+    snprintf(buffer, buffer_size, "{\"ok\":true,\"supported\":false}");
+    return 0;
+#endif
+}
+
 static int tool_execute(
     const char *workspace_root,
     const espclaw_agent_tool_call_t *tool_call,
@@ -2406,8 +3149,14 @@ static int tool_execute(
     if (strcmp(tool_call->name, "fs.read") == 0) {
         return tool_fs_read(workspace_root, tool_call->arguments_json, buffer, buffer_size);
     }
+    if (strcmp(tool_call->name, "fs.write") == 0) {
+        return tool_fs_write(workspace_root, tool_call->arguments_json, buffer, buffer_size);
+    }
     if (strcmp(tool_call->name, "fs.list") == 0) {
         return tool_fs_list(workspace_root, tool_call->arguments_json, buffer, buffer_size);
+    }
+    if (strcmp(tool_call->name, "fs.delete") == 0) {
+        return tool_fs_delete(workspace_root, tool_call->arguments_json, buffer, buffer_size);
     }
     if (strcmp(tool_call->name, "system.info") == 0) {
         return tool_system_info(workspace_root, buffer, buffer_size);
@@ -2430,8 +3179,58 @@ static int tool_execute(
         return status;
     }
     if (strcmp(tool_call->name, "wifi.status") == 0) {
-        snprintf(buffer, buffer_size, "{\"ok\":true,\"connected\":false,\"mode\":\"simulated\"}");
-        return 0;
+        return tool_wifi_status(buffer, buffer_size);
+    }
+    if (strcmp(tool_call->name, "wifi.scan") == 0) {
+        return tool_wifi_scan(buffer, buffer_size);
+    }
+    if (strcmp(tool_call->name, "ble.scan") == 0) {
+        return tool_ble_scan(buffer, buffer_size);
+    }
+    if (strcmp(tool_call->name, "gpio.read") == 0) {
+        return tool_gpio_read(tool_call->arguments_json, buffer, buffer_size);
+    }
+    if (strcmp(tool_call->name, "gpio.write") == 0) {
+        return tool_gpio_write(tool_call->arguments_json, buffer, buffer_size);
+    }
+    if (strcmp(tool_call->name, "pwm.write") == 0) {
+        return tool_pwm_write(tool_call->arguments_json, buffer, buffer_size);
+    }
+    if (strcmp(tool_call->name, "ppm.write") == 0) {
+        return tool_ppm_write(tool_call->arguments_json, buffer, buffer_size);
+    }
+    if (strcmp(tool_call->name, "adc.read") == 0) {
+        return tool_adc_read(tool_call->arguments_json, buffer, buffer_size);
+    }
+    if (strcmp(tool_call->name, "i2c.scan") == 0) {
+        return tool_i2c_scan(tool_call->arguments_json, buffer, buffer_size);
+    }
+    if (strcmp(tool_call->name, "i2c.read") == 0) {
+        return tool_i2c_read(tool_call->arguments_json, buffer, buffer_size);
+    }
+    if (strcmp(tool_call->name, "i2c.write") == 0) {
+        return tool_i2c_write(tool_call->arguments_json, buffer, buffer_size);
+    }
+    if (strcmp(tool_call->name, "temperature.read") == 0) {
+        return tool_temperature_read(tool_call->arguments_json, buffer, buffer_size);
+    }
+    if (strcmp(tool_call->name, "imu.read") == 0) {
+        return tool_imu_read(tool_call->arguments_json, buffer, buffer_size);
+    }
+    if (strcmp(tool_call->name, "buzzer.play") == 0) {
+        return tool_buzzer_play(tool_call->arguments_json, buffer, buffer_size);
+    }
+    if (strcmp(tool_call->name, "pid.compute") == 0) {
+        return tool_pid_compute(tool_call->arguments_json, buffer, buffer_size);
+    }
+    if (strcmp(tool_call->name, "control.mix") == 0) {
+        return tool_control_mix(tool_call->arguments_json, buffer, buffer_size);
+    }
+    if (strcmp(tool_call->name, "spi.transfer") == 0) {
+        return tool_spi_transfer(tool_call->arguments_json, buffer, buffer_size);
+    }
+    if (strcmp(tool_call->name, "ota.check") == 0) {
+        return tool_ota_check(buffer, buffer_size);
     }
     if (strcmp(tool_call->name, "app.list") == 0) {
         return tool_app_list(workspace_root, buffer, buffer_size);

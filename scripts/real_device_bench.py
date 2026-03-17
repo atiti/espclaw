@@ -542,71 +542,50 @@ def stage_tool_matrix_full(client: BenchClient, session_prefix: str) -> StageRes
     i2c_port = next((int(item.get("port", 0)) for item in i2c_buses if isinstance(item, dict)), 0)
     uart_port = next((int(item.get("port", 0)) for item in uart_ports if isinstance(item, dict)), 0)
     cases = [
-        (
-            "catalog",
-            "This is a tool-call compliance test. Call tool.list exactly once, then reply exactly TOOL_CASE_CATALOG_OK.",
-            ["tool.list"],
-        ),
-        (
-            "inventory",
-            "This is a tool-call compliance test. Call system.info and hardware.list, then reply exactly TOOL_CASE_INVENTORY_OK.",
-            ["system.info", "hardware.list"],
-        ),
-        (
-            "network",
-            "This is a tool-call compliance test. Call wifi.status, wifi.scan, and ble.scan even if one reports unavailable, then reply exactly TOOL_CASE_NETWORK_OK.",
-            ["wifi.status", "wifi.scan", "ble.scan"],
-        ),
-        (
-            "workspace",
-            "This is a tool-call compliance test. Call fs.list on '.', fs.write on memory/tool_matrix.txt with content 'matrix', fs.read on that file, then fs.delete it. Reply exactly TOOL_CASE_WORKSPACE_OK.",
-            ["fs.list", "fs.write", "fs.read", "fs.delete"],
-        ),
-        (
-            "apps",
-            "This is a tool-call compliance test. Call app.list, then app.install to create tool_matrix_app whose manual trigger returns exactly TOOL_MATRIX_APP_OK, then app.run it, then app.remove it. Reply exactly TOOL_CASE_APPS_OK.",
-            ["app.list", "app.install", "app.run", "app.remove"],
-        ),
-        (
-            "behaviors",
-            "This is a tool-call compliance test. Create tool_matrix_behavior_app with app.install, then call behavior.list, behavior.register, behavior.start, behavior.stop, and behavior.remove using ids tool_matrix_behavior_app and tool_matrix_behavior. Reply exactly TOOL_CASE_BEHAVIORS_OK.",
-            ["app.install", "behavior.list", "behavior.register", "behavior.start", "behavior.stop", "behavior.remove"],
-        ),
-        (
-            "tasks",
-            "This is a tool-call compliance test. Create tool_matrix_task_app with app.install, then call task.list, task.start, event.emit, task.stop, event.watch_list, event.watch_add, and event.watch_remove. Use ids tool_matrix_task_app, tool_matrix_task, and tool_matrix_watch. Reply exactly TOOL_CASE_TASKS_OK.",
-            ["app.install", "task.list", "task.start", "event.emit", "task.stop", "event.watch_list", "event.watch_add", "event.watch_remove"],
-        ),
-        (
-            "camera",
-            "This is a tool-call compliance test. Call camera.capture with filename tool_matrix.jpg, then reply exactly TOOL_CASE_CAMERA_OK.",
-            ["camera.capture"],
-        ),
-        (
-            "gpio",
-            f"This is a tool-call compliance test. Call gpio.read on pin {flash_led_pin}, then gpio.write on pin {flash_led_pin} with value 0, then reply exactly TOOL_CASE_GPIO_OK.",
-            ["gpio.read", "gpio.write"],
-        ),
-        (
-            "motion",
-            f"This is a tool-call compliance test. Call pwm.write, ppm.write, and buzzer.play using pin {flash_led_pin} or that same channel where needed, then reply exactly TOOL_CASE_MOTION_OK.",
-            ["pwm.write", "ppm.write", "buzzer.play"],
-        ),
-        (
-            "busio",
-            f"This is a tool-call compliance test. Call adc.read on channel {adc_channel}, uart.write on port {uart_port}, and uart.read on port {uart_port}. Reply exactly TOOL_CASE_BUSIO_OK.",
-            ["adc.read", "uart.write", "uart.read"],
-        ),
-        (
-            "sensors",
-            f"This is a tool-call compliance test. Call i2c.scan, i2c.read, i2c.write, temperature.read, and imu.read using I2C port {i2c_port}. Hardware-dependent tools may fail, but you must still call them. Reply exactly TOOL_CASE_SENSORS_OK.",
-            ["i2c.scan", "i2c.read", "i2c.write", "temperature.read", "imu.read"],
-        ),
-        (
-            "compute",
-            "This is a tool-call compliance test. Call pid.compute, control.mix, spi.transfer, and ota.check, then reply exactly TOOL_CASE_COMPUTE_OK.",
-            ["pid.compute", "control.mix", "spi.transfer", "ota.check"],
-        ),
+        ("catalog", "This is a tool-call compliance test. Call tool.list exactly once, then reply exactly TOOL_CASE_CATALOG_OK.", ["tool.list"]),
+        ("sysinfo", "This is a tool-call compliance test. Call system.info exactly once, then reply exactly TOOL_CASE_SYSINFO_OK.", ["system.info"]),
+        ("hardware", "This is a tool-call compliance test. Call hardware.list exactly once, then reply exactly TOOL_CASE_HARDWARE_OK.", ["hardware.list"]),
+        ("wifistatus", "This is a tool-call compliance test. Call wifi.status exactly once, then reply exactly TOOL_CASE_WIFISTATUS_OK.", ["wifi.status"]),
+        ("wifiscan", "This is a tool-call compliance test. Call wifi.scan exactly once. If it reports unavailable, continue anyway and reply exactly TOOL_CASE_WIFISCAN_OK.", ["wifi.scan"]),
+        ("blescan", "This is a tool-call compliance test. Call ble.scan exactly once. It may report unsupported on this board; continue anyway and reply exactly TOOL_CASE_BLESCAN_OK.", ["ble.scan"]),
+        ("fslist", "This is a tool-call compliance test. Call fs.list on '.', then reply exactly TOOL_CASE_FSLIST_OK.", ["fs.list"]),
+        ("fswrite", "This is a tool-call compliance test. Call fs.write on memory/tool_matrix.txt with content 'matrix', then reply exactly TOOL_CASE_FSWRITE_OK.", ["fs.write"]),
+        ("fsread", "This is a tool-call compliance test. Call fs.read on memory/tool_matrix.txt, then reply exactly TOOL_CASE_FSREAD_OK.", ["fs.read"]),
+        ("fsdelete", "This is a tool-call compliance test. Call fs.delete on memory/tool_matrix.txt, then reply exactly TOOL_CASE_FSDELETE_OK.", ["fs.delete"]),
+        ("applist", "This is a tool-call compliance test. Call app.list exactly once, then reply exactly TOOL_CASE_APPLIST_OK.", ["app.list"]),
+        ("appinstall", "This is a tool-call compliance test. Call app.install to create tool_matrix_app whose manual trigger returns exactly TOOL_MATRIX_APP_OK, then reply exactly TOOL_CASE_APPINSTALL_OK.", ["app.install"]),
+        ("apprun", "This is a tool-call compliance test. Call app.run on tool_matrix_app with the manual trigger, then reply exactly TOOL_CASE_APPRUN_OK.", ["app.run"]),
+        ("appremove", "This is a tool-call compliance test. Call app.remove on tool_matrix_app, then reply exactly TOOL_CASE_APPREMOVE_OK.", ["app.remove"]),
+        ("behaviorlist", "This is a tool-call compliance test. Call behavior.list exactly once, then reply exactly TOOL_CASE_BEHAVIORLIST_OK.", ["behavior.list"]),
+        ("behaviorregister", "This is a tool-call compliance test. Call behavior.register to create tool_matrix_behavior bound to tool_matrix_behavior_app, and include source that returns TOOL_MATRIX_BEHAVIOR_OK on manual trigger. If the app does not exist yet, use the same call to install/update its source. Reply exactly TOOL_CASE_BEHAVIORREGISTER_OK.", ["behavior.register"]),
+        ("behaviorstart", "This is a tool-call compliance test. Call behavior.start on tool_matrix_behavior, then reply exactly TOOL_CASE_BEHAVIORSTART_OK.", ["behavior.start"]),
+        ("behaviorstop", "This is a tool-call compliance test. Call behavior.stop on tool_matrix_behavior, then reply exactly TOOL_CASE_BEHAVIORSTOP_OK.", ["behavior.stop"]),
+        ("behaviorremove", "This is a tool-call compliance test. Call behavior.remove on tool_matrix_behavior, then reply exactly TOOL_CASE_BEHAVIORREMOVE_OK.", ["behavior.remove"]),
+        ("tasklist", "This is a tool-call compliance test. Call task.list exactly once, then reply exactly TOOL_CASE_TASKLIST_OK.", ["task.list"]),
+        ("taskstart", "This is a tool-call compliance test. Call task.start to start task id tool_matrix_task using app id tool_matrix_task_app. If that app does not exist yet, install it first so its manual or timer trigger returns TOOL_MATRIX_TASK_OK. Reply exactly TOOL_CASE_TASKSTART_OK.", ["task.start"]),
+        ("eventemit", "This is a tool-call compliance test. Call event.emit with name sensor and payload near, then reply exactly TOOL_CASE_EVENTEMIT_OK.", ["event.emit"]),
+        ("taskstop", "This is a tool-call compliance test. Call task.stop on tool_matrix_task, then reply exactly TOOL_CASE_TASKSTOP_OK.", ["task.stop"]),
+        ("watchlist", "This is a tool-call compliance test. Call event.watch_list exactly once, then reply exactly TOOL_CASE_WATCHLIST_OK.", ["event.watch_list"]),
+        ("watchadd", f"This is a tool-call compliance test. Call event.watch_add to create watch id tool_matrix_watch as a UART watch on port {uart_port}, then reply exactly TOOL_CASE_WATCHADD_OK.", ["event.watch_add"]),
+        ("watchremove", "This is a tool-call compliance test. Call event.watch_remove on tool_matrix_watch, then reply exactly TOOL_CASE_WATCHREMOVE_OK.", ["event.watch_remove"]),
+        ("otacheck", "This is a tool-call compliance test. Call ota.check exactly once, then reply exactly TOOL_CASE_OTACHECK_OK.", ["ota.check"]),
+        ("camera", "This is a tool-call compliance test. Call camera.capture with filename tool_matrix.jpg, then reply exactly TOOL_CASE_CAMERA_OK.", ["camera.capture"]),
+        ("gpioread", f"This is a tool-call compliance test. Call gpio.read on pin {flash_led_pin}, then reply exactly TOOL_CASE_GPIOREAD_OK.", ["gpio.read"]),
+        ("gpiowrite", f"This is a tool-call compliance test. Call gpio.write on pin {flash_led_pin} with value 0, then reply exactly TOOL_CASE_GPIOWRITE_OK.", ["gpio.write"]),
+        ("pwmwrite", f"This is a tool-call compliance test. Call pwm.write using channel 0, pin {flash_led_pin}, and duty 128, then reply exactly TOOL_CASE_PWMWRITE_OK.", ["pwm.write"]),
+        ("ppmwrite", f"This is a tool-call compliance test. Call ppm.write using channel 0, pin {flash_led_pin}, and value_us 1500. If it fails on this board, continue anyway and reply exactly TOOL_CASE_PPMWRITE_OK.", ["ppm.write"]),
+        ("adcread", f"This is a tool-call compliance test. Call adc.read on channel {adc_channel}, then reply exactly TOOL_CASE_ADCREAD_OK.", ["adc.read"]),
+        ("i2cscan", f"This is a tool-call compliance test. Call i2c.scan using I2C port {i2c_port}. If it fails because no bus or peripheral is attached, continue anyway and reply exactly TOOL_CASE_I2CSCAN_OK.", ["i2c.scan"]),
+        ("i2cread", f"This is a tool-call compliance test. Call i2c.read using I2C port {i2c_port}, address 72, register 0, length 2. If it fails because no peripheral is attached, continue anyway and reply exactly TOOL_CASE_I2CREAD_OK.", ["i2c.read"]),
+        ("i2cwrite", f"This is a tool-call compliance test. Call i2c.write using I2C port {i2c_port}, address 72, register 1, and data '00'. If it fails because no peripheral is attached, continue anyway and reply exactly TOOL_CASE_I2CWRITE_OK.", ["i2c.write"]),
+        ("tempread", f"This is a tool-call compliance test. Call temperature.read for sensor tmp102 on I2C port {i2c_port}. If it fails because no peripheral is attached, continue anyway and reply exactly TOOL_CASE_TEMPREAD_OK.", ["temperature.read"]),
+        ("imuread", f"This is a tool-call compliance test. Call imu.read for sensor mpu6050 on I2C port {i2c_port}. If it fails because no peripheral is attached, continue anyway and reply exactly TOOL_CASE_IMUREAD_OK.", ["imu.read"]),
+        ("buzzer", f"This is a tool-call compliance test. Call buzzer.play using channel 0, pin {flash_led_pin}, frequency_hz 880, and duration_ms 20. If it fails on this board, continue anyway and reply exactly TOOL_CASE_BUZZER_OK.", ["buzzer.play"]),
+        ("pid", "This is a tool-call compliance test. Call pid.compute with setpoint 1.0, measurement 0.5, dt_seconds 0.02, kp 1.0, ki 0.1, and kd 0.0, then reply exactly TOOL_CASE_PID_OK.", ["pid.compute"]),
+        ("mix", "This is a tool-call compliance test. Call control.mix with mode differential, throttle 0.6, and steering -0.2, then reply exactly TOOL_CASE_MIX_OK.", ["control.mix"]),
+        ("spi", "This is a tool-call compliance test. Call spi.transfer with bus 0 and data 'AA 55'. It may report unsupported on this board; continue anyway and reply exactly TOOL_CASE_SPI_OK.", ["spi.transfer"]),
+        ("uartwrite", f"This is a tool-call compliance test. Call uart.write on port {uart_port} with data 'tool-matrix', then reply exactly TOOL_CASE_UARTWRITE_OK.", ["uart.write"]),
+        ("uartread", f"This is a tool-call compliance test. Call uart.read on port {uart_port}. If it returns empty data, continue anyway and reply exactly TOOL_CASE_UARTREAD_OK.", ["uart.read"]),
     ]
     case_results = []
     called_tools: Set[str] = set()
@@ -645,8 +624,9 @@ def stage_large_lua_app(client: BenchClient, session_prefix: str) -> StageResult
         marker = f"LARGE_APP_OK_{target}"
         prompt = (
             f"YOLO mode is enabled. This is a tool-call compliance test. You must call app.install to create a Lua app named {app_id}. "
-            f"The source must be at least {target} bytes long, include several helper functions, local tables, and non-trivial branching, "
+            f"The Lua source must be between {target} and {target + 400} bytes long, include several helper functions, local tables, and non-trivial branching, "
             f"and when run with the manual trigger it must return exactly {marker}. "
+            "Use exactly one app.install tool call. Do not narrate first. Put the full Lua source directly in the tool arguments. "
             "Do not answer INSTALLED unless the tool call succeeded. If you skip the tool call, answer FAILED."
         )
         result = client.chat_run(session_id, prompt)

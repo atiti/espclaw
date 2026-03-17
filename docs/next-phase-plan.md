@@ -74,5 +74,7 @@ This proves the current baseline on hardware:
 ## Current Bench Findings
 
 - `tool_matrix_full` is now implemented and running on the real AI Thinker board.
-- The matrix currently shows that the model/runtime can reach a subset of tools reliably, but many advertised hardware tools still resolve to `unsupported_tool` or are skipped by the model after the first successful tool call.
-- `large_lua_app` is now implemented and currently exposes model tool-call compliance limits before a verified RAM ceiling on `esp32cam`.
+- The executor surface has been expanded to cover the missing hardware / filesystem / network / compute tools, and the matrix now probes them mostly one-by-one so real tool compliance is measurable instead of being masked by grouped prompts.
+- The remaining matrix work is to finish a full real-device run and tighten any tool-specific prompts that still let the model stop after a partial success.
+- `large_lua_app` now reliably reaches a real `app.install` call on hardware. The current blocker is the generated Lua contract on `app.run`, where the model tends to return module-style `M.manual(...)` code instead of the runtime's supported `on_manual(...)`, `on_event(...)`, or `handle(...)` entrypoints.
+- The next fix should either teach the bench prompt to require `handle(trigger, payload)` explicitly or extend the Lua runtime to accept module-return entrypoints for model-generated apps.
