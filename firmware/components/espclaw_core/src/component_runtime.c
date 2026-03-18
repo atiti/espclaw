@@ -1,0 +1,452 @@
+#include "espclaw/component_runtime.h"
+
+#include <stdbool.h>
+#include <ctype.h>
+#include <dirent.h>
+#include <errno.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
+
+#include "espclaw/workspace.h"
+
+static bool component_id_valid(const char *value)
+{
+    size_t index;
+
+    if (value == NULL || value[0] == '\0') {
+        return false;
+    }
+    for (index = 0; value[index] != '\0'; ++index) {
+        if (!(isalnum((unsigned char)value[index]) || value[index] == '_' || value[index] == '-')) {
+            return false;
+        }
+    }
+    return index <= ESPCLAW_COMPONENT_ID_MAX;
+}
+
+static bool module_name_valid(const char *value)
+{
+    size_t index;
+    char previous = '\0';
+
+    if (value == NULL || value[0] == '\0') {
+        return false;
+    }
+    for (index = 0; value[index] != '\0'; ++index) {
+        char c = value[index];
+
+        if (!(isalnum((unsigned char)c) || c == '_' || c == '.')) {
+            return false;
+        }
+        if (c == '.' && (previous == '\0' || previous == '.')) {
+            return false;
+        }
+        previous = c;
+    }
+    return previous != '.' && index <= ESPCLAW_COMPONENT_MODULE_MAX;
+}
+
+static bool copy_json_string_value(const char *start, char *buffer, size_t buffer_size)
+{
+    size_t index = 0;
+    const char *cursor = start;
+
+    if (start == NULL || buffer == NULL || buffer_size == 0 || *start != '"') {
+        return false;
+    }
+    cursor++;
+    while (*cursor != '\0' && *cursor != '"' && index + 1 < buffer_size) {
+        if (*cursor == '\\' && cursor[1] != '\0') {
+            cursor++;
+        }
+        buffer[index++] = *cursor++;
+    }
+    if (*cursor != '"') {
+        return false;
+    }
+    buffer[index] = '\0';
+    return true;
+}
+
+static const char *find_key(const char *json, const char *key)
+{
+    char pattern[48];
+
+    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
+    return strstr(json, pattern);
+}
+
+static bool extract_string_after_key(const char *json, const char *key, char *buffer, size_t buffer_size)
+{
+    const char *key_start = find_key(json, key);
+    const char *value_start;
+
+    if (key_start == NULL) {
+        return false;
+    }
+    value_start = strchr(key_start, ':');
+    if (value_start == NULL) {
+        return false;
+    }
+    value_start++;
+    while (*value_start == ' ' || *value_start == '\n' || *value_start == '\r' || *value_start == '\t') {
+        value_start++;
+    }
+    return copy_json_string_value(value_start, buffer, buffer_size);
+}
+
+static int ensure_directory(const char *path)
+{
+    return (mkdir(path, 0755) == 0 || errno == EEXIST) ? 0 : -1;
+}
+
+static int ensure_parent_directories(const char *path)
+{
+    char buffer[512];
+    char *cursor;
+
+    if (path == NULL || snprintf(buffer, sizeof(buffer), "%s", path) >= (int)sizeof(buffer)) {
+        return -1;
+    }
+    for (cursor = buffer + 1; *cursor != '\0'; ++cursor) {
+        if (*cursor != '/') {
+            continue;
+        }
+        *cursor = '\0';
+        if (ensure_directory(buffer) != 0) {
+            return -1;
+        }
+        *cursor = '/';
+    }
+    return 0;
+}
+
+static int write_text_file(const char *path, const char *content)
+{
+    FILE *handle;
+
+    if (ensure_parent_directories(path) != 0) {
+        return -1;
+    }
+    handle = fopen(path, "w");
+    if (handle == NULL) {
+        return -1;
+    }
+    fputs(content != NULL ? content : "", handle);
+    fclose(handle);
+    return 0;
+}
+
+static int build_component_relative_path(const char *component_id, const char *leaf, char *buffer, size_t buffer_size)
+{
+    if (!component_id_valid(component_id) || leaf == NULL || buffer == NULL || buffer_size == 0) {
+        return -1;
+    }
+    return snprintf(buffer, buffer_size, "components/%s/%s", component_id, leaf) >= (int)buffer_size ? -1 : 0;
+}
+
+static int module_name_to_relative_path(const char *module_name, char *buffer, size_t buffer_size)
+{
+    size_t used = 0;
+    size_t index;
+
+    if (!module_name_valid(module_name) || buffer == NULL || buffer_size == 0) {
+        return -1;
+    }
+    used += (size_t)snprintf(buffer + used, buffer_size - used, "lib/");
+    for (index = 0; module_name[index] != '\0' && used + 6 < buffer_size; ++index) {
+        buffer[used++] = module_name[index] == '.' ? '/' : module_name[index];
+    }
+    used += (size_t)snprintf(buffer + used, buffer_size - used, ".lua");
+    return used < buffer_size ? 0 : -1;
+}
+
+static void append_json_escaped(char *buffer, size_t buffer_size, size_t *used_io, const char *text)
+{
+    size_t used = used_io != NULL ? *used_io : 0;
+    const unsigned char *cursor = (const unsigned char *)(text != NULL ? text : "");
+
+    if (buffer == NULL || buffer_size == 0 || used >= buffer_size) {
+        return;
+    }
+    buffer[used++] = '"';
+    while (*cursor != '\0' && used + 2 < buffer_size) {
+        if (*cursor == '\\' || *cursor == '"') {
+            buffer[used++] = '\\';
+            buffer[used++] = (char)*cursor;
+        } else if (*cursor == '\n') {
+            buffer[used++] = '\\';
+            buffer[used++] = 'n';
+        } else {
+            buffer[used++] = (char)*cursor;
+        }
+        cursor++;
+    }
+    if (used < buffer_size) {
+        buffer[used++] = '"';
+    }
+    if (used < buffer_size) {
+        buffer[used] = '\0';
+    } else {
+        buffer[buffer_size - 1] = '\0';
+    }
+    if (used_io != NULL) {
+        *used_io = used;
+    }
+}
+
+int espclaw_component_install(
+    const char *workspace_root,
+    const char *component_id,
+    const char *title,
+    const char *module_name,
+    const char *summary,
+    const char *version,
+    const char *source
+)
+{
+    char manifest_relative[192];
+    char source_relative[192];
+    char lib_relative[192];
+    char manifest_path[512];
+    char source_path[512];
+    char lib_path[512];
+    char manifest_json[1024];
+    const char *effective_title = title != NULL && title[0] != '\0' ? title : component_id;
+    const char *effective_summary = summary != NULL ? summary : "";
+    const char *effective_version = version != NULL && version[0] != '\0' ? version : "0.1.0";
+
+    if (workspace_root == NULL || source == NULL || !component_id_valid(component_id) || !module_name_valid(module_name)) {
+        return -1;
+    }
+    if (espclaw_workspace_bootstrap(workspace_root) != 0 ||
+        build_component_relative_path(component_id, "component.json", manifest_relative, sizeof(manifest_relative)) != 0 ||
+        build_component_relative_path(component_id, "module.lua", source_relative, sizeof(source_relative)) != 0 ||
+        module_name_to_relative_path(module_name, lib_relative, sizeof(lib_relative)) != 0 ||
+        espclaw_workspace_resolve_path(workspace_root, manifest_relative, manifest_path, sizeof(manifest_path)) != 0 ||
+        espclaw_workspace_resolve_path(workspace_root, source_relative, source_path, sizeof(source_path)) != 0 ||
+        espclaw_workspace_resolve_path(workspace_root, lib_relative, lib_path, sizeof(lib_path)) != 0) {
+        return -1;
+    }
+
+    snprintf(
+        manifest_json,
+        sizeof(manifest_json),
+        "{\n"
+        "  \"id\": \"%s\",\n"
+        "  \"version\": \"%s\",\n"
+        "  \"title\": \"%s\",\n"
+        "  \"module\": \"%s\",\n"
+        "  \"summary\": \"%s\",\n"
+        "  \"source\": \"module.lua\",\n"
+        "  \"lib_path\": \"%s\"\n"
+        "}\n",
+        component_id,
+        effective_version,
+        effective_title,
+        module_name,
+        effective_summary,
+        lib_relative
+    );
+
+    if (write_text_file(manifest_path, manifest_json) != 0 ||
+        write_text_file(source_path, source) != 0 ||
+        write_text_file(lib_path, source) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+int espclaw_component_collect_ids(
+    const char *workspace_root,
+    char ids[][ESPCLAW_COMPONENT_ID_MAX + 1],
+    size_t max_ids,
+    size_t *count_out
+)
+{
+    char components_path[512];
+    DIR *dir;
+    struct dirent *entry;
+    size_t count = 0;
+
+    if (workspace_root == NULL || ids == NULL || max_ids == 0 || count_out == NULL ||
+        espclaw_workspace_resolve_path(workspace_root, "components", components_path, sizeof(components_path)) != 0) {
+        return -1;
+    }
+    *count_out = 0;
+    dir = opendir(components_path);
+    if (dir == NULL) {
+        return -1;
+    }
+    while ((entry = readdir(dir)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+            continue;
+        }
+        if (!component_id_valid(entry->d_name)) {
+            continue;
+        }
+        memcpy(ids[count], entry->d_name, ESPCLAW_COMPONENT_ID_MAX);
+        ids[count][ESPCLAW_COMPONENT_ID_MAX] = '\0';
+        count++;
+        if (count >= max_ids) {
+            break;
+        }
+    }
+    closedir(dir);
+    *count_out = count;
+    return 0;
+}
+
+int espclaw_component_load_manifest(
+    const char *workspace_root,
+    const char *component_id,
+    espclaw_component_manifest_t *manifest
+)
+{
+    char relative_path[192];
+    char json[1024];
+
+    if (workspace_root == NULL || manifest == NULL || !component_id_valid(component_id) ||
+        build_component_relative_path(component_id, "component.json", relative_path, sizeof(relative_path)) != 0 ||
+        espclaw_workspace_read_file(workspace_root, relative_path, json, sizeof(json)) != 0) {
+        return -1;
+    }
+
+    memset(manifest, 0, sizeof(*manifest));
+    if (!extract_string_after_key(json, "id", manifest->component_id, sizeof(manifest->component_id)) ||
+        !extract_string_after_key(json, "version", manifest->version, sizeof(manifest->version)) ||
+        !extract_string_after_key(json, "title", manifest->title, sizeof(manifest->title)) ||
+        !extract_string_after_key(json, "module", manifest->module, sizeof(manifest->module))) {
+        return -1;
+    }
+    (void)extract_string_after_key(json, "summary", manifest->summary, sizeof(manifest->summary));
+    return 0;
+}
+
+int espclaw_component_read_source(
+    const char *workspace_root,
+    const char *component_id,
+    char *buffer,
+    size_t buffer_size
+)
+{
+    char relative_path[192];
+
+    if (workspace_root == NULL || buffer == NULL || buffer_size == 0 ||
+        build_component_relative_path(component_id, "module.lua", relative_path, sizeof(relative_path)) != 0) {
+        return -1;
+    }
+    return espclaw_workspace_read_file(workspace_root, relative_path, buffer, buffer_size);
+}
+
+int espclaw_component_remove(const char *workspace_root, const char *component_id)
+{
+    espclaw_component_manifest_t manifest;
+    char lib_relative[192];
+    char path[512];
+
+    if (workspace_root == NULL || !component_id_valid(component_id) ||
+        espclaw_component_load_manifest(workspace_root, component_id, &manifest) != 0 ||
+        module_name_to_relative_path(manifest.module, lib_relative, sizeof(lib_relative)) != 0) {
+        return -1;
+    }
+
+    if (espclaw_workspace_resolve_path(workspace_root, lib_relative, path, sizeof(path)) == 0) {
+        unlink(path);
+    }
+    if (espclaw_workspace_resolve_path(workspace_root, "components", path, sizeof(path)) == 0) {
+        char component_dir[512];
+
+        if (snprintf(component_dir, sizeof(component_dir), "%s/%s", path, component_id) < (int)sizeof(component_dir)) {
+            char file_path[512];
+
+            if (snprintf(file_path, sizeof(file_path), "%s/component.json", component_dir) < (int)sizeof(file_path)) {
+                unlink(file_path);
+            }
+            if (snprintf(file_path, sizeof(file_path), "%s/module.lua", component_dir) < (int)sizeof(file_path)) {
+                unlink(file_path);
+            }
+            rmdir(component_dir);
+        }
+    }
+    return 0;
+}
+
+int espclaw_render_components_json(const char *workspace_root, char *buffer, size_t buffer_size)
+{
+    char ids[32][ESPCLAW_COMPONENT_ID_MAX + 1];
+    size_t count = 0;
+    size_t index;
+    size_t used = 0;
+    bool first = true;
+
+    if (buffer == NULL || buffer_size == 0) {
+        return -1;
+    }
+    used += (size_t)snprintf(buffer + used, buffer_size - used, "{\"components\":[");
+    if (workspace_root != NULL && espclaw_component_collect_ids(workspace_root, ids, 32, &count) == 0) {
+        for (index = 0; index < count && used + 32 < buffer_size; ++index) {
+            espclaw_component_manifest_t manifest;
+
+            if (espclaw_component_load_manifest(workspace_root, ids[index], &manifest) != 0) {
+                continue;
+            }
+            used += (size_t)snprintf(buffer + used, buffer_size - used, "%s{\"id\":", first ? "" : ",");
+            append_json_escaped(buffer, buffer_size, &used, manifest.component_id);
+            used += (size_t)snprintf(buffer + used, buffer_size - used, ",\"component_id\":");
+            append_json_escaped(buffer, buffer_size, &used, manifest.component_id);
+            used += (size_t)snprintf(buffer + used, buffer_size - used, ",\"module\":");
+            append_json_escaped(buffer, buffer_size, &used, manifest.module);
+            used += (size_t)snprintf(buffer + used, buffer_size - used, ",\"title\":");
+            append_json_escaped(buffer, buffer_size, &used, manifest.title);
+            used += (size_t)snprintf(buffer + used, buffer_size - used, ",\"version\":");
+            append_json_escaped(buffer, buffer_size, &used, manifest.version);
+            used += (size_t)snprintf(buffer + used, buffer_size - used, ",\"summary\":");
+            append_json_escaped(buffer, buffer_size, &used, manifest.summary);
+            used += (size_t)snprintf(buffer + used, buffer_size - used, "}");
+            first = false;
+        }
+    }
+    used += (size_t)snprintf(buffer + used, buffer_size - used, "]}");
+    return 0;
+}
+
+int espclaw_render_component_detail_json(
+    const char *workspace_root,
+    const char *component_id,
+    char *buffer,
+    size_t buffer_size
+)
+{
+    espclaw_component_manifest_t manifest;
+    char source[4096];
+    size_t used = 0;
+
+    if (workspace_root == NULL || component_id == NULL || buffer == NULL || buffer_size == 0) {
+        return -1;
+    }
+    if (espclaw_component_load_manifest(workspace_root, component_id, &manifest) != 0 ||
+        espclaw_component_read_source(workspace_root, component_id, source, sizeof(source)) != 0) {
+        return -1;
+    }
+
+    used += (size_t)snprintf(buffer + used, buffer_size - used, "{\"id\":");
+    append_json_escaped(buffer, buffer_size, &used, manifest.component_id);
+    used += (size_t)snprintf(buffer + used, buffer_size - used, ",\"component_id\":");
+    append_json_escaped(buffer, buffer_size, &used, manifest.component_id);
+    used += (size_t)snprintf(buffer + used, buffer_size - used, ",\"module\":");
+    append_json_escaped(buffer, buffer_size, &used, manifest.module);
+    used += (size_t)snprintf(buffer + used, buffer_size - used, ",\"title\":");
+    append_json_escaped(buffer, buffer_size, &used, manifest.title);
+    used += (size_t)snprintf(buffer + used, buffer_size - used, ",\"version\":");
+    append_json_escaped(buffer, buffer_size, &used, manifest.version);
+    used += (size_t)snprintf(buffer + used, buffer_size - used, ",\"summary\":");
+    append_json_escaped(buffer, buffer_size, &used, manifest.summary);
+    used += (size_t)snprintf(buffer + used, buffer_size - used, ",\"source\":");
+    append_json_escaped(buffer, buffer_size, &used, source);
+    used += (size_t)snprintf(buffer + used, buffer_size - used, "}");
+    return 0;
+}

@@ -43,6 +43,8 @@ This repository now contains the initial firmware scaffold and the host-testable
 
 The firmware now also includes a live runtime path for NVS init, Wi‑Fi provisioning startup, SD workspace bootstrap, Telegram polling/reply loops, Lua app boot hooks, provider auth storage, iterative LLM run execution, direct HTTP OTA upload, and the embedded admin HTTP server.
 
+Reusable Lua components can now be installed separately from apps, published into `/workspace/lib` for `require(...)`, and shared across multiple apps such as sensor drivers or control helpers.
+
 ## Repository Layout
 
 ```text
@@ -72,6 +74,8 @@ ESPClaw standardizes the workspace layout on the device SD card:
 ├── IDENTITY.md
 ├── USER.md
 ├── HEARTBEAT.md
+├── components/
+├── lib/
 ├── memory/
 │   └── MEMORY.md
 ├── sessions/
@@ -451,6 +455,7 @@ Current runtime surfaces:
 - Telegram `/app <app_id> [payload]` runs an installed app with the `telegram` trigger
 - Telegram `/rmapp <app_id>` removes an installed app bundle
 - The admin UI and HTTP API now expose live app inventory, detail, source update, run, scaffold, and delete operations
+- Components can be listed, installed, inspected, and removed independently from apps
 - Persistent control loops can now keep a Lua VM warm and call `handle(trigger, payload)` on a fixed period for balancing, drive, and actuator control tasks
 - Lua apps can now call native hardware bindings for GPIO, PWM, servo/ESC pulses, PPM frames, ADC, I2C peripherals, typed IMU and temperature sensors, buzzer output, vehicle mixers, and PID control helpers
 - On the host simulator, Lua apps can also use `espclaw.uart.read/write` with `UART0` bridged to the terminal running `espclaw_simulator`

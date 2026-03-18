@@ -2,6 +2,7 @@ idf_component_register(
   SRCS
     "src/agent_loop.c"
     "src/admin_ops.c"
+    "src/app_patterns.c"
     "src/app_runtime.c"
     "src/admin_api.c"
     "src/admin_server.c"
@@ -11,6 +12,7 @@ idf_component_register(
     "src/board_config.c"
     "src/board_profile.c"
     "src/channel.c"
+    "src/component_runtime.c"
     "src/control_loop.c"
     "src/config_render.c"
     "src/console_chat.c"

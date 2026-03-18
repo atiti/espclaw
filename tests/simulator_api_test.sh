@@ -108,6 +108,27 @@ MONITOR_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/monitor")"
 TOOLS_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/tools")"
 [[ "$TOOLS_JSON" == *'"name":"tool.list"'* ]]
 [[ "$TOOLS_JSON" == *'"name":"behavior.register"'* ]]
+[[ "$TOOLS_JSON" == *'"name":"component.install"'* ]]
+[[ "$TOOLS_JSON" == *'"name":"app_patterns.list"'* ]]
+
+APP_PATTERNS_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/app-patterns")"
+[[ "$APP_PATTERNS_JSON" == *'"name":"shared_component_plus_apps"'* ]]
+
+APP_PATTERNS_MD="$(curl -sf "http://127.0.0.1:$PORT/api/app-patterns.md")"
+[[ "$APP_PATTERNS_MD" == *'# App Patterns'* ]]
+
+COMPONENT_INSTALL_JSON="$(curl -sf -X POST "http://127.0.0.1:$PORT/api/components/install" \
+  -H 'Content-Type: application/json' \
+  --data '{"component_id":"ms5611_driver","title":"MS5611 Driver","module":"sensors.ms5611","summary":"Shared MS5611 sensor driver","version":"0.1.0","source":"local M = {}\\nfunction M.sample() return {pressure_mbar=1007.2,temp_c=21.5} end\\nreturn M\\n"}')"
+[[ "$COMPONENT_INSTALL_JSON" == *'"ok":true'* ]]
+
+COMPONENTS_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/components")"
+[[ "$COMPONENTS_JSON" == *'"id":"ms5611_driver"'* ]]
+[[ "$COMPONENTS_JSON" == *'"module":"sensors.ms5611"'* ]]
+
+COMPONENT_DETAIL_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/components/detail?component_id=ms5611_driver")"
+[[ "$COMPONENT_DETAIL_JSON" == *'"id":"ms5611_driver"'* ]]
+[[ "$COMPONENT_DETAIL_JSON" == *'pressure_mbar=1007.2'* ]]
 
 HARDWARE_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/hardware")"
 [[ "$HARDWARE_JSON" == *'"configured":true'* ]]

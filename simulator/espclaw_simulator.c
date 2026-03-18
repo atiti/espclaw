@@ -19,10 +19,12 @@
 #include "espclaw/admin_ops.h"
 #include "espclaw/admin_ui.h"
 #include "espclaw/app_runtime.h"
+#include "espclaw/app_patterns.h"
 #include "espclaw/auth_store.h"
 #include "espclaw/behavior_runtime.h"
 #include "espclaw/board_config.h"
 #include "espclaw/board_profile.h"
+#include "espclaw/component_runtime.h"
 #include "espclaw/control_loop.h"
 #include "espclaw/event_watch.h"
 #include "espclaw/ota_state.h"
@@ -474,6 +476,7 @@ static void handle_api_request(
             profile.provider_id,
             "telegram",
             true,
+            false,
             &ota_state,
             response,
             sizeof(response)
@@ -678,6 +681,92 @@ static void handle_api_request(
 
     if (strcmp(method, "GET") == 0 && strcmp(path, "/api/apps") == 0) {
         espclaw_render_apps_json(config->workspace_root, response, sizeof(response));
+        send_http_response(client_fd, 200, "OK", "application/json", response);
+        return;
+    }
+
+    if (strcmp(method, "GET") == 0 && strcmp(path, "/api/app-patterns") == 0) {
+        espclaw_render_app_patterns_json(response, sizeof(response));
+        send_http_response(client_fd, 200, "OK", "application/json", response);
+        return;
+    }
+
+    if (strcmp(method, "GET") == 0 && strcmp(path, "/api/app-patterns.md") == 0) {
+        espclaw_render_app_patterns_markdown(response, sizeof(response));
+        send_http_response(client_fd, 200, "OK", "text/markdown; charset=utf-8", response);
+        return;
+    }
+
+    if (strcmp(method, "GET") == 0 && strcmp(path, "/api/components") == 0) {
+        espclaw_render_components_json(config->workspace_root, response, sizeof(response));
+        send_http_response(client_fd, 200, "OK", "application/json", response);
+        return;
+    }
+
+    if (strcmp(method, "GET") == 0 && strcmp(path, "/api/components/detail") == 0) {
+        char component_id[ESPCLAW_APP_ID_MAX + 1];
+
+        if (!espclaw_admin_query_value(query, "component_id", component_id, sizeof(component_id))) {
+            espclaw_admin_render_result_json(false, "missing component_id query parameter", response, sizeof(response));
+            send_http_response(client_fd, 400, "Bad Request", "application/json", response);
+            return;
+        }
+
+        espclaw_render_component_detail_json(config->workspace_root, component_id, response, sizeof(response));
+        send_http_response(client_fd, 200, "OK", "application/json", response);
+        return;
+    }
+
+    if (strcmp(method, "POST") == 0 && strcmp(path, "/api/components/install") == 0) {
+        char component_id[ESPCLAW_APP_ID_MAX + 1];
+        char title[ESPCLAW_APP_TITLE_MAX + 1];
+        char module[ESPCLAW_COMPONENT_MODULE_MAX + 1];
+        char summary[ESPCLAW_COMPONENT_SUMMARY_MAX + 1];
+        char version[ESPCLAW_COMPONENT_VERSION_MAX + 1];
+        char source[8192];
+
+        if (!espclaw_admin_json_string_value(body != NULL ? body : "", "component_id", component_id, sizeof(component_id)) ||
+            !espclaw_admin_json_string_value(body != NULL ? body : "", "module", module, sizeof(module)) ||
+            !espclaw_admin_json_string_value(body != NULL ? body : "", "source", source, sizeof(source))) {
+            espclaw_admin_render_result_json(false, "missing component_id, module, or source", response, sizeof(response));
+            send_http_response(client_fd, 400, "Bad Request", "application/json", response);
+            return;
+        }
+
+        title[0] = '\0';
+        summary[0] = '\0';
+        version[0] = '\0';
+        espclaw_admin_json_string_value(body, "title", title, sizeof(title));
+        espclaw_admin_json_string_value(body, "summary", summary, sizeof(summary));
+        espclaw_admin_json_string_value(body, "version", version, sizeof(version));
+
+        if (espclaw_component_install(config->workspace_root, component_id, title, module, summary, version, source) != 0) {
+            espclaw_admin_render_result_json(false, "component install failed", response, sizeof(response));
+            send_http_response(client_fd, 500, "Internal Server Error", "application/json", response);
+            return;
+        }
+
+        espclaw_admin_render_result_json(true, "component installed", response, sizeof(response));
+        send_http_response(client_fd, 200, "OK", "application/json", response);
+        return;
+    }
+
+    if (strcmp(method, "DELETE") == 0 && strcmp(path, "/api/components") == 0) {
+        char component_id[ESPCLAW_APP_ID_MAX + 1];
+
+        if (!espclaw_admin_query_value(query, "component_id", component_id, sizeof(component_id))) {
+            espclaw_admin_render_result_json(false, "missing component_id query parameter", response, sizeof(response));
+            send_http_response(client_fd, 400, "Bad Request", "application/json", response);
+            return;
+        }
+
+        if (espclaw_component_remove(config->workspace_root, component_id) != 0) {
+            espclaw_admin_render_result_json(false, "failed to remove component", response, sizeof(response));
+            send_http_response(client_fd, 500, "Internal Server Error", "application/json", response);
+            return;
+        }
+
+        espclaw_admin_render_result_json(true, "component removed", response, sizeof(response));
         send_http_response(client_fd, 200, "OK", "application/json", response);
         return;
     }
@@ -1159,6 +1248,7 @@ static int run_self_test(const espclaw_simulator_config_t *config)
         "openai_compat",
         "telegram",
         true,
+        false,
         &ota_state,
         status_json,
         sizeof(status_json)

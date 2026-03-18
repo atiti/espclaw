@@ -2,7 +2,11 @@
 
 ## Unreleased
 
+- Added first-class shareable Lua components with metadata, install/list/remove APIs, and `component.install` / `component.list` / `component.remove` model tools.
+- Added generated app-architecture guidance through `app_patterns.list` and prompt snapshots so the model defaults to `component -> app -> task/behavior -> optional event` composition instead of inventing new runtime types.
+- Workspace bootstrap now creates `components/` and `lib/` so reusable modules are available for `require(...)` without manual directory setup.
 - Promoted `YOLO mode` into a shared runtime-wide operator policy, enabled by default and persisted in NVS, so UART, admin chat, simulator chat, and Telegram all stop asking for redundant mutation approval unless the operator explicitly turns YOLO back off.
+- Fixed Telegram operator turns to pass the shared YOLO policy into both the prompt layer and the actual mutation gate, so `/camera` and other mutating Telegram requests no longer get blocked with `confirmation_required` while global YOLO is enabled.
 - Moved Telegram poller working buffers and photo-upload scratch space to PSRAM-backed heap allocations and doubled the reserved internal heap on `esp32cam`, which preserves the contiguous 32 KB DMA block the OV2640 camera needs for `/camera` over Telegram after the device has been up for a while.
 - Reduced the ESP32 JPEG camera DMA ring in the managed `esp32-camera` component for `esp32cam`, so live `/camera` captures can still initialize after Wi‑Fi/admin/Telegram have fragmented the internal DMA-capable heap.
 - Deferred UART and Telegram operator-surface startup until after the admin server start attempt, added exact `httpd_start` / route-registration error logging, and guarded UART startup against duplicate task creation so ESP32-CAM boot brings up the control plane in a safer order.

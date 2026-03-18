@@ -44,10 +44,12 @@
 #endif
 
 #include "espclaw/admin_api.h"
+#include "espclaw/app_patterns.h"
 #include "espclaw/app_runtime.h"
 #include "espclaw/auth_store.h"
 #include "espclaw/behavior_runtime.h"
 #include "espclaw/board_config.h"
+#include "espclaw/component_runtime.h"
 #include "espclaw/event_watch.h"
 #include "espclaw/hardware.h"
 #include "espclaw/lua_api_registry.h"
@@ -85,6 +87,7 @@ static int load_history(
     size_t max_messages,
     size_t *count_out
 );
+static void free_embedded_auth_profile(espclaw_auth_profile_t *profile);
 static int build_initial_request_body(
     const espclaw_auth_profile_t *profile,
     const char *instructions,
@@ -179,7 +182,6 @@ static bool is_completed_terminal_response_without_output(
 
 static espclaw_agent_http_adapter_t s_http_adapter;
 static void *s_http_adapter_user_data;
-#ifndef ESPCLAW_HOST_LUA
 static const char *TAG = "espclaw_agent";
 
 static void free_embedded_auth_profile(espclaw_auth_profile_t *profile)
@@ -190,6 +192,7 @@ static void free_embedded_auth_profile(espclaw_auth_profile_t *profile)
     (void)profile;
 #endif
 }
+#ifndef ESPCLAW_HOST_LUA
 typedef enum {
     ESPCLAW_CODEX_TRANSPORT_BUNDLE_ANY = 0,
     ESPCLAW_CODEX_TRANSPORT_BUNDLE_TLS12 = 1,
@@ -1504,11 +1507,21 @@ static int load_system_prompt(
         buffer_size - used,
         "\nUse hardware.list when board-specific pins, buses, or capabilities matter.\n"
         "Use lua_api.list when generating or debugging Lua apps and you need exact espclaw.* signatures or handler rules.\n"
+        "Use app_patterns.list when you need to decide whether something should be a component, app, task, behavior, or event.\n"
+        "Use component.list before writing a new shared driver or helper, and use component.install when reusable code should be shared by multiple apps.\n"
         "If the operator explicitly tells you to run a tool by name, call that tool in this turn instead of asking them to paste its output.\n"
         "If your previous reply said a named tool still needs to be run, or described a concrete next tool step like emit an event or check task.list, and the next operator turn is an approval like yes/ok/do it/do that/try that/go ahead, treat that as approval to call the missing tool immediately.\n"
         "If the user says this is a tool-call compliance test, says the transcript is audited, or explicitly lists tools you must use, call every applicable listed tool before replying, even if some of those tool calls fail.\n"
     );
     if (user_message_requests_lua_app_contract(user_message)) {
+        if (used + 2 < buffer_size) {
+            used += (size_t)snprintf(buffer + used, buffer_size - used, "\n");
+        }
+        used += espclaw_render_app_patterns_prompt_snapshot(buffer + used, buffer_size - used);
+        if (used + 2 < buffer_size) {
+            used += (size_t)snprintf(buffer + used, buffer_size - used, "\n");
+        }
+        used += espclaw_render_component_architecture_prompt_snapshot(buffer + used, buffer_size - used);
         if (used + 2 < buffer_size) {
             used += (size_t)snprintf(buffer + used, buffer_size - used, "\n");
         }
@@ -2533,6 +2546,60 @@ static int tool_hardware_list(char *buffer, size_t buffer_size)
 static int tool_lua_api_list(char *buffer, size_t buffer_size)
 {
     return (int)espclaw_render_lua_api_json(buffer, buffer_size);
+}
+
+static int tool_app_patterns_list(char *buffer, size_t buffer_size)
+{
+    return (int)espclaw_render_app_patterns_json(buffer, buffer_size);
+}
+
+static int tool_component_list(const char *workspace_root, char *buffer, size_t buffer_size)
+{
+    return espclaw_render_components_json(workspace_root, buffer, buffer_size);
+}
+
+static int tool_component_install(const char *workspace_root, const char *arguments_json, char *buffer, size_t buffer_size)
+{
+    char component_id[ESPCLAW_COMPONENT_ID_MAX + 1];
+    char title[ESPCLAW_COMPONENT_TITLE_MAX + 1];
+    char module[ESPCLAW_COMPONENT_MODULE_MAX + 1];
+    char summary[ESPCLAW_COMPONENT_SUMMARY_MAX + 1];
+    char version[ESPCLAW_COMPONENT_VERSION_MAX + 1];
+    char source[4096];
+
+    if (!json_argument_string(arguments_json, "component_id", component_id, sizeof(component_id)) ||
+        !json_argument_string(arguments_json, "module", module, sizeof(module)) ||
+        !json_argument_string(arguments_json, "source", source, sizeof(source))) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"missing component_id, module, or source\"}");
+        return -1;
+    }
+    title[0] = '\0';
+    summary[0] = '\0';
+    version[0] = '\0';
+    (void)json_argument_string(arguments_json, "title", title, sizeof(title));
+    (void)json_argument_string(arguments_json, "summary", summary, sizeof(summary));
+    (void)json_argument_string(arguments_json, "version", version, sizeof(version));
+
+    if (espclaw_component_install(workspace_root, component_id, title, module, summary, version, source) != 0) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"component install failed\"}");
+        return -1;
+    }
+    return espclaw_render_components_json(workspace_root, buffer, buffer_size);
+}
+
+static int tool_component_remove(const char *workspace_root, const char *arguments_json, char *buffer, size_t buffer_size)
+{
+    char component_id[ESPCLAW_COMPONENT_ID_MAX + 1];
+
+    if (!json_argument_string(arguments_json, "component_id", component_id, sizeof(component_id))) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"missing component_id\"}");
+        return -1;
+    }
+    if (espclaw_component_remove(workspace_root, component_id) != 0) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"component remove failed\"}");
+        return -1;
+    }
+    return espclaw_render_components_json(workspace_root, buffer, buffer_size);
 }
 
 static int tool_web_search(const char *arguments_json, char *buffer, size_t buffer_size)
@@ -3741,6 +3808,9 @@ static int tool_execute(
     if (strcmp(tool_call->name, "lua_api.list") == 0) {
         return tool_lua_api_list(buffer, buffer_size);
     }
+    if (strcmp(tool_call->name, "app_patterns.list") == 0) {
+        return tool_app_patterns_list(buffer, buffer_size);
+    }
     if (strcmp(tool_call->name, "tool.list") == 0) {
         return tool_list_tools(buffer, buffer_size);
     }
@@ -3818,14 +3888,23 @@ static int tool_execute(
     if (strcmp(tool_call->name, "app.list") == 0) {
         return tool_app_list(workspace_root, buffer, buffer_size);
     }
+    if (strcmp(tool_call->name, "component.list") == 0) {
+        return tool_component_list(workspace_root, buffer, buffer_size);
+    }
     if (strcmp(tool_call->name, "app.run") == 0) {
         return tool_app_run(workspace_root, tool_call->arguments_json, buffer, buffer_size);
     }
     if (strcmp(tool_call->name, "app.install") == 0) {
         return tool_app_install(workspace_root, tool_call->arguments_json, buffer, buffer_size);
     }
+    if (strcmp(tool_call->name, "component.install") == 0) {
+        return tool_component_install(workspace_root, tool_call->arguments_json, buffer, buffer_size);
+    }
     if (strcmp(tool_call->name, "app.remove") == 0) {
         return tool_app_remove(workspace_root, tool_call->arguments_json, buffer, buffer_size);
+    }
+    if (strcmp(tool_call->name, "component.remove") == 0) {
+        return tool_component_remove(workspace_root, tool_call->arguments_json, buffer, buffer_size);
     }
     if (strcmp(tool_call->name, "task.list") == 0) {
         return tool_task_list(buffer, buffer_size);

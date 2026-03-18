@@ -11,9 +11,11 @@ typedef struct {
 static const lua_rule_t LUA_RULES[] = {
     {"Expose one of these entrypoints: function handle(trigger, payload), function on_<trigger>(payload), or function on_event(trigger, payload)."},
     {"Use only built-in espclaw.* APIs and workspace modules that already exist."},
+    {"Prefer shared reusable drivers, filters, and adapters as components under /workspace/components plus require()-able modules under /workspace/lib."},
     {"Do not execute hardware side effects at load time; do the work inside a handler."},
     {"Do not assume external Lua modules like cjson are present; build JSON with string.format unless a module already exists in the workspace."},
     {"If the user asks you to create, install, or update an app, call app.install before claiming success."},
+    {"If the user needs reusable code shared by multiple apps, call component.install first, then app.install for the apps that require it."},
     {"Call lua_api.list when exact signatures matter before installing a Lua app."},
 };
 
@@ -223,5 +225,22 @@ size_t espclaw_render_lua_api_prompt_snapshot(char *buffer, size_t buffer_size)
         used += (size_t)snprintf(buffer + used, buffer_size - used, "  - `%s`\n", api->signature);
     }
 
+    return used;
+}
+
+size_t espclaw_render_component_architecture_prompt_snapshot(char *buffer, size_t buffer_size)
+{
+    size_t used = 0;
+
+    if (buffer == NULL || buffer_size == 0) {
+        return 0;
+    }
+
+    used += (size_t)snprintf(buffer + used, buffer_size - used, "# Component Guidance\n");
+    used += (size_t)snprintf(buffer + used, buffer_size - used, "- A component is reusable Lua code plus metadata under /workspace/components/<component_id>/.\n");
+    used += (size_t)snprintf(buffer + used, buffer_size - used, "- Components are published into /workspace/lib so apps can require(module_name).\n");
+    used += (size_t)snprintf(buffer + used, buffer_size - used, "- Prefer component.install for shared low-level sensor drivers, filters, and control helpers.\n");
+    used += (size_t)snprintf(buffer + used, buffer_size - used, "- Prefer app.install for product logic and user-facing features.\n");
+    used += (size_t)snprintf(buffer + used, buffer_size - used, "- Use task.start for temporary schedules, behavior.register for persisted schedules, and events only for decoupled producers or consumers.\n");
     return used;
 }

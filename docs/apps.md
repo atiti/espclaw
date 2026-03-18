@@ -99,6 +99,14 @@ local pid = require("control.pid")
 
 This is the intended path for nested Lua components such as drivers, filters, mixers, and sensor adapters that need to be reused by multiple tasks or apps.
 
+ESPClaw now also exposes first-class shareable components:
+
+- `component.list`
+- `component.install`
+- `component.remove`
+
+Components are metadata-backed reusable modules under `/workspace/components/<component_id>/` that are published into `/workspace/lib/...` for `require(...)`.
+
 ## Available Lua Bindings
 
 The firmware currently injects a global `espclaw` table with:
@@ -173,13 +181,17 @@ Model-generated apps are reliable when the prompt anchors to the exact ESPClaw L
 The authoritative contract is now generated from the runtime registry and is available through:
 
 - `lua_api.list`
+- `app_patterns.list`
 - `GET /api/lua-api`
 - `GET /api/lua-api.md`
+- `GET /api/app-patterns`
+- `GET /api/app-patterns.md`
 
 Use these rules when asking the model to generate an installable app:
 
 - require an explicit entrypoint such as `function handle(trigger, payload)`
 - tell it not to execute side effects at load time
+- tell it to create a component first when the code should be reused by multiple apps
 - tell it to avoid `require(...)` unless the needed module already exists in the workspace
 - tell it to use the exact `espclaw.*` API names instead of guessed globals like `pwm.write` or `i2c_write`
 - if you need a JSON return value, tell it to build the JSON string with `string.format` instead of assuming `cjson`

@@ -15,10 +15,12 @@
 #include "espclaw/console_chat.h"
 #include "espclaw/admin_ops.h"
 #include "espclaw/admin_ui.h"
+#include "espclaw/app_patterns.h"
 #include "espclaw/app_runtime.h"
 #include "espclaw/auth_store.h"
 #include "espclaw/behavior_runtime.h"
 #include "espclaw/board_config.h"
+#include "espclaw/component_runtime.h"
 #include "espclaw/control_loop.h"
 #include "espclaw/hardware.h"
 #include "espclaw/lua_api_registry.h"
@@ -476,6 +478,23 @@ static esp_err_t lua_api_markdown_get_handler(httpd_req_t *req)
     char buffer[16384];
 
     espclaw_render_lua_api_markdown(buffer, sizeof(buffer));
+    return send_body(req, "text/markdown; charset=utf-8", buffer);
+}
+
+static esp_err_t app_patterns_get_handler(httpd_req_t *req)
+{
+    char buffer[4096];
+
+    (void)req;
+    espclaw_render_app_patterns_json(buffer, sizeof(buffer));
+    return send_json(req, buffer);
+}
+
+static esp_err_t app_patterns_markdown_get_handler(httpd_req_t *req)
+{
+    char buffer[4096];
+
+    espclaw_render_app_patterns_markdown(buffer, sizeof(buffer));
     return send_body(req, "text/markdown; charset=utf-8", buffer);
 }
 
@@ -1164,6 +1183,20 @@ static esp_err_t apps_get_handler(httpd_req_t *req)
     return send_json(req, buffer);
 }
 
+static esp_err_t components_get_handler(httpd_req_t *req)
+{
+    char buffer[4096];
+    const espclaw_runtime_status_t *status = espclaw_runtime_status();
+
+    (void)req;
+    espclaw_render_components_json(
+        status != NULL && status->storage_ready ? status->workspace_root : NULL,
+        buffer,
+        sizeof(buffer)
+    );
+    return send_json(req, buffer);
+}
+
 static esp_err_t hardware_get_handler(httpd_req_t *req)
 {
     char buffer[4096];
@@ -1223,6 +1256,27 @@ static esp_err_t app_detail_get_handler(httpd_req_t *req)
     return send_json(req, buffer);
 }
 
+static esp_err_t component_detail_get_handler(httpd_req_t *req)
+{
+    char component_id[ESPCLAW_COMPONENT_ID_MAX + 1];
+    char buffer[8192];
+    const espclaw_runtime_status_t *status = espclaw_runtime_status();
+
+    if (status == NULL || !status->storage_ready) {
+        espclaw_admin_render_result_json(false, "workspace storage is not available", buffer, sizeof(buffer));
+        return send_json_status(req, buffer, 503, "Service Unavailable");
+    }
+    if (!load_query_value(req, "component_id", component_id, sizeof(component_id))) {
+        espclaw_admin_render_result_json(false, "missing component_id query parameter", buffer, sizeof(buffer));
+        return send_json_status(req, buffer, 400, "Bad Request");
+    }
+    if (espclaw_render_component_detail_json(status->workspace_root, component_id, buffer, sizeof(buffer)) != 0) {
+        espclaw_admin_render_result_json(false, "component not found", buffer, sizeof(buffer));
+        return send_json_status(req, buffer, 404, "Not Found");
+    }
+    return send_json(req, buffer);
+}
+
 static esp_err_t app_scaffold_post_handler(httpd_req_t *req)
 {
     char app_id[ESPCLAW_APP_ID_MAX + 1];
@@ -1254,6 +1308,66 @@ static esp_err_t app_scaffold_post_handler(httpd_req_t *req)
 
     espclaw_admin_render_result_json(false, "failed to scaffold app", buffer, sizeof(buffer));
     return send_json_status(req, buffer, 500, "Internal Server Error");
+}
+
+static esp_err_t component_install_post_handler(httpd_req_t *req)
+{
+    char component_id[ESPCLAW_COMPONENT_ID_MAX + 1];
+    char title[ESPCLAW_COMPONENT_TITLE_MAX + 1];
+    char module[ESPCLAW_COMPONENT_MODULE_MAX + 1];
+    char summary[ESPCLAW_COMPONENT_SUMMARY_MAX + 1];
+    char version[ESPCLAW_COMPONENT_VERSION_MAX + 1];
+    char source[4096];
+    char buffer[256];
+    const espclaw_runtime_status_t *status = espclaw_runtime_status();
+
+    if (status == NULL || !status->storage_ready) {
+        espclaw_admin_render_result_json(false, "workspace storage is not available", buffer, sizeof(buffer));
+        return send_json_status(req, buffer, 503, "Service Unavailable");
+    }
+    if (!load_query_value(req, "component_id", component_id, sizeof(component_id)) ||
+        !load_query_value(req, "module", module, sizeof(module))) {
+        espclaw_admin_render_result_json(false, "missing component_id or module query parameter", buffer, sizeof(buffer));
+        return send_json_status(req, buffer, 400, "Bad Request");
+    }
+    title[0] = '\0';
+    summary[0] = '\0';
+    version[0] = '\0';
+    load_query_value(req, "title", title, sizeof(title));
+    load_query_value(req, "summary", summary, sizeof(summary));
+    load_query_value(req, "version", version, sizeof(version));
+    if (read_request_body(req, source, sizeof(source)) != ESP_OK) {
+        espclaw_admin_render_result_json(false, "failed to read request body", buffer, sizeof(buffer));
+        return send_json_status(req, buffer, 400, "Bad Request");
+    }
+    if (espclaw_component_install(status->workspace_root, component_id, title, module, summary, version, source) != 0) {
+        espclaw_admin_render_result_json(false, "failed to install component", buffer, sizeof(buffer));
+        return send_json_status(req, buffer, 500, "Internal Server Error");
+    }
+    espclaw_admin_render_result_json(true, "component installed", buffer, sizeof(buffer));
+    return send_json(req, buffer);
+}
+
+static esp_err_t component_delete_handler(httpd_req_t *req)
+{
+    char component_id[ESPCLAW_COMPONENT_ID_MAX + 1];
+    char buffer[256];
+    const espclaw_runtime_status_t *status = espclaw_runtime_status();
+
+    if (status == NULL || !status->storage_ready) {
+        espclaw_admin_render_result_json(false, "workspace storage is not available", buffer, sizeof(buffer));
+        return send_json_status(req, buffer, 503, "Service Unavailable");
+    }
+    if (!load_query_value(req, "component_id", component_id, sizeof(component_id))) {
+        espclaw_admin_render_result_json(false, "missing component_id query parameter", buffer, sizeof(buffer));
+        return send_json_status(req, buffer, 400, "Bad Request");
+    }
+    if (espclaw_component_remove(status->workspace_root, component_id) != 0) {
+        espclaw_admin_render_result_json(false, "failed to remove component", buffer, sizeof(buffer));
+        return send_json_status(req, buffer, 500, "Internal Server Error");
+    }
+    espclaw_admin_render_result_json(true, "component removed", buffer, sizeof(buffer));
+    return send_json(req, buffer);
 }
 
 static esp_err_t app_source_put_handler(httpd_req_t *req)
@@ -1664,16 +1778,22 @@ esp_err_t espclaw_admin_server_start(void)
         {.uri = "/api/tools", .method = HTTP_GET, .handler = tools_get_handler, .user_ctx = NULL},
         {.uri = "/api/lua-api", .method = HTTP_GET, .handler = lua_api_get_handler, .user_ctx = NULL},
         {.uri = "/api/lua-api.md", .method = HTTP_GET, .handler = lua_api_markdown_get_handler, .user_ctx = NULL},
+        {.uri = "/api/app-patterns", .method = HTTP_GET, .handler = app_patterns_get_handler, .user_ctx = NULL},
+        {.uri = "/api/app-patterns.md", .method = HTTP_GET, .handler = app_patterns_markdown_get_handler, .user_ctx = NULL},
         {.uri = "/api/hardware", .method = HTTP_GET, .handler = hardware_get_handler, .user_ctx = NULL},
         {.uri = "/api/apps", .method = HTTP_GET, .handler = apps_get_handler, .user_ctx = NULL},
         {.uri = "/api/apps", .method = HTTP_DELETE, .handler = apps_delete_handler, .user_ctx = NULL},
+        {.uri = "/api/components", .method = HTTP_GET, .handler = components_get_handler, .user_ctx = NULL},
+        {.uri = "/api/components", .method = HTTP_DELETE, .handler = component_delete_handler, .user_ctx = NULL},
         {.uri = "/api/behaviors", .method = HTTP_GET, .handler = behaviors_get_handler, .user_ctx = NULL},
         {.uri = "/api/behaviors", .method = HTTP_DELETE, .handler = behavior_delete_handler, .user_ctx = NULL},
         {.uri = "/api/loops", .method = HTTP_GET, .handler = loops_get_handler, .user_ctx = NULL},
         {.uri = "/api/tasks", .method = HTTP_GET, .handler = tasks_get_handler, .user_ctx = NULL},
         {.uri = "/api/events/emit", .method = HTTP_POST, .handler = event_emit_post_handler, .user_ctx = NULL},
         {.uri = "/api/apps/detail", .method = HTTP_GET, .handler = app_detail_get_handler, .user_ctx = NULL},
+        {.uri = "/api/components/detail", .method = HTTP_GET, .handler = component_detail_get_handler, .user_ctx = NULL},
         {.uri = "/api/apps/scaffold", .method = HTTP_POST, .handler = app_scaffold_post_handler, .user_ctx = NULL},
+        {.uri = "/api/components/install", .method = HTTP_POST, .handler = component_install_post_handler, .user_ctx = NULL},
         {.uri = "/api/apps/source", .method = HTTP_PUT, .handler = app_source_put_handler, .user_ctx = NULL},
         {.uri = "/api/apps/run", .method = HTTP_POST, .handler = app_run_post_handler, .user_ctx = NULL},
         {.uri = "/api/chat/run", .method = HTTP_POST, .handler = chat_run_post_handler, .user_ctx = NULL},
@@ -1694,7 +1814,7 @@ esp_err_t espclaw_admin_server_start(void)
 
     config.server_port = CONFIG_ESPCLAW_ADMIN_PORT;
     config.stack_size = ESPCLAW_ADMIN_HTTPD_STACK_SIZE;
-    config.max_uri_handlers = 52;
+    config.max_uri_handlers = 64;
     config.max_open_sockets = 4;
     config.lru_purge_enable = true;
     config.core_id = admin_core >= 0 ? admin_core : tskNO_AFFINITY;

@@ -207,6 +207,12 @@ int espclaw_workspace_bootstrap(const char *workspace_root)
     if (espclaw_workspace_resolve_path(workspace_root, "apps", path, sizeof(path)) != 0 || ensure_directory(path) != 0) {
         return -1;
     }
+    if (espclaw_workspace_resolve_path(workspace_root, "components", path, sizeof(path)) != 0 || ensure_directory(path) != 0) {
+        return -1;
+    }
+    if (espclaw_workspace_resolve_path(workspace_root, "lib", path, sizeof(path)) != 0 || ensure_directory(path) != 0) {
+        return -1;
+    }
     if (espclaw_workspace_resolve_path(workspace_root, "behaviors", path, sizeof(path)) != 0 || ensure_directory(path) != 0) {
         return -1;
     }

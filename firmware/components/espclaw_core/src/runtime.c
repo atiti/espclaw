@@ -1704,7 +1704,7 @@ static void telegram_polling_task(void *arg)
                                    s_runtime_status.workspace_root,
                                    update.chat_id,
                                    update.text,
-                                   false,
+                                   s_operator_yolo_mode,
                                    s_operator_yolo_mode,
                                    chat_context != NULL ? chat_context->messages : NULL,
                                    chat_context != NULL ? chat_context->count : 0U,

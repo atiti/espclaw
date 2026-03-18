@@ -26,6 +26,7 @@ add_library(
   espclaw_core
   firmware/components/espclaw_core/src/agent_loop.c
   firmware/components/espclaw_core/src/admin_ops.c
+  firmware/components/espclaw_core/src/app_patterns.c
   firmware/components/espclaw_core/src/app_runtime.c
   firmware/components/espclaw_core/src/admin_api.c
   firmware/components/espclaw_core/src/admin_ui.c
@@ -34,6 +35,7 @@ add_library(
   firmware/components/espclaw_core/src/board_config.c
   firmware/components/espclaw_core/src/board_profile.c
   firmware/components/espclaw_core/src/channel.c
+  firmware/components/espclaw_core/src/component_runtime.c
   firmware/components/espclaw_core/src/control_loop.c
   firmware/components/espclaw_core/src/config_render.c
   firmware/components/espclaw_core/src/console_chat.c
@@ -54,6 +56,7 @@ add_library(
   firmware/components/espclaw_core/src/tool_catalog.c
   firmware/components/espclaw_core/src/web_tools.c
   firmware/components/espclaw_core/src/workspace.c
+  simulator/runtime_host_shim.c
 )
 
 target_include_directories(

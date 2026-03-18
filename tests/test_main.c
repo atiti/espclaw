@@ -1,4 +1,5 @@
 #include <stdbool.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,6 +10,7 @@
 #include "espclaw/admin_api.h"
 #include "espclaw/admin_ops.h"
 #include "espclaw/admin_ui.h"
+#include "espclaw/app_patterns.h"
 #include "espclaw/agent_loop.h"
 #include "espclaw/app_runtime.h"
 #include "espclaw/auth_store.h"
@@ -16,6 +18,7 @@
 #include "espclaw/board_config.h"
 #include "espclaw/board_profile.h"
 #include "espclaw/channel.h"
+#include "espclaw/component_runtime.h"
 #include "espclaw/config_render.h"
 #include "espclaw/console_chat.h"
 #include "espclaw/control_loop.h"
@@ -365,8 +368,11 @@ static int app_install_http_adapter(
 
     assert_string_contains(body, "Tool Inventory Snapshot", "app install prompt includes tool inventory snapshot");
     assert_string_contains(body, "app.install", "app install prompt includes app install tool");
+    assert_string_contains(body, "component.install", "app install prompt includes component install tool");
+    assert_string_contains(body, "app_patterns.list", "app install prompt includes app patterns tool");
     assert_string_contains(body, "event.emit", "app install prompt includes event tool");
     assert_string_contains(body, "lua_api.list", "app install prompt includes lua api tool");
+    assert_string_contains(body, "# App Architecture Contract", "app install prompt injects app architecture contract");
     assert_string_contains(body, "# Lua App Contract", "app install prompt injects lua app contract");
     assert_string_contains(body, "espclaw.pwm.setup", "app install prompt includes lua api snapshot");
     assert_string_contains(body, "function handle(trigger, payload)", "app install prompt includes handler contract");
@@ -1397,6 +1403,22 @@ static void test_lua_api_registry(void)
     assert_true(espclaw_render_lua_api_prompt_snapshot(prompt, sizeof(prompt)) > 0, "lua api prompt snapshot rendered");
     assert_string_contains(prompt, "# Lua App Contract", "lua api prompt includes rules header");
     assert_string_contains(prompt, "Do not assume external Lua modules like cjson", "lua api prompt includes no-cjson rule");
+    assert_true(espclaw_render_component_architecture_prompt_snapshot(prompt, sizeof(prompt)) > 0, "component architecture prompt rendered");
+    assert_string_contains(prompt, "Prefer component.install", "component architecture prompt includes component guidance");
+}
+
+static void test_app_patterns_registry(void)
+{
+    char json[8192];
+    char markdown[8192];
+    char prompt[8192];
+
+    assert_true(espclaw_render_app_patterns_json(json, sizeof(json)) > 0, "app patterns json rendered");
+    assert_string_contains(json, "\"name\":\"shared_component_plus_apps\"", "app patterns json includes shared component pattern");
+    assert_true(espclaw_render_app_patterns_markdown(markdown, sizeof(markdown)) > 0, "app patterns markdown rendered");
+    assert_string_contains(markdown, "# App Patterns", "app patterns markdown header");
+    assert_true(espclaw_render_app_patterns_prompt_snapshot(prompt, sizeof(prompt)) > 0, "app patterns prompt rendered");
+    assert_string_contains(prompt, "sampler_behavior_and_event_consumers", "app patterns prompt includes event-driven pattern");
 }
 
 static void test_board_descriptor_and_task_policy(void)
@@ -1486,6 +1508,63 @@ static void test_workspace_manifest(void)
     assert_true(!espclaw_workspace_is_control_file("sessions/demo.jsonl"), "session file is not control file");
 }
 
+static void test_component_runtime_and_shared_modules(void)
+{
+    char temp_dir[128];
+    char json[4096];
+    char source[1024];
+    char output[256];
+    espclaw_component_manifest_t manifest;
+
+    make_temp_dir(temp_dir, sizeof(temp_dir));
+    assert_true(espclaw_workspace_bootstrap(temp_dir) == 0, "workspace bootstrap for components");
+    assert_true(
+        espclaw_component_install(
+            temp_dir,
+            "ms5611_driver",
+            "MS5611 Driver",
+            "sensors.ms5611",
+            "Shared pressure sensor driver.",
+            "0.1.0",
+            "local M = {}\n"
+            "function M.read_sample()\n"
+            "  return { pressure_mbar = 1007.2, temperature_c = 21.5 }\n"
+            "end\n"
+            "return M\n"
+        ) == 0,
+        "component installed"
+    );
+    assert_true(espclaw_component_load_manifest(temp_dir, "ms5611_driver", &manifest) == 0, "component manifest loaded");
+    assert_true(strcmp(manifest.module, "sensors.ms5611") == 0, "component module persisted");
+    assert_true(espclaw_component_read_source(temp_dir, "ms5611_driver", source, sizeof(source)) == 0, "component source readable");
+    assert_string_contains(source, "pressure_mbar", "component source content persisted");
+    assert_true(espclaw_render_components_json(temp_dir, json, sizeof(json)) == 0, "components json rendered");
+    assert_string_contains(json, "\"component_id\":\"ms5611_driver\"", "components json includes component");
+
+    assert_true(
+        espclaw_app_scaffold_lua(temp_dir, "weather_station", "Weather Station", "fs.read", "manual") == 0,
+        "consumer app scaffolded"
+    );
+    assert_true(
+        espclaw_app_update_source(
+            temp_dir,
+            "weather_station",
+            "local ms5611 = require('sensors.ms5611')\n"
+            "function handle(trigger, payload)\n"
+            "  local sample = ms5611.read_sample()\n"
+            "  return string.format('mbar=%.1f temp=%.1f', sample.pressure_mbar, sample.temperature_c)\n"
+            "end\n"
+        ) == 0,
+        "consumer app source updated"
+    );
+#ifdef ESPCLAW_HOST_LUA
+    assert_true(espclaw_app_run(temp_dir, "weather_station", "manual", "", output, sizeof(output)) == 0, "consumer app ran");
+    assert_string_contains(output, "mbar=1007.2 temp=21.5", "consumer app required installed component");
+#else
+    assert_true(true, "component runtime execution test is host-only");
+#endif
+}
+
 static void test_provider_and_channel_registry(void)
 {
     const espclaw_provider_descriptor_t *openai = espclaw_find_provider("openai_compat");
@@ -1506,6 +1585,9 @@ static void test_tool_catalog(void)
     assert_true(espclaw_find_tool("tool.list") != NULL, "tool list tool exists");
     assert_true(espclaw_find_tool("hardware.list") != NULL, "hardware list tool exists");
     assert_true(espclaw_find_tool("lua_api.list") != NULL, "lua api list tool exists");
+    assert_true(espclaw_find_tool("app_patterns.list") != NULL, "app patterns tool exists");
+    assert_true(espclaw_find_tool("component.list") != NULL, "component list tool exists");
+    assert_true(espclaw_find_tool("component.install") != NULL, "component install tool exists");
     assert_true(espclaw_find_tool("behavior.register") != NULL, "behavior register tool exists");
     assert_true(espclaw_find_tool("task.start") != NULL, "task start tool exists");
     assert_true(espclaw_find_tool("event.emit") != NULL, "event emit tool exists");
@@ -1812,11 +1894,11 @@ static void test_console_chat_skips_embedded_transcript_writes(void)
 static void test_telegram_agent_turns_use_stateless_loop(void)
 {
     char path[512];
-    char contents[131072];
+    char contents[524288];
 
     snprintf(path, sizeof(path), "%s/firmware/components/espclaw_core/src/runtime.c", ESPCLAW_SOURCE_DIR);
     read_text_file(path, contents, sizeof(contents));
-    assert_string_contains(contents, "espclaw_agent_loop_run_stateless(", "telegram polling uses the stateless agent loop");
+    assert_string_contains(contents, "espclaw_agent_loop_run_stateless_with_history(", "telegram polling uses the stateless seeded-history agent loop");
     assert_string_contains(contents, "ESPCLAW_TELEGRAM_CONTEXT_MESSAGES 6", "telegram runtime keeps a small in-memory chat context");
     assert_string_contains(contents, "telegram_context_append_message(chat_context, \"user\", update.text);", "telegram runtime stores the latest user turn in RAM");
     assert_string_contains(contents, "telegram_context_append_message(chat_context, \"assistant\", reply);", "telegram runtime stores the latest assistant turn in RAM");
@@ -1825,7 +1907,7 @@ static void test_telegram_agent_turns_use_stateless_loop(void)
     read_text_file(path, contents, sizeof(contents));
     assert_string_contains(contents, "int espclaw_agent_loop_run_stateless(", "agent loop exposes a stateless entrypoint");
     assert_string_contains(contents, "int espclaw_agent_loop_run_stateless_with_history(", "agent loop exposes a stateless seeded-history entrypoint");
-    assert_string_contains(contents, "persist_transcript,\n        false,", "stateless agent loop disables transcript persistence");
+    assert_string_contains(contents, "0U,\n        false,\n        result", "stateless agent loop disables transcript persistence");
     assert_string_contains(contents, "seed_history_messages(", "agent loop can seed transient history without workspace transcripts");
 }
 
@@ -1843,7 +1925,7 @@ static void test_runtime_uses_larger_uart_console_stack(void)
 static void test_embedded_console_and_agent_paths_heap_allocate_auth_profiles(void)
 {
     char path[512];
-    char contents[131072];
+    char contents[524288];
 
     snprintf(path, sizeof(path), "%s/firmware/components/espclaw_core/src/console_chat.c", ESPCLAW_SOURCE_DIR);
     read_text_file(path, contents, sizeof(contents));
@@ -1947,6 +2029,7 @@ static void test_session_store(void)
     char transcript[2048];
 
     make_temp_dir(temp_dir, sizeof(temp_dir));
+    assert_true(espclaw_workspace_bootstrap(temp_dir) == 0, "workspace bootstrap for session store");
 
     assert_true(espclaw_session_id_is_valid("chat_001"), "session id accepted");
     assert_true(!espclaw_session_id_is_valid("../oops"), "unsafe session id rejected");
@@ -3319,7 +3402,7 @@ static void test_lua_module_require_paths(void)
     make_temp_dir(temp_dir, sizeof(temp_dir));
     assert_true(espclaw_workspace_bootstrap(temp_dir) == 0, "workspace bootstrap for lua modules");
     snprintf(path_buffer, sizeof(path_buffer), "%s/lib", temp_dir);
-    assert_true(mkdir(path_buffer, 0700) == 0, "workspace lib directory created");
+    assert_true(mkdir(path_buffer, 0700) == 0 || errno == EEXIST, "workspace lib directory created");
     assert_true(
         snprintf(path_buffer, sizeof(path_buffer), "%s/lib/sensor_math.lua", temp_dir) < (int)sizeof(path_buffer),
         "workspace module path fits"
@@ -3338,7 +3421,7 @@ static void test_lua_module_require_paths(void)
         "module app scaffolded"
     );
     snprintf(path_buffer, sizeof(path_buffer), "%s/apps/module_app/lib", temp_dir);
-    assert_true(mkdir(path_buffer, 0700) == 0, "app lib directory created");
+    assert_true(mkdir(path_buffer, 0700) == 0 || errno == EEXIST, "app lib directory created");
     assert_true(
         snprintf(path_buffer, sizeof(path_buffer), "%s/apps/module_app/lib/message_parts.lua", temp_dir) < (int)sizeof(path_buffer),
         "app module path fits"
@@ -3441,7 +3524,7 @@ static void test_admin_scaffold_app_custom_triggers(void)
 static void test_agent_loop(void)
 {
     char temp_dir[128];
-    char transcript[8192];
+    char transcript[262144];
     espclaw_auth_profile_t profile;
     espclaw_agent_run_result_t result;
     test_agent_adapter_state_t adapter_state = {0};
@@ -3810,7 +3893,7 @@ static void test_agent_loop(void)
 static void test_console_chat_and_web_tools(void)
 {
     char temp_dir[128];
-    char transcript[8192];
+    char transcript[262144];
     char buffer[2048];
     char stored_path[128];
     espclaw_agent_run_result_t result;
@@ -3945,6 +4028,7 @@ static void test_console_chat_and_web_tools(void)
     assert_string_contains(transcript, "espclaw_runtime_set_yolo_mode", "runtime exposes yolo setter");
     assert_string_contains(transcript, "load_operator_config_from_nvs(&s_operator_yolo_mode);", "runtime loads persisted yolo policy");
     assert_string_contains(transcript, "s_operator_yolo_mode = true;", "runtime defaults yolo mode to enabled");
+    assert_string_contains(transcript, "update.text,\n                                   s_operator_yolo_mode,\n                                   s_operator_yolo_mode,", "telegram agent loop uses global yolo mode for both mutation gating and prompt policy");
     assert_string_contains(transcript, "#define ESPCLAW_TELEGRAM_STACK_BYTES 16384", "telegram task stack budget is increased");
     assert_string_contains(transcript, "runtime_external_malloc(ESPCLAW_TELEGRAM_RESPONSE_BYTES)", "telegram response buffer prefers PSRAM");
     assert_string_contains(transcript, "run_result = runtime_external_calloc(1, sizeof(*run_result));", "telegram agent result prefers PSRAM");
@@ -3981,6 +4065,8 @@ static void test_console_chat_and_web_tools(void)
         sizeof(transcript)
     );
     assert_string_contains(transcript, "$('chat-yolo').checked = !!status.yolo_mode;", "admin ui syncs yolo toggle from runtime status");
+    assert_string_contains(transcript, "/api/telegram/config", "admin ui loads telegram config endpoint");
+    assert_string_contains(transcript, "saveTelegramConfig", "admin ui exposes telegram save action");
 
     read_text_file(
         ESPCLAW_SOURCE_DIR "/firmware/components/espclaw_core/src/console_chat.c",
@@ -3989,8 +4075,6 @@ static void test_console_chat_and_web_tools(void)
     );
     assert_string_contains(transcript, "/yolo status | on | off", "console help documents yolo command");
     assert_string_contains(transcript, "YOLO mode is %s.", "console supports yolo status command");
-    assert_string_contains(transcript, "/api/telegram/config", "admin ui loads telegram config endpoint");
-    assert_string_contains(transcript, "saveTelegramConfig", "admin ui exposes telegram save action");
 
     read_text_file(
         ESPCLAW_SOURCE_DIR "/firmware/components/espclaw_core/src/admin_server.c",
@@ -4041,9 +4125,9 @@ static void test_console_chat_and_web_tools(void)
 
 static void test_runtime_defers_operator_surfaces_until_after_admin_start(void)
 {
-    char runtime_source[32768];
+    char runtime_source[131072];
     char main_source[4096];
-    char admin_source[16384];
+    char admin_source[131072];
 
     read_text_file(
         ESPCLAW_SOURCE_DIR "/firmware/components/espclaw_core/src/runtime.c",
@@ -4072,7 +4156,7 @@ static void test_runtime_defers_operator_surfaces_until_after_admin_start(void)
 
 static void test_embedded_codex_transport_prefers_http_client_path(void)
 {
-    char source[16384];
+    char source[262144];
 
     read_text_file(
         ESPCLAW_SOURCE_DIR "/firmware/components/espclaw_core/src/agent_loop.c",
@@ -4086,8 +4170,10 @@ int main(void)
 {
     test_board_profiles();
     test_lua_api_registry();
+    test_app_patterns_registry();
     test_board_descriptor_and_task_policy();
     test_workspace_manifest();
+    test_component_runtime_and_shared_modules();
     test_provider_and_channel_registry();
     test_tool_catalog();
     test_default_config_render();
