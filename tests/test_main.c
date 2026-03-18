@@ -1623,12 +1623,15 @@ static void test_tool_catalog(void)
     assert_true(espclaw_find_tool("component.install_from_file") != NULL, "component install from file tool exists");
     assert_true(espclaw_find_tool("component.install_from_blob") != NULL, "component install from blob tool exists");
     assert_true(espclaw_find_tool("component.install_from_url") != NULL, "component install from url tool exists");
+    assert_true(espclaw_find_tool("component.install_from_manifest") != NULL, "component install from manifest tool exists");
     assert_true(espclaw_find_tool("app.install_from_file") != NULL, "app install from file tool exists");
     assert_true(espclaw_find_tool("app.install_from_blob") != NULL, "app install from blob tool exists");
     assert_true(espclaw_find_tool("app.install_from_url") != NULL, "app install from url tool exists");
     assert_true(espclaw_find_tool("context.chunks") != NULL, "context chunks tool exists");
     assert_true(espclaw_find_tool("context.load") != NULL, "context load tool exists");
     assert_true(espclaw_find_tool("context.search") != NULL, "context search tool exists");
+    assert_true(espclaw_find_tool("context.select") != NULL, "context select tool exists");
+    assert_true(espclaw_find_tool("context.summarize") != NULL, "context summarize tool exists");
     assert_true(espclaw_find_tool("behavior.register") != NULL, "behavior register tool exists");
     assert_true(espclaw_find_tool("task.start") != NULL, "task start tool exists");
     assert_true(espclaw_find_tool("event.emit") != NULL, "event emit tool exists");
@@ -2288,6 +2291,18 @@ static void test_install_from_blob_and_context(void)
     );
     assert_string_contains(json, "\"results\":[", "context search results array rendered");
     assert_string_contains(json, "Paragliding variometers", "context search returned matching excerpt");
+    assert_true(
+        espclaw_context_select_json(temp_dir, "memory/context.md", "pressure driver", 96U, 2U, 256U, json, sizeof(json)) == 0,
+        "context select rendered"
+    );
+    assert_string_contains(json, "\"selected_text\":", "context select returns selected text");
+    assert_string_contains(json, "pressure driver", "context select keeps relevant excerpt");
+    assert_true(
+        espclaw_context_summarize_json(temp_dir, "memory/context.md", "pressure driver", 96U, 2U, 192U, json, sizeof(json)) == 0,
+        "context summarize rendered"
+    );
+    assert_string_contains(json, "\"summary\":", "context summarize returns summary");
+    assert_string_contains(json, "pressure", "context summary keeps pressure-related content");
 }
 
 static void test_session_store(void)

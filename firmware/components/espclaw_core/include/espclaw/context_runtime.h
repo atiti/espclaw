@@ -30,5 +30,25 @@ int espclaw_context_search_json(
     char *buffer,
     size_t buffer_size
 );
+int espclaw_context_select_json(
+    const char *workspace_root,
+    const char *relative_path,
+    const char *query,
+    size_t chunk_bytes,
+    size_t limit,
+    size_t output_bytes,
+    char *buffer,
+    size_t buffer_size
+);
+int espclaw_context_summarize_json(
+    const char *workspace_root,
+    const char *relative_path,
+    const char *query,
+    size_t chunk_bytes,
+    size_t limit,
+    size_t summary_bytes,
+    char *buffer,
+    size_t buffer_size
+);
 
 #endif

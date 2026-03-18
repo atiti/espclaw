@@ -1296,6 +1296,78 @@ static esp_err_t context_search_get_handler(httpd_req_t *req)
     return send_json(req, response);
 }
 
+static esp_err_t context_select_get_handler(httpd_req_t *req)
+{
+    char path[ESPCLAW_CONTEXT_PATH_MAX + 1];
+    char query[ESPCLAW_CONTEXT_QUERY_MAX + 1];
+    char response[8192];
+    const espclaw_runtime_status_t *runtime = espclaw_runtime_status();
+    uint32_t chunk_bytes;
+    uint32_t limit;
+    uint32_t output_bytes;
+
+    if (runtime == NULL || !runtime->storage_ready) {
+        espclaw_admin_render_result_json(false, "workspace storage is not available", response, sizeof(response));
+        return send_json_status(req, response, 503, "Service Unavailable");
+    }
+    if (!load_query_value(req, "path", path, sizeof(path)) ||
+        !load_query_value(req, "query", query, sizeof(query))) {
+        espclaw_admin_render_result_json(false, "missing path or query parameter", response, sizeof(response));
+        return send_json_status(req, response, 400, "Bad Request");
+    }
+    chunk_bytes = load_query_u32(req, "chunk_bytes", 0U);
+    limit = load_query_u32(req, "limit", 0U);
+    output_bytes = load_query_u32(req, "output_bytes", 0U);
+    if (espclaw_context_select_json(
+            runtime->workspace_root,
+            path,
+            query,
+            (size_t)chunk_bytes,
+            (size_t)limit,
+            (size_t)output_bytes,
+            response,
+            sizeof(response)) != 0) {
+        return send_json_status(req, response, 404, "Not Found");
+    }
+    return send_json(req, response);
+}
+
+static esp_err_t context_summarize_get_handler(httpd_req_t *req)
+{
+    char path[ESPCLAW_CONTEXT_PATH_MAX + 1];
+    char query[ESPCLAW_CONTEXT_QUERY_MAX + 1];
+    char response[6144];
+    const espclaw_runtime_status_t *runtime = espclaw_runtime_status();
+    uint32_t chunk_bytes;
+    uint32_t limit;
+    uint32_t summary_bytes;
+
+    if (runtime == NULL || !runtime->storage_ready) {
+        espclaw_admin_render_result_json(false, "workspace storage is not available", response, sizeof(response));
+        return send_json_status(req, response, 503, "Service Unavailable");
+    }
+    if (!load_query_value(req, "path", path, sizeof(path)) ||
+        !load_query_value(req, "query", query, sizeof(query))) {
+        espclaw_admin_render_result_json(false, "missing path or query parameter", response, sizeof(response));
+        return send_json_status(req, response, 400, "Bad Request");
+    }
+    chunk_bytes = load_query_u32(req, "chunk_bytes", 0U);
+    limit = load_query_u32(req, "limit", 0U);
+    summary_bytes = load_query_u32(req, "summary_bytes", 0U);
+    if (espclaw_context_summarize_json(
+            runtime->workspace_root,
+            path,
+            query,
+            (size_t)chunk_bytes,
+            (size_t)limit,
+            (size_t)summary_bytes,
+            response,
+            sizeof(response)) != 0) {
+        return send_json_status(req, response, 404, "Not Found");
+    }
+    return send_json(req, response);
+}
+
 static esp_err_t apps_get_handler(httpd_req_t *req)
 {
     char buffer[2048];
@@ -1576,6 +1648,28 @@ static esp_err_t component_install_from_url_post_handler(httpd_req_t *req)
         return send_json_status(req, buffer, 500, "Internal Server Error");
     }
     espclaw_admin_render_result_json(true, "component installed from url", buffer, sizeof(buffer));
+    return send_json(req, buffer);
+}
+
+static esp_err_t component_install_from_manifest_post_handler(httpd_req_t *req)
+{
+    char manifest_url[ESPCLAW_COMPONENT_URL_MAX + 1];
+    char buffer[256];
+    const espclaw_runtime_status_t *status = espclaw_runtime_status();
+
+    if (status == NULL || !status->storage_ready) {
+        espclaw_admin_render_result_json(false, "workspace storage is not available", buffer, sizeof(buffer));
+        return send_json_status(req, buffer, 503, "Service Unavailable");
+    }
+    if (!load_query_value(req, "manifest_url", manifest_url, sizeof(manifest_url))) {
+        espclaw_admin_render_result_json(false, "missing manifest_url query parameter", buffer, sizeof(buffer));
+        return send_json_status(req, buffer, 400, "Bad Request");
+    }
+    if (espclaw_component_install_from_manifest(status->workspace_root, manifest_url) != 0) {
+        espclaw_admin_render_result_json(false, "failed to install component from manifest", buffer, sizeof(buffer));
+        return send_json_status(req, buffer, 500, "Internal Server Error");
+    }
+    espclaw_admin_render_result_json(true, "component installed from manifest", buffer, sizeof(buffer));
     return send_json(req, buffer);
 }
 
@@ -2231,6 +2325,8 @@ esp_err_t espclaw_admin_server_start(void)
         {.uri = "/api/context/chunks", .method = HTTP_GET, .handler = context_chunks_get_handler, .user_ctx = NULL},
         {.uri = "/api/context/load", .method = HTTP_GET, .handler = context_load_get_handler, .user_ctx = NULL},
         {.uri = "/api/context/search", .method = HTTP_GET, .handler = context_search_get_handler, .user_ctx = NULL},
+        {.uri = "/api/context/select", .method = HTTP_GET, .handler = context_select_get_handler, .user_ctx = NULL},
+        {.uri = "/api/context/summarize", .method = HTTP_GET, .handler = context_summarize_get_handler, .user_ctx = NULL},
         {.uri = "/api/monitor", .method = HTTP_GET, .handler = monitor_get_handler, .user_ctx = NULL},
         {.uri = "/api/camera", .method = HTTP_GET, .handler = camera_get_handler, .user_ctx = NULL},
         {.uri = "/api/camera/capture", .method = HTTP_POST, .handler = camera_capture_post_handler, .user_ctx = NULL},
@@ -2257,6 +2353,7 @@ esp_err_t espclaw_admin_server_start(void)
         {.uri = "/api/components/install/from-file", .method = HTTP_POST, .handler = component_install_from_file_post_handler, .user_ctx = NULL},
         {.uri = "/api/components/install/from-blob", .method = HTTP_POST, .handler = component_install_from_blob_post_handler, .user_ctx = NULL},
         {.uri = "/api/components/install/from-url", .method = HTTP_POST, .handler = component_install_from_url_post_handler, .user_ctx = NULL},
+        {.uri = "/api/components/install/from-manifest", .method = HTTP_POST, .handler = component_install_from_manifest_post_handler, .user_ctx = NULL},
         {.uri = "/api/apps/source", .method = HTTP_PUT, .handler = app_source_put_handler, .user_ctx = NULL},
         {.uri = "/api/apps/install/from-file", .method = HTTP_POST, .handler = app_install_from_file_post_handler, .user_ctx = NULL},
         {.uri = "/api/apps/install/from-blob", .method = HTTP_POST, .handler = app_install_from_blob_post_handler, .user_ctx = NULL},

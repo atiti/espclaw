@@ -19,8 +19,9 @@ static const char *RULES[] = {
     "If Lua source already exists in the workspace, prefer app.install_from_file or component.install_from_file over large inline source strings.",
     "If the large source was uploaded through the chunked blob store, prefer app.install_from_blob or component.install_from_blob.",
     "If installing a community-shared raw source URL directly, prefer app.install_from_url or component.install_from_url.",
+    "If installing a community-shared reusable driver or helper with metadata, prefer component.install_from_manifest.",
     "Use inline app.install or component.install only when the source is comfortably small for a single tool call.",
-    "For large markdown or docs in the workspace, prefer context.search and context.load over reading the entire file into one turn.",
+    "For large markdown or docs in the workspace, prefer context.search, context.select, context.summarize, and context.load over reading the entire file into one turn.",
 };
 
 static const espclaw_app_pattern_t PATTERNS[] = {
@@ -34,7 +35,7 @@ static const espclaw_app_pattern_t PATTERNS[] = {
         "shared_component_plus_apps",
         "A reusable component provides low-level driver or math logic and multiple apps require it.",
         "Use for drivers, filters, mixers, or sensor adapters such as MS5611.",
-        "component.install_from_url(ms5611) or component.install_from_file(ms5611) -> app.install(weather_station) + app.install(vario)"
+        "component.install_from_manifest(ms5611) or component.install_from_url(ms5611) -> app.install(weather_station) + app.install(vario)"
     },
     {
         "sampler_behavior_and_event_consumers",

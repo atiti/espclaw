@@ -115,12 +115,15 @@ grep -q '"name":"component.install"' <<<"$TOOLS_JSON"
 grep -q '"name":"component.install_from_file"' <<<"$TOOLS_JSON"
 grep -q '"name":"component.install_from_blob"' <<<"$TOOLS_JSON"
 grep -q '"name":"component.install_from_url"' <<<"$TOOLS_JSON"
+grep -q '"name":"component.install_from_manifest"' <<<"$TOOLS_JSON"
 grep -q '"name":"app.install_from_file"' <<<"$TOOLS_JSON"
 grep -q '"name":"app.install_from_blob"' <<<"$TOOLS_JSON"
 grep -q '"name":"app.install_from_url"' <<<"$TOOLS_JSON"
 grep -q '"name":"context.chunks"' <<<"$TOOLS_JSON"
 grep -q '"name":"context.load"' <<<"$TOOLS_JSON"
 grep -q '"name":"context.search"' <<<"$TOOLS_JSON"
+grep -q '"name":"context.select"' <<<"$TOOLS_JSON"
+grep -q '"name":"context.summarize"' <<<"$TOOLS_JSON"
 grep -q '"name":"app_patterns.list"' <<<"$TOOLS_JSON"
 
 APP_PATTERNS_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/app-patterns")"
@@ -185,10 +188,31 @@ CONTEXT_SEARCH_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/context/search?path=
 [[ "$CONTEXT_SEARCH_JSON" == *'"results":['* ]]
 [[ "$CONTEXT_SEARCH_JSON" == *'world'* ]]
 
+CONTEXT_SELECT_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/context/select?path=memory/context.md&query=Part&chunk_bytes=8&limit=2&output_bytes=64")"
+[[ "$CONTEXT_SELECT_JSON" == *'"selected_text":'* ]]
+[[ "$CONTEXT_SELECT_JSON" == *'chunk 0'* ]]
+
+CONTEXT_SUMMARIZE_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/context/summarize?path=memory/context.md&query=hello&chunk_bytes=8&limit=2&summary_bytes=96")"
+[[ "$CONTEXT_SUMMARIZE_JSON" == *'"summary":'* ]]
+[[ "$CONTEXT_SUMMARIZE_JSON" == *'hello'* ]]
+
 HTTP_ROOT="$WORKSPACE/http-src"
 mkdir -p "$HTTP_ROOT"
 printf '%s' $'local M = {}\nfunction M.sample() return {pressure_mbar=998.4,temp_c=18.0} end\nreturn M\n' >"$HTTP_ROOT/ms5611_url.lua"
 printf '%s' $'function handle(trigger, payload)\n  local sensor = require("sensors.ms5611_url")\n  local sample = sensor.sample()\n  return string.format("pressure=%.1f", sample.pressure_mbar)\nend\n' >"$HTTP_ROOT/weather_url.lua"
+cat >"$HTTP_ROOT/ms5611_manifest.json" <<EOF
+{
+  "id": "ms5611_manifest_driver",
+  "title": "MS5611 Manifest Driver",
+  "module": "sensors.ms5611_manifest",
+  "summary": "Shared MS5611 driver from manifest",
+  "version": "0.2.0",
+  "source_url": "http://127.0.0.1:$HTTP_PORT/ms5611_url.lua",
+  "docs_url": "http://127.0.0.1:$HTTP_PORT/ms5611_docs.md",
+  "dependencies": []
+}
+EOF
+printf '%s\n' '# MS5611 docs' >"$HTTP_ROOT/ms5611_docs.md"
 python3 -m http.server "$HTTP_PORT" --bind 127.0.0.1 --directory "$HTTP_ROOT" >"$WORKSPACE/http-server.log" 2>&1 &
 HTTP_PID="$!"
 for _ in {1..50}; do
@@ -200,6 +224,14 @@ done
 
 COMPONENT_INSTALL_FROM_URL_JSON="$(curl -sf -X POST "http://127.0.0.1:$PORT/api/components/install/from-url?component_id=ms5611_url_driver&title=MS5611%20URL%20Driver&module=sensors.ms5611_url&summary=Shared%20MS5611%20driver%20from%20URL&version=0.1.0&source_url=http%3A%2F%2F127.0.0.1%3A$HTTP_PORT%2Fms5611_url.lua")"
 [[ "$COMPONENT_INSTALL_FROM_URL_JSON" == *'"ok":true'* ]]
+
+COMPONENT_INSTALL_FROM_MANIFEST_JSON="$(curl -sf -X POST "http://127.0.0.1:$PORT/api/components/install/from-manifest?manifest_url=http%3A%2F%2F127.0.0.1%3A$HTTP_PORT%2Fms5611_manifest.json")"
+[[ "$COMPONENT_INSTALL_FROM_MANIFEST_JSON" == *'"ok":true'* ]]
+
+COMPONENT_MANIFEST_DETAIL_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/components/detail?component_id=ms5611_manifest_driver")"
+[[ "$COMPONENT_MANIFEST_DETAIL_JSON" == *'"manifest_url":"http://127.0.0.1:'* ]]
+[[ "$COMPONENT_MANIFEST_DETAIL_JSON" == *'"source_url":"http://127.0.0.1:'* ]]
+[[ "$COMPONENT_MANIFEST_DETAIL_JSON" == *'"docs_url":"http://127.0.0.1:'* ]]
 
 APP_INSTALL_FROM_URL_JSON="$(curl -sf -X POST "http://127.0.0.1:$PORT/api/apps/install/from-url?app_id=weather_station_url&title=Weather%20Station%20URL&permissions=fs.read&triggers=manual&source_url=http%3A%2F%2F127.0.0.1%3A$HTTP_PORT%2Fweather_url.lua")"
 [[ "$APP_INSTALL_FROM_URL_JSON" == *'"ok":true'* ]]

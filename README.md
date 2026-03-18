@@ -184,6 +184,8 @@ Today these markdown files are injected directly into the system prompt whenever
 - `context.chunks`
 - `context.load`
 - `context.search`
+- `context.select`
+- `context.summarize`
 
 They can be updated through normal workspace writes:
 
@@ -223,6 +225,7 @@ Large-source install flows now available:
 - `POST /api/components/install/from-file?component_id=<id>&module=<module_name>&source_path=<workspace_path>[&title=...&summary=...&version=...]`
 - `POST /api/components/install/from-blob?component_id=<id>&module=<module_name>&blob_id=<blob_id>[&title=...&summary=...&version=...]`
 - `POST /api/components/install/from-url?component_id=<id>&module=<module_name>&source_url=<raw_lua_url>[&title=...&summary=...&version=...]`
+- `POST /api/components/install/from-manifest?manifest_url=<component_manifest_url>`
 
 Recommended sequence for large Lua:
 
@@ -231,20 +234,25 @@ Recommended sequence for large Lua:
 3. call `app.install_from_blob` or `component.install_from_blob`
 
 Use `*_from_url` for directly installable community-shared raw Lua sources.
+Use `component.install_from_manifest` when the shared component publishes a manifest with metadata, `source_url`, docs, and optional dependency manifests.
 
 Chunk-aware context retrieval now available:
 
 - `GET /api/context/chunks?path=<workspace_path>[&chunk_bytes=<n>]`
 - `GET /api/context/load?path=<workspace_path>&chunk_index=<n>[&chunk_bytes=<n>]`
 - `GET /api/context/search?path=<workspace_path>&query=<text>[&chunk_bytes=<n>&limit=<n>]`
+- `GET /api/context/select?path=<workspace_path>&query=<text>[&chunk_bytes=<n>&limit=<n>&output_bytes=<n>]`
+- `GET /api/context/summarize?path=<workspace_path>&query=<text>[&chunk_bytes=<n>&limit=<n>&summary_bytes=<n>]`
 
 The matching model tools are:
 
 - `context.chunks`
 - `context.load`
 - `context.search`
+- `context.select`
+- `context.summarize`
 
-Use them when a markdown/doc file is too large to safely inline into a single prompt turn.
+Use them when a markdown/doc file is too large to safely inline into a single prompt turn. `context.select` returns a prompt-ready bounded excerpt block, while `context.summarize` returns a bounded extractive summary of the best matching chunks.
 
 ## Web Search And Fetch
 

@@ -890,6 +890,72 @@ static void handle_api_request(
         return;
     }
 
+    if (strcmp(method, "GET") == 0 && strcmp(path, "/api/context/select") == 0) {
+        char context_path[ESPCLAW_CONTEXT_PATH_MAX + 1];
+        char query_text[ESPCLAW_CONTEXT_QUERY_MAX + 1];
+        char chunk_value[32];
+        char limit_value[32];
+        char output_value[32];
+        size_t chunk_bytes = 0U;
+        size_t limit = 0U;
+        size_t output_bytes = 0U;
+
+        if (!espclaw_admin_query_value(query, "path", context_path, sizeof(context_path)) ||
+            !espclaw_admin_query_value(query, "query", query_text, sizeof(query_text))) {
+            espclaw_admin_render_result_json(false, "missing path or query parameter", response, sizeof(response));
+            send_http_response(client_fd, 400, "Bad Request", "application/json", response);
+            return;
+        }
+        if (espclaw_admin_query_value(query, "chunk_bytes", chunk_value, sizeof(chunk_value))) {
+            chunk_bytes = (size_t)strtoul(chunk_value, NULL, 10);
+        }
+        if (espclaw_admin_query_value(query, "limit", limit_value, sizeof(limit_value))) {
+            limit = (size_t)strtoul(limit_value, NULL, 10);
+        }
+        if (espclaw_admin_query_value(query, "output_bytes", output_value, sizeof(output_value))) {
+            output_bytes = (size_t)strtoul(output_value, NULL, 10);
+        }
+        if (espclaw_context_select_json(config->workspace_root, context_path, query_text, chunk_bytes, limit, output_bytes, response, sizeof(response)) != 0) {
+            send_http_response(client_fd, 404, "Not Found", "application/json", response);
+            return;
+        }
+        send_http_response(client_fd, 200, "OK", "application/json", response);
+        return;
+    }
+
+    if (strcmp(method, "GET") == 0 && strcmp(path, "/api/context/summarize") == 0) {
+        char context_path[ESPCLAW_CONTEXT_PATH_MAX + 1];
+        char query_text[ESPCLAW_CONTEXT_QUERY_MAX + 1];
+        char chunk_value[32];
+        char limit_value[32];
+        char summary_value[32];
+        size_t chunk_bytes = 0U;
+        size_t limit = 0U;
+        size_t summary_bytes = 0U;
+
+        if (!espclaw_admin_query_value(query, "path", context_path, sizeof(context_path)) ||
+            !espclaw_admin_query_value(query, "query", query_text, sizeof(query_text))) {
+            espclaw_admin_render_result_json(false, "missing path or query parameter", response, sizeof(response));
+            send_http_response(client_fd, 400, "Bad Request", "application/json", response);
+            return;
+        }
+        if (espclaw_admin_query_value(query, "chunk_bytes", chunk_value, sizeof(chunk_value))) {
+            chunk_bytes = (size_t)strtoul(chunk_value, NULL, 10);
+        }
+        if (espclaw_admin_query_value(query, "limit", limit_value, sizeof(limit_value))) {
+            limit = (size_t)strtoul(limit_value, NULL, 10);
+        }
+        if (espclaw_admin_query_value(query, "summary_bytes", summary_value, sizeof(summary_value))) {
+            summary_bytes = (size_t)strtoul(summary_value, NULL, 10);
+        }
+        if (espclaw_context_summarize_json(config->workspace_root, context_path, query_text, chunk_bytes, limit, summary_bytes, response, sizeof(response)) != 0) {
+            send_http_response(client_fd, 404, "Not Found", "application/json", response);
+            return;
+        }
+        send_http_response(client_fd, 200, "OK", "application/json", response);
+        return;
+    }
+
     if (strcmp(method, "GET") == 0 && strcmp(path, "/api/monitor") == 0) {
         espclaw_system_monitor_snapshot_t snapshot;
         struct statvfs fs_stats;
@@ -1077,6 +1143,26 @@ static void handle_api_request(
         }
 
         espclaw_admin_render_result_json(true, "component installed from url", response, sizeof(response));
+        send_http_response(client_fd, 200, "OK", "application/json", response);
+        return;
+    }
+
+    if (strcmp(method, "POST") == 0 && strcmp(path, "/api/components/install/from-manifest") == 0) {
+        char manifest_url[ESPCLAW_COMPONENT_URL_MAX + 1];
+
+        if (!espclaw_admin_query_value(query, "manifest_url", manifest_url, sizeof(manifest_url))) {
+            espclaw_admin_render_result_json(false, "missing manifest_url query parameter", response, sizeof(response));
+            send_http_response(client_fd, 400, "Bad Request", "application/json", response);
+            return;
+        }
+
+        if (espclaw_component_install_from_manifest(config->workspace_root, manifest_url) != 0) {
+            espclaw_admin_render_result_json(false, "component install from manifest failed", response, sizeof(response));
+            send_http_response(client_fd, 500, "Internal Server Error", "application/json", response);
+            return;
+        }
+
+        espclaw_admin_render_result_json(true, "component installed from manifest", response, sizeof(response));
         send_http_response(client_fd, 200, "OK", "application/json", response);
         return;
     }

@@ -1509,9 +1509,10 @@ static int load_system_prompt(
         "\nUse hardware.list when board-specific pins, buses, or capabilities matter.\n"
         "Use lua_api.list when generating or debugging Lua apps and you need exact espclaw.* signatures or handler rules.\n"
         "Use app_patterns.list when you need to decide whether something should be a component, app, task, behavior, or event.\n"
-        "Use component.list before writing a new shared driver or helper, and use component.install when reusable code should be shared by multiple apps.\n"
+        "Use component.list before writing a new shared driver or helper, and use component.install or component.install_from_manifest when reusable code should be shared by multiple apps.\n"
         "Use app.install_from_blob or component.install_from_blob when large Lua source was chunk-uploaded through the blob store.\n"
-        "Use context.search and context.load for large workspace docs instead of trying to stuff an entire file into one prompt turn.\n"
+        "Use app.install_from_url or component.install_from_manifest for community-shared artifacts instead of pasting large inline code.\n"
+        "Use context.search, context.select, context.summarize, and context.load for large workspace docs instead of trying to stuff an entire file into one prompt turn.\n"
         "If the operator explicitly tells you to run a tool by name, call that tool in this turn instead of asking them to paste its output.\n"
         "If your previous reply said a named tool still needs to be run, or described a concrete next tool step like emit an event or check task.list, and the next operator turn is an approval like yes/ok/do it/do that/try that/go ahead, treat that as approval to call the missing tool immediately.\n"
         "If the user says this is a tool-call compliance test, says the transcript is audited, or explicitly lists tools you must use, call every applicable listed tool before replying, even if some of those tool calls fail.\n"
@@ -2680,6 +2681,21 @@ static int tool_component_install_from_url(const char *workspace_root, const cha
     return espclaw_render_components_json(workspace_root, buffer, buffer_size);
 }
 
+static int tool_component_install_from_manifest(const char *workspace_root, const char *arguments_json, char *buffer, size_t buffer_size)
+{
+    char manifest_url[512];
+
+    if (!json_argument_string_any(arguments_json, (const char *[]){"manifest_url", "url"}, 2, manifest_url, sizeof(manifest_url))) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"missing manifest_url\"}");
+        return -1;
+    }
+    if (espclaw_component_install_from_manifest(workspace_root, manifest_url) != 0) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"component install from manifest failed\"}");
+        return -1;
+    }
+    return espclaw_render_components_json(workspace_root, buffer, buffer_size);
+}
+
 static int tool_component_remove(const char *workspace_root, const char *arguments_json, char *buffer, size_t buffer_size)
 {
     char component_id[ESPCLAW_COMPONENT_ID_MAX + 1];
@@ -2766,6 +2782,62 @@ static int tool_context_search(const char *workspace_root, const char *arguments
         query,
         (size_t)(chunk_bytes > 0 ? chunk_bytes : 0),
         (size_t)(limit > 0 ? limit : 0),
+        buffer,
+        buffer_size
+    );
+}
+
+static int tool_context_select(const char *workspace_root, const char *arguments_json, char *buffer, size_t buffer_size)
+{
+    char path[ESPCLAW_CONTEXT_PATH_MAX + 1];
+    char query[ESPCLAW_CONTEXT_QUERY_MAX + 1];
+    int chunk_bytes = 0;
+    int limit = 0;
+    int output_bytes = 0;
+
+    if (!json_argument_string_any(arguments_json, (const char *[]){"path", "source_path"}, 2, path, sizeof(path)) ||
+        !json_argument_string(arguments_json, "query", query, sizeof(query))) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"missing path or query\"}");
+        return -1;
+    }
+    (void)json_argument_int(arguments_json, "chunk_bytes", &chunk_bytes);
+    (void)json_argument_int(arguments_json, "limit", &limit);
+    (void)json_argument_int(arguments_json, "output_bytes", &output_bytes);
+    return espclaw_context_select_json(
+        workspace_root,
+        path,
+        query,
+        (size_t)(chunk_bytes > 0 ? chunk_bytes : 0),
+        (size_t)(limit > 0 ? limit : 0),
+        (size_t)(output_bytes > 0 ? output_bytes : 0),
+        buffer,
+        buffer_size
+    );
+}
+
+static int tool_context_summarize(const char *workspace_root, const char *arguments_json, char *buffer, size_t buffer_size)
+{
+    char path[ESPCLAW_CONTEXT_PATH_MAX + 1];
+    char query[ESPCLAW_CONTEXT_QUERY_MAX + 1];
+    int chunk_bytes = 0;
+    int limit = 0;
+    int summary_bytes = 0;
+
+    if (!json_argument_string_any(arguments_json, (const char *[]){"path", "source_path"}, 2, path, sizeof(path)) ||
+        !json_argument_string(arguments_json, "query", query, sizeof(query))) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"missing path or query\"}");
+        return -1;
+    }
+    (void)json_argument_int(arguments_json, "chunk_bytes", &chunk_bytes);
+    (void)json_argument_int(arguments_json, "limit", &limit);
+    (void)json_argument_int(arguments_json, "summary_bytes", &summary_bytes);
+    return espclaw_context_summarize_json(
+        workspace_root,
+        path,
+        query,
+        (size_t)(chunk_bytes > 0 ? chunk_bytes : 0),
+        (size_t)(limit > 0 ? limit : 0),
+        (size_t)(summary_bytes > 0 ? summary_bytes : 0),
         buffer,
         buffer_size
     );
@@ -4237,6 +4309,9 @@ static int tool_execute(
     if (strcmp(tool_call->name, "component.install_from_url") == 0) {
         return tool_component_install_from_url(workspace_root, tool_call->arguments_json, buffer, buffer_size);
     }
+    if (strcmp(tool_call->name, "component.install_from_manifest") == 0) {
+        return tool_component_install_from_manifest(workspace_root, tool_call->arguments_json, buffer, buffer_size);
+    }
     if (strcmp(tool_call->name, "context.chunks") == 0) {
         return tool_context_chunks(workspace_root, tool_call->arguments_json, buffer, buffer_size);
     }
@@ -4245,6 +4320,12 @@ static int tool_execute(
     }
     if (strcmp(tool_call->name, "context.search") == 0) {
         return tool_context_search(workspace_root, tool_call->arguments_json, buffer, buffer_size);
+    }
+    if (strcmp(tool_call->name, "context.select") == 0) {
+        return tool_context_select(workspace_root, tool_call->arguments_json, buffer, buffer_size);
+    }
+    if (strcmp(tool_call->name, "context.summarize") == 0) {
+        return tool_context_summarize(workspace_root, tool_call->arguments_json, buffer, buffer_size);
     }
     if (strcmp(tool_call->name, "app.remove") == 0) {
         return tool_app_remove(workspace_root, tool_call->arguments_json, buffer, buffer_size);

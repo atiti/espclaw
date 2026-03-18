@@ -99,6 +99,75 @@ static bool extract_string_after_key(const char *json, const char *key, char *bu
     return copy_json_string_value(value_start, buffer, buffer_size);
 }
 
+static bool extract_string_after_any_key(
+    const char *json,
+    const char *const *keys,
+    size_t key_count,
+    char *buffer,
+    size_t buffer_size
+)
+{
+    size_t index;
+
+    if (keys == NULL) {
+        return false;
+    }
+    for (index = 0; index < key_count; ++index) {
+        if (extract_string_after_key(json, keys[index], buffer, buffer_size)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool extract_string_array_after_key(
+    const char *json,
+    const char *key,
+    char values[][ESPCLAW_COMPONENT_URL_MAX + 1],
+    size_t max_values,
+    size_t *count_out
+)
+{
+    const char *key_start = find_key(json, key);
+    const char *cursor;
+    size_t count = 0;
+
+    if (count_out == NULL) {
+        return false;
+    }
+    *count_out = 0;
+    if (key_start == NULL) {
+        return true;
+    }
+    cursor = strchr(key_start, '[');
+    if (cursor == NULL) {
+        return false;
+    }
+    cursor++;
+    while (*cursor != '\0' && *cursor != ']') {
+        while (*cursor == ' ' || *cursor == '\n' || *cursor == '\r' || *cursor == '\t' || *cursor == ',') {
+            cursor++;
+        }
+        if (*cursor == ']') {
+            break;
+        }
+        if (*cursor != '"' || count >= max_values) {
+            return false;
+        }
+        if (!copy_json_string_value(cursor, values[count], ESPCLAW_COMPONENT_URL_MAX + 1U)) {
+            return false;
+        }
+        cursor = strchr(cursor + 1, '"');
+        if (cursor == NULL) {
+            return false;
+        }
+        cursor++;
+        count++;
+    }
+    *count_out = count;
+    return true;
+}
+
 static int ensure_directory(const char *path)
 {
     return (mkdir(path, 0755) == 0 || errno == EEXIST) ? 0 : -1;
@@ -139,6 +208,69 @@ static int write_text_file(const char *path, const char *content)
     fputs(content != NULL ? content : "", handle);
     fclose(handle);
     return 0;
+}
+
+static int write_component_manifest(
+    const char *path,
+    const char *component_id,
+    const char *effective_version,
+    const char *effective_title,
+    const char *module_name,
+    const char *effective_summary,
+    const char *lib_relative,
+    const char *manifest_url,
+    const char *source_url,
+    const char *docs_url,
+    const char *checksum,
+    char dependencies[][ESPCLAW_COMPONENT_URL_MAX + 1],
+    size_t dependency_count
+)
+{
+    char manifest_json[2048];
+    size_t used = 0;
+    size_t index;
+
+    if (path == NULL) {
+        return -1;
+    }
+    used += (size_t)snprintf(
+        manifest_json + used,
+        sizeof(manifest_json) - used,
+        "{\n"
+        "  \"id\": \"%s\",\n"
+        "  \"version\": \"%s\",\n"
+        "  \"title\": \"%s\",\n"
+        "  \"module\": \"%s\",\n"
+        "  \"summary\": \"%s\",\n"
+        "  \"source\": \"module.lua\",\n"
+        "  \"lib_path\": \"%s\",\n"
+        "  \"manifest_url\": \"%s\",\n"
+        "  \"source_url\": \"%s\",\n"
+        "  \"docs_url\": \"%s\",\n"
+        "  \"checksum\": \"%s\",\n"
+        "  \"dependencies\": [",
+        component_id,
+        effective_version,
+        effective_title,
+        module_name,
+        effective_summary,
+        lib_relative,
+        manifest_url != NULL ? manifest_url : "",
+        source_url != NULL ? source_url : "",
+        docs_url != NULL ? docs_url : "",
+        checksum != NULL ? checksum : ""
+    );
+    for (index = 0; index < dependency_count && used + 8 < sizeof(manifest_json); ++index) {
+        used += (size_t)snprintf(
+            manifest_json + used,
+            sizeof(manifest_json) - used,
+            "%s\"%s\"",
+            index == 0 ? "" : ", ",
+            dependencies[index]
+        );
+    }
+    used += (size_t)snprintf(manifest_json + used, sizeof(manifest_json) - used, "]\n}\n");
+    return write_text_file(path, manifest_json);
 }
 
 static int copy_file_contents(const char *source_path, const char *destination_path)
@@ -251,10 +383,10 @@ int espclaw_component_install(
     char manifest_path[512];
     char source_path[512];
     char lib_path[512];
-    char manifest_json[1024];
     const char *effective_title = title != NULL && title[0] != '\0' ? title : component_id;
     const char *effective_summary = summary != NULL ? summary : "";
     const char *effective_version = version != NULL && version[0] != '\0' ? version : "0.1.0";
+    char dependencies[ESPCLAW_COMPONENT_DEPENDENCY_MAX][ESPCLAW_COMPONENT_URL_MAX + 1] = {{0}};
 
     if (workspace_root == NULL || source == NULL || !component_id_valid(component_id) || !module_name_valid(module_name)) {
         return -1;
@@ -269,27 +401,20 @@ int espclaw_component_install(
         return -1;
     }
 
-    snprintf(
-        manifest_json,
-        sizeof(manifest_json),
-        "{\n"
-        "  \"id\": \"%s\",\n"
-        "  \"version\": \"%s\",\n"
-        "  \"title\": \"%s\",\n"
-        "  \"module\": \"%s\",\n"
-        "  \"summary\": \"%s\",\n"
-        "  \"source\": \"module.lua\",\n"
-        "  \"lib_path\": \"%s\"\n"
-        "}\n",
-        component_id,
-        effective_version,
-        effective_title,
-        module_name,
-        effective_summary,
-        lib_relative
-    );
-
-    if (write_text_file(manifest_path, manifest_json) != 0 ||
+    if (write_component_manifest(
+            manifest_path,
+            component_id,
+            effective_version,
+            effective_title,
+            module_name,
+            effective_summary,
+            lib_relative,
+            "",
+            "",
+            "",
+            "",
+            dependencies,
+            0U) != 0 ||
         write_text_file(source_path, source) != 0 ||
         write_text_file(lib_path, source) != 0) {
         return -1;
@@ -314,10 +439,10 @@ int espclaw_component_install_from_file(
     char component_source_path[512];
     char lib_path[512];
     char input_path[512];
-    char manifest_json[1024];
     const char *effective_title = title != NULL && title[0] != '\0' ? title : component_id;
     const char *effective_summary = summary != NULL ? summary : "";
     const char *effective_version = version != NULL && version[0] != '\0' ? version : "0.1.0";
+    char dependencies[ESPCLAW_COMPONENT_DEPENDENCY_MAX][ESPCLAW_COMPONENT_URL_MAX + 1] = {{0}};
 
     if (workspace_root == NULL || source_path == NULL || source_path[0] == '\0' ||
         !component_id_valid(component_id) || !module_name_valid(module_name)) {
@@ -334,27 +459,20 @@ int espclaw_component_install_from_file(
         return -1;
     }
 
-    snprintf(
-        manifest_json,
-        sizeof(manifest_json),
-        "{\n"
-        "  \"id\": \"%s\",\n"
-        "  \"version\": \"%s\",\n"
-        "  \"title\": \"%s\",\n"
-        "  \"module\": \"%s\",\n"
-        "  \"summary\": \"%s\",\n"
-        "  \"source\": \"module.lua\",\n"
-        "  \"lib_path\": \"%s\"\n"
-        "}\n",
-        component_id,
-        effective_version,
-        effective_title,
-        module_name,
-        effective_summary,
-        lib_relative
-    );
-
-    if (write_text_file(manifest_path, manifest_json) != 0 ||
+    if (write_component_manifest(
+            manifest_path,
+            component_id,
+            effective_version,
+            effective_title,
+            module_name,
+            effective_summary,
+            lib_relative,
+            "",
+            "",
+            "",
+            "",
+            dependencies,
+            0U) != 0 ||
         copy_file_contents(input_path, component_source_path) != 0 ||
         copy_file_contents(input_path, lib_path) != 0) {
         return -1;
@@ -430,6 +548,108 @@ int espclaw_component_install_from_url(
     return result;
 }
 
+static int espclaw_component_install_from_manifest_depth(
+    const char *workspace_root,
+    const char *manifest_url,
+    size_t depth
+)
+{
+    char temp_relative[160];
+    char temp_absolute[512];
+    char manifest_json[4096];
+    char component_id[ESPCLAW_COMPONENT_ID_MAX + 1];
+    char title[ESPCLAW_COMPONENT_TITLE_MAX + 1];
+    char module_name[ESPCLAW_COMPONENT_MODULE_MAX + 1];
+    char summary[ESPCLAW_COMPONENT_SUMMARY_MAX + 1];
+    char version[ESPCLAW_COMPONENT_VERSION_MAX + 1];
+    char source_url[ESPCLAW_COMPONENT_URL_MAX + 1];
+    char docs_url[ESPCLAW_COMPONENT_URL_MAX + 1];
+    char checksum[ESPCLAW_COMPONENT_CHECKSUM_MAX + 1];
+    char dependencies[ESPCLAW_COMPONENT_DEPENDENCY_MAX][ESPCLAW_COMPONENT_URL_MAX + 1];
+    char manifest_path[512];
+    char lib_relative[192];
+    char source_relative[192];
+    size_t dependency_count = 0;
+    size_t dependency_index;
+    int result = -1;
+
+    if (workspace_root == NULL || manifest_url == NULL || manifest_url[0] == '\0' || depth > ESPCLAW_COMPONENT_DEPENDENCY_MAX) {
+        return -1;
+    }
+    if (snprintf(temp_relative, sizeof(temp_relative), "blobs/.staging/component_manifest_%lu.json", (unsigned long)depth) >= (int)sizeof(temp_relative) ||
+        espclaw_workspace_bootstrap(workspace_root) != 0 ||
+        espclaw_workspace_resolve_path(workspace_root, temp_relative, temp_absolute, sizeof(temp_absolute)) != 0 ||
+        espclaw_web_download_to_file(manifest_url, temp_absolute) != 0 ||
+        espclaw_workspace_read_file(workspace_root, temp_relative, manifest_json, sizeof(manifest_json)) != 0) {
+        unlink(temp_absolute);
+        return -1;
+    }
+
+    title[0] = '\0';
+    summary[0] = '\0';
+    version[0] = '\0';
+    docs_url[0] = '\0';
+    checksum[0] = '\0';
+    if (!extract_string_after_any_key(manifest_json, (const char *[]){"id", "component_id"}, 2, component_id, sizeof(component_id)) ||
+        !extract_string_after_key(manifest_json, "module", module_name, sizeof(module_name)) ||
+        !extract_string_after_key(manifest_json, "source_url", source_url, sizeof(source_url))) {
+        unlink(temp_absolute);
+        return -1;
+    }
+    (void)extract_string_after_key(manifest_json, "title", title, sizeof(title));
+    (void)extract_string_after_key(manifest_json, "summary", summary, sizeof(summary));
+    (void)extract_string_after_key(manifest_json, "version", version, sizeof(version));
+    (void)extract_string_after_key(manifest_json, "docs_url", docs_url, sizeof(docs_url));
+    (void)extract_string_after_key(manifest_json, "checksum", checksum, sizeof(checksum));
+    if (!extract_string_array_after_key(manifest_json, "dependencies", dependencies, ESPCLAW_COMPONENT_DEPENDENCY_MAX, &dependency_count)) {
+        unlink(temp_absolute);
+        return -1;
+    }
+
+    for (dependency_index = 0; dependency_index < dependency_count; ++dependency_index) {
+        if (espclaw_component_install_from_manifest_depth(workspace_root, dependencies[dependency_index], depth + 1U) != 0) {
+            unlink(temp_absolute);
+            return -1;
+        }
+    }
+
+    if (espclaw_component_install_from_url(workspace_root, component_id, title, module_name, summary, version, source_url) != 0 ||
+        build_component_relative_path(component_id, "component.json", source_relative, sizeof(source_relative)) != 0 ||
+        module_name_to_relative_path(module_name, lib_relative, sizeof(lib_relative)) != 0) {
+        unlink(temp_absolute);
+        return -1;
+    }
+    if (espclaw_workspace_resolve_path(workspace_root, source_relative, manifest_path, sizeof(manifest_path)) != 0) {
+        unlink(temp_absolute);
+        return -1;
+    }
+    result = write_component_manifest(
+        manifest_path,
+        component_id,
+        version[0] != '\0' ? version : "0.1.0",
+        title[0] != '\0' ? title : component_id,
+        module_name,
+        summary,
+        module_name_to_relative_path(module_name, lib_relative, sizeof(lib_relative)) == 0 ? lib_relative : "",
+        manifest_url,
+        source_url,
+        docs_url,
+        checksum,
+        dependencies,
+        dependency_count
+    );
+    unlink(temp_absolute);
+    return result;
+}
+
+int espclaw_component_install_from_manifest(
+    const char *workspace_root,
+    const char *manifest_url
+)
+{
+    return espclaw_component_install_from_manifest_depth(workspace_root, manifest_url, 0U);
+}
+
 int espclaw_component_collect_ids(
     const char *workspace_root,
     char ids[][ESPCLAW_COMPONENT_ID_MAX + 1],
@@ -493,6 +713,17 @@ int espclaw_component_load_manifest(
         return -1;
     }
     (void)extract_string_after_key(json, "summary", manifest->summary, sizeof(manifest->summary));
+    (void)extract_string_after_key(json, "manifest_url", manifest->manifest_url, sizeof(manifest->manifest_url));
+    (void)extract_string_after_key(json, "source_url", manifest->source_url, sizeof(manifest->source_url));
+    (void)extract_string_after_key(json, "docs_url", manifest->docs_url, sizeof(manifest->docs_url));
+    (void)extract_string_after_key(json, "checksum", manifest->checksum, sizeof(manifest->checksum));
+    (void)extract_string_array_after_key(
+        json,
+        "dependencies",
+        manifest->dependencies,
+        ESPCLAW_COMPONENT_DEPENDENCY_MAX,
+        &manifest->dependency_count
+    );
     return 0;
 }
 
@@ -576,6 +807,10 @@ int espclaw_render_components_json(const char *workspace_root, char *buffer, siz
             append_json_escaped(buffer, buffer_size, &used, manifest.version);
             used += (size_t)snprintf(buffer + used, buffer_size - used, ",\"summary\":");
             append_json_escaped(buffer, buffer_size, &used, manifest.summary);
+            used += (size_t)snprintf(buffer + used, buffer_size - used, ",\"manifest_url\":");
+            append_json_escaped(buffer, buffer_size, &used, manifest.manifest_url);
+            used += (size_t)snprintf(buffer + used, buffer_size - used, ",\"source_url\":");
+            append_json_escaped(buffer, buffer_size, &used, manifest.source_url);
             used += (size_t)snprintf(buffer + used, buffer_size - used, "}");
             first = false;
         }
@@ -615,6 +850,22 @@ int espclaw_render_component_detail_json(
     append_json_escaped(buffer, buffer_size, &used, manifest.version);
     used += (size_t)snprintf(buffer + used, buffer_size - used, ",\"summary\":");
     append_json_escaped(buffer, buffer_size, &used, manifest.summary);
+    used += (size_t)snprintf(buffer + used, buffer_size - used, ",\"manifest_url\":");
+    append_json_escaped(buffer, buffer_size, &used, manifest.manifest_url);
+    used += (size_t)snprintf(buffer + used, buffer_size - used, ",\"source_url\":");
+    append_json_escaped(buffer, buffer_size, &used, manifest.source_url);
+    used += (size_t)snprintf(buffer + used, buffer_size - used, ",\"docs_url\":");
+    append_json_escaped(buffer, buffer_size, &used, manifest.docs_url);
+    used += (size_t)snprintf(buffer + used, buffer_size - used, ",\"checksum\":");
+    append_json_escaped(buffer, buffer_size, &used, manifest.checksum);
+    used += (size_t)snprintf(buffer + used, buffer_size - used, ",\"dependencies\":[");
+    for (size_t index = 0; index < manifest.dependency_count && used + 8 < buffer_size; ++index) {
+        if (index > 0U) {
+            used += (size_t)snprintf(buffer + used, buffer_size - used, ",");
+        }
+        append_json_escaped(buffer, buffer_size, &used, manifest.dependencies[index]);
+    }
+    used += (size_t)snprintf(buffer + used, buffer_size - used, "]");
     used += (size_t)snprintf(buffer + used, buffer_size - used, ",\"source\":");
     append_json_escaped(buffer, buffer_size, &used, source);
     used += (size_t)snprintf(buffer + used, buffer_size - used, "}");

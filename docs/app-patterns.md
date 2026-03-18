@@ -28,7 +28,7 @@ Use when low-level logic should be reused across multiple features.
 Shape:
 
 ```text
-component.install(driver/filter/helper)
+component.install_from_manifest(driver/filter/helper)
 app.install(feature_a)
 app.install(feature_b)
 ```
