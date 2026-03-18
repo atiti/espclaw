@@ -74,6 +74,7 @@ ESPClaw standardizes the workspace layout on the device SD card:
 ├── IDENTITY.md
 ├── USER.md
 ├── HEARTBEAT.md
+├── blobs/
 ├── components/
 ├── lib/
 ├── memory/
@@ -187,6 +188,51 @@ They can be updated through normal workspace writes:
 - `espclaw.fs.write(...)`
 
 Keep them short, because they currently consume prompt budget on every run.
+
+## Chunked Blob Uploads
+
+ESPClaw now has a generic chunked blob store for content that should not be pushed through one large RAM buffer.
+
+HTTP lifecycle:
+
+- `POST /api/blobs/begin?blob_id=<id>[&target_path=<workspace_path>&content_type=<mime>]`
+- `POST /api/blobs/append?blob_id=<id>`
+- `POST /api/blobs/commit?blob_id=<id>`
+- `GET /api/blobs/status?blob_id=<id>`
+
+The device writes append chunks directly into a staging file under `/workspace/blobs/.staging/` and only moves the completed content into its target workspace path on `commit`.
+
+Example:
+
+```bash
+curl -s -X POST 'http://127.0.0.1:8080/api/blobs/begin?blob_id=context_doc&target_path=memory/context.md&content_type=text%2Fmarkdown'
+curl -s -X POST 'http://127.0.0.1:8080/api/blobs/append?blob_id=context_doc' --data-binary @part1.md
+curl -s -X POST 'http://127.0.0.1:8080/api/blobs/append?blob_id=context_doc' --data-binary @part2.md
+curl -s -X POST 'http://127.0.0.1:8080/api/blobs/commit?blob_id=context_doc'
+```
+
+This is the foundation for future:
+
+- `app.install_from_file`
+- `app.install_from_url`
+- `component.install_from_file`
+- `component.install_from_url`
+- bounded context-file inclusion into model runs without stuffing large documents into one prompt buffer
+
+Large-source install flows now available:
+
+- `POST /api/apps/install/from-file?app_id=<id>&source_path=<workspace_path>[&title=...&permissions=...&triggers=...]`
+- `POST /api/apps/install/from-url?app_id=<id>&source_url=<raw_lua_url>[&title=...&permissions=...&triggers=...]`
+- `POST /api/components/install/from-file?component_id=<id>&module=<module_name>&source_path=<workspace_path>[&title=...&summary=...&version=...]`
+- `POST /api/components/install/from-url?component_id=<id>&module=<module_name>&source_url=<raw_lua_url>[&title=...&summary=...&version=...]`
+
+Recommended sequence for large Lua:
+
+1. chunk-upload source into `memory/...` or `blobs/...`
+2. commit the blob
+3. call `app.install_from_file` or `component.install_from_file`
+
+Use `*_from_url` for directly installable community-shared raw Lua sources.
 
 ## Web Search And Fetch
 

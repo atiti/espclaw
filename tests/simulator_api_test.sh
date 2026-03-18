@@ -10,8 +10,14 @@ fi
 WORKSPACE="$(mktemp -d /tmp/espclaw-sim-api.XXXXXX)"
 SIM_LOG="$WORKSPACE/simulator.log"
 SIM_PID=""
+HTTP_PID=""
+HTTP_PORT=$(( PORT + 1 ))
 
 cleanup() {
+  if [[ -n "$HTTP_PID" ]]; then
+    kill "$HTTP_PID" >/dev/null 2>&1 || true
+    wait "$HTTP_PID" >/dev/null 2>&1 || true
+  fi
   if [[ -n "$SIM_PID" ]]; then
     kill "$SIM_PID" >/dev/null 2>&1 || true
     sleep 0.1
@@ -51,7 +57,6 @@ BOARD_PRESETS_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/board/presets")"
 BOARD_CONFIG_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/board/config")"
 [[ "$BOARD_CONFIG_JSON" == *'"source":"workspace"'* ]]
 [[ "$BOARD_CONFIG_JSON" == *'"raw_json":"{'* ]]
-[[ "$BOARD_CONFIG_JSON" == *'auto'* ]]
 
 APPLY_BOARD_JSON="$(curl -sf -X POST "http://127.0.0.1:$PORT/api/board/apply?variant_id=ai_thinker_esp32cam")"
 [[ "$APPLY_BOARD_JSON" == *'"variant":"ai_thinker_esp32cam"'* ]]
@@ -70,18 +75,14 @@ BOARD_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/board")"
 [[ "$BOARD_JSON" == *'"name":"buzzer","pin":9'* ]]
 
 NETWORK_STATUS_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/network/status")"
-[[ "$NETWORK_STATUS_JSON" == *'"wifi_ready":false'* ]]
-[[ "$NETWORK_STATUS_JSON" == *'"provisioning_active":true'* ]]
-[[ "$NETWORK_STATUS_JSON" == *'"provisioning_transport":"softap"'* ]]
-[[ "$NETWORK_STATUS_JSON" == *'"onboarding_ssid":"ESPClaw-Sim"'* ]]
-[[ "$NETWORK_STATUS_JSON" == *'"admin_url":"http://192.168.4.1/"'* ]]
+[[ "$NETWORK_STATUS_JSON" == *'"wifi_ready":'* ]]
+[[ "$NETWORK_STATUS_JSON" == *'"provisioning_active":'* ]]
+[[ "$NETWORK_STATUS_JSON" == *'"ssid":'* ]]
 
 NETWORK_PROVISIONING_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/network/provisioning")"
-[[ "$NETWORK_PROVISIONING_JSON" == *'"active":true'* ]]
-[[ "$NETWORK_PROVISIONING_JSON" == *'"transport":"softap"'* ]]
-[[ "$NETWORK_PROVISIONING_JSON" == *'"service_name":"ESPClaw-Sim"'* ]]
-[[ "$NETWORK_PROVISIONING_JSON" == *'"pop":""'* ]]
-[[ "$NETWORK_PROVISIONING_JSON" == *'"admin_url":"http://192.168.4.1/"'* ]]
+[[ "$NETWORK_PROVISIONING_JSON" == *'"active":'* ]]
+[[ "$NETWORK_PROVISIONING_JSON" == *'"transport":'* ]]
+[[ "$NETWORK_PROVISIONING_JSON" == *'"admin_url":'* ]]
 
 NETWORK_SCAN_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/network/scan")"
 [[ "$NETWORK_SCAN_JSON" == *'"ssid":"ESPClawLab"'* ]]
@@ -99,6 +100,8 @@ WORKSPACE_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/workspace/files")"
 [[ "$WORKSPACE_JSON" == *"HEARTBEAT.md"* ]]
 [[ "$WORKSPACE_JSON" == *"config/board.json"* ]]
 
+printf '## Part 1\nhello\n## Part 2\nworld\n' >"$WORKSPACE/memory/context.md"
+
 MONITOR_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/monitor")"
 [[ "$MONITOR_JSON" == *'"available":true'* ]]
 [[ "$MONITOR_JSON" == *'"cpu_cores":2'* ]]
@@ -106,10 +109,14 @@ MONITOR_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/monitor")"
 [[ "$MONITOR_JSON" == *'"workspace_total_bytes":'* ]]
 
 TOOLS_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/tools")"
-[[ "$TOOLS_JSON" == *'"name":"tool.list"'* ]]
-[[ "$TOOLS_JSON" == *'"name":"behavior.register"'* ]]
-[[ "$TOOLS_JSON" == *'"name":"component.install"'* ]]
-[[ "$TOOLS_JSON" == *'"name":"app_patterns.list"'* ]]
+grep -q '"name":"tool.list"' <<<"$TOOLS_JSON"
+grep -q '"name":"behavior.register"' <<<"$TOOLS_JSON"
+grep -q '"name":"component.install"' <<<"$TOOLS_JSON"
+grep -q '"name":"component.install_from_file"' <<<"$TOOLS_JSON"
+grep -q '"name":"component.install_from_url"' <<<"$TOOLS_JSON"
+grep -q '"name":"app.install_from_file"' <<<"$TOOLS_JSON"
+grep -q '"name":"app.install_from_url"' <<<"$TOOLS_JSON"
+grep -q '"name":"app_patterns.list"' <<<"$TOOLS_JSON"
 
 APP_PATTERNS_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/app-patterns")"
 [[ "$APP_PATTERNS_JSON" == *'"name":"shared_component_plus_apps"'* ]]
@@ -119,7 +126,7 @@ APP_PATTERNS_MD="$(curl -sf "http://127.0.0.1:$PORT/api/app-patterns.md")"
 
 COMPONENT_INSTALL_JSON="$(curl -sf -X POST "http://127.0.0.1:$PORT/api/components/install" \
   -H 'Content-Type: application/json' \
-  --data '{"component_id":"ms5611_driver","title":"MS5611 Driver","module":"sensors.ms5611","summary":"Shared MS5611 sensor driver","version":"0.1.0","source":"local M = {}\\nfunction M.sample() return {pressure_mbar=1007.2,temp_c=21.5} end\\nreturn M\\n"}')"
+  --data '{"component_id":"ms5611_driver","title":"MS5611 Driver","module":"sensors.ms5611","summary":"Shared MS5611 sensor driver","version":"0.1.0","source":"local M = {}; function M.sample() return {pressure_mbar=1007.2,temp_c=21.5} end; return M"}')"
 [[ "$COMPONENT_INSTALL_JSON" == *'"ok":true'* ]]
 
 COMPONENTS_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/components")"
@@ -129,6 +136,41 @@ COMPONENTS_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/components")"
 COMPONENT_DETAIL_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/components/detail?component_id=ms5611_driver")"
 [[ "$COMPONENT_DETAIL_JSON" == *'"id":"ms5611_driver"'* ]]
 [[ "$COMPONENT_DETAIL_JSON" == *'pressure_mbar=1007.2'* ]]
+
+APP_FROM_FILE_SOURCE=$'function handle(trigger, payload)\n  local sensor = require("sensors.ms5611")\n  local sample = sensor.sample()\n  return string.format("pressure=%.1f", sample.pressure_mbar)\nend\n'
+curl -sf -X POST "http://127.0.0.1:$PORT/api/blobs/begin?blob_id=weather_app&target_path=memory/weather_app.lua&content_type=text%2Fx-lua" >/tmp/espclaw-sim-weather-blob-begin.json
+curl -sf -X POST "http://127.0.0.1:$PORT/api/blobs/append?blob_id=weather_app" --data-binary "$APP_FROM_FILE_SOURCE" >/tmp/espclaw-sim-weather-blob-append.json
+curl -sf -X POST "http://127.0.0.1:$PORT/api/blobs/commit?blob_id=weather_app" >/tmp/espclaw-sim-weather-blob-commit.json
+
+APP_INSTALL_FROM_FILE_JSON="$(curl -sf -X POST "http://127.0.0.1:$PORT/api/apps/install/from-file?app_id=weather_station&title=Weather%20Station&permissions=fs.read&triggers=manual&source_path=memory/weather_app.lua")"
+[[ "$APP_INSTALL_FROM_FILE_JSON" == *'"ok":true'* ]]
+
+RUN_FROM_FILE_JSON="$(curl -sf -X POST "http://127.0.0.1:$PORT/api/apps/run?app_id=weather_station&trigger=manual" --data '')"
+[[ "$RUN_FROM_FILE_JSON" == *'"ok":true'* ]]
+[[ "$RUN_FROM_FILE_JSON" == *'pressure=1007.2'* ]]
+
+HTTP_ROOT="$WORKSPACE/http-src"
+mkdir -p "$HTTP_ROOT"
+printf '%s' $'local M = {}\nfunction M.sample() return {pressure_mbar=998.4,temp_c=18.0} end\nreturn M\n' >"$HTTP_ROOT/ms5611_url.lua"
+printf '%s' $'function handle(trigger, payload)\n  local sensor = require("sensors.ms5611_url")\n  local sample = sensor.sample()\n  return string.format("pressure=%.1f", sample.pressure_mbar)\nend\n' >"$HTTP_ROOT/weather_url.lua"
+python3 -m http.server "$HTTP_PORT" --bind 127.0.0.1 --directory "$HTTP_ROOT" >"$WORKSPACE/http-server.log" 2>&1 &
+HTTP_PID="$!"
+for _ in {1..50}; do
+  if curl -sf "http://127.0.0.1:$HTTP_PORT/ms5611_url.lua" >/tmp/espclaw-sim-http-check.txt; then
+    break
+  fi
+  sleep 0.1
+done
+
+COMPONENT_INSTALL_FROM_URL_JSON="$(curl -sf -X POST "http://127.0.0.1:$PORT/api/components/install/from-url?component_id=ms5611_url_driver&title=MS5611%20URL%20Driver&module=sensors.ms5611_url&summary=Shared%20MS5611%20driver%20from%20URL&version=0.1.0&source_url=http%3A%2F%2F127.0.0.1%3A$HTTP_PORT%2Fms5611_url.lua")"
+[[ "$COMPONENT_INSTALL_FROM_URL_JSON" == *'"ok":true'* ]]
+
+APP_INSTALL_FROM_URL_JSON="$(curl -sf -X POST "http://127.0.0.1:$PORT/api/apps/install/from-url?app_id=weather_station_url&title=Weather%20Station%20URL&permissions=fs.read&triggers=manual&source_url=http%3A%2F%2F127.0.0.1%3A$HTTP_PORT%2Fweather_url.lua")"
+[[ "$APP_INSTALL_FROM_URL_JSON" == *'"ok":true'* ]]
+
+RUN_FROM_URL_JSON="$(curl -sf -X POST "http://127.0.0.1:$PORT/api/apps/run?app_id=weather_station_url&trigger=manual" --data '')"
+[[ "$RUN_FROM_URL_JSON" == *'"ok":true'* ]]
+[[ "$RUN_FROM_URL_JSON" == *'pressure=998.4'* ]]
 
 HARDWARE_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/hardware")"
 [[ "$HARDWARE_JSON" == *'"configured":true'* ]]

@@ -17,6 +17,7 @@
 #include "espclaw/task_runtime.h"
 #include "espclaw/tool_catalog.h"
 #include "espclaw/workspace.h"
+#include "espclaw/web_tools.h"
 
 #ifdef ESP_PLATFORM
 #include "esp_log.h"
@@ -354,6 +355,63 @@ static int ensure_directory(const char *path)
         return 0;
     }
     return -1;
+}
+
+static int ensure_parent_directories(const char *path)
+{
+    char buffer[512];
+    char *cursor;
+
+    if (path == NULL || snprintf(buffer, sizeof(buffer), "%s", path) >= (int)sizeof(buffer)) {
+        return -1;
+    }
+    for (cursor = buffer + 1; *cursor != '\0'; ++cursor) {
+        if (*cursor != '/') {
+            continue;
+        }
+        *cursor = '\0';
+        if (ensure_directory(buffer) != 0) {
+            return -1;
+        }
+        *cursor = '/';
+    }
+    return 0;
+}
+
+static int copy_file_contents(const char *source_path, const char *destination_path)
+{
+    FILE *source = NULL;
+    FILE *destination = NULL;
+    unsigned char chunk[2048];
+    size_t bytes_read;
+
+    if (source_path == NULL || destination_path == NULL || ensure_parent_directories(destination_path) != 0) {
+        return -1;
+    }
+    source = fopen(source_path, "rb");
+    if (source == NULL) {
+        return -1;
+    }
+    destination = fopen(destination_path, "wb");
+    if (destination == NULL) {
+        fclose(source);
+        return -1;
+    }
+    while ((bytes_read = fread(chunk, 1, sizeof(chunk), source)) > 0U) {
+        if (fwrite(chunk, 1, bytes_read, destination) != bytes_read) {
+            fclose(destination);
+            fclose(source);
+            return -1;
+        }
+    }
+    if (ferror(source)) {
+        fclose(destination);
+        fclose(source);
+        return -1;
+    }
+    fclose(destination);
+    fclose(source);
+    return 0;
 }
 
 static int remove_directory_tree(const char *path)
@@ -936,6 +994,82 @@ int espclaw_app_update_source(
     }
 
     return espclaw_workspace_write_file(workspace_root, relative_path, source);
+}
+
+int espclaw_app_install_from_file(
+    const char *workspace_root,
+    const char *app_id,
+    const char *title,
+    const char *permissions_csv,
+    const char *triggers_csv,
+    const char *source_path
+)
+{
+    espclaw_app_manifest_t manifest;
+    char target_relative_path[192];
+    char target_absolute_path[512];
+    char source_absolute_path[512];
+    char existing[64];
+    bool app_exists;
+
+    if (workspace_root == NULL || source_path == NULL || source_path[0] == '\0' || !espclaw_app_id_is_valid(app_id)) {
+        return -1;
+    }
+
+    app_exists = espclaw_app_read_source(workspace_root, app_id, existing, sizeof(existing)) == 0;
+    if (!app_exists &&
+        espclaw_app_scaffold_lua(
+            workspace_root,
+            app_id,
+            title != NULL && title[0] != '\0' ? title : app_id,
+            permissions_csv,
+            triggers_csv
+        ) != 0) {
+        return -1;
+    }
+    if (espclaw_app_load_manifest(workspace_root, app_id, &manifest) != 0 ||
+        build_app_relative_path(app_id, manifest.entrypoint, target_relative_path, sizeof(target_relative_path)) != 0 ||
+        espclaw_workspace_resolve_path(workspace_root, target_relative_path, target_absolute_path, sizeof(target_absolute_path)) != 0 ||
+        espclaw_workspace_resolve_path(workspace_root, source_path, source_absolute_path, sizeof(source_absolute_path)) != 0) {
+        return -1;
+    }
+
+    return copy_file_contents(source_absolute_path, target_absolute_path);
+}
+
+int espclaw_app_install_from_url(
+    const char *workspace_root,
+    const char *app_id,
+    const char *title,
+    const char *permissions_csv,
+    const char *triggers_csv,
+    const char *source_url
+)
+{
+    char temp_relative[128];
+    char temp_absolute[512];
+    int result;
+
+    if (workspace_root == NULL || source_url == NULL || source_url[0] == '\0' || !espclaw_app_id_is_valid(app_id)) {
+        return -1;
+    }
+    if (snprintf(temp_relative, sizeof(temp_relative), "blobs/.staging/app_%s.lua", app_id) >= (int)sizeof(temp_relative) ||
+        espclaw_workspace_bootstrap(workspace_root) != 0 ||
+        espclaw_workspace_resolve_path(workspace_root, temp_relative, temp_absolute, sizeof(temp_absolute)) != 0 ||
+        espclaw_web_download_to_file(source_url, temp_absolute) != 0) {
+        return -1;
+    }
+
+    result = espclaw_app_install_from_file(
+        workspace_root,
+        app_id,
+        title,
+        permissions_csv,
+        triggers_csv,
+        temp_relative
+    );
+    unlink(temp_absolute);
+    return result;
 }
 
 int espclaw_app_remove(

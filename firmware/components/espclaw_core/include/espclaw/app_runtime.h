@@ -59,6 +59,22 @@ int espclaw_app_update_source(
     const char *app_id,
     const char *source
 );
+int espclaw_app_install_from_file(
+    const char *workspace_root,
+    const char *app_id,
+    const char *title,
+    const char *permissions_csv,
+    const char *triggers_csv,
+    const char *source_path
+);
+int espclaw_app_install_from_url(
+    const char *workspace_root,
+    const char *app_id,
+    const char *title,
+    const char *permissions_csv,
+    const char *triggers_csv,
+    const char *source_url
+);
 int espclaw_app_remove(
     const char *workspace_root,
     const char *app_id

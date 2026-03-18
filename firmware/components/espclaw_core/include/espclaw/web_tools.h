@@ -25,4 +25,9 @@ int espclaw_web_fetch(
     size_t buffer_size
 );
 
+int espclaw_web_download_to_file(
+    const char *url,
+    const char *destination_path
+);
+
 #endif

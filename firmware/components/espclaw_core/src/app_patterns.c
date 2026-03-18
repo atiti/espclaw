@@ -16,6 +16,9 @@ static const char *RULES[] = {
     "A behavior is a persisted task definition. Use it when work should autostart or survive reboot.",
     "An event is a named signal. Use it only when producers and consumers should be decoupled.",
     "Default to component plus app. Introduce events only when multiple live consumers need the same hardware or sensor stream.",
+    "If Lua source already exists in the workspace, prefer app.install_from_file or component.install_from_file over large inline source strings.",
+    "If installing a community-shared raw source URL directly, prefer app.install_from_url or component.install_from_url.",
+    "Use inline app.install or component.install only when the source is comfortably small for a single tool call.",
 };
 
 static const espclaw_app_pattern_t PATTERNS[] = {
@@ -29,7 +32,7 @@ static const espclaw_app_pattern_t PATTERNS[] = {
         "shared_component_plus_apps",
         "A reusable component provides low-level driver or math logic and multiple apps require it.",
         "Use for drivers, filters, mixers, or sensor adapters such as MS5611.",
-        "component.install -> app.install(weather_station) + app.install(vario)"
+        "component.install_from_url(ms5611) or component.install_from_file(ms5611) -> app.install(weather_station) + app.install(vario)"
     },
     {
         "sampler_behavior_and_event_consumers",

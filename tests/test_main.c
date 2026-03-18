@@ -215,6 +215,37 @@ static int web_tool_http_adapter(const char *url, char *response, size_t respons
     return -1;
 }
 
+static int install_source_http_adapter(const char *url, char *response, size_t response_size, void *user_data)
+{
+    (void)user_data;
+
+    if (strcmp(url, "https://components.example/ms5611_url.lua") == 0) {
+        snprintf(
+            response,
+            response_size,
+            "local M = {}\n"
+            "function M.identity()\n"
+            "  return 'ms5611-url'\n"
+            "end\n"
+            "return M\n"
+        );
+        return 0;
+    }
+    if (strcmp(url, "https://apps.example/weather_url.lua") == 0) {
+        snprintf(
+            response,
+            response_size,
+            "function handle(trigger, payload)\n"
+            "  local sensor = require('sensors.ms5611_url')\n"
+            "  return sensor.identity()\n"
+            "end\n"
+        );
+        return 0;
+    }
+
+    return -1;
+}
+
 static int confirmation_http_adapter(
     const char *url,
     const espclaw_auth_profile_t *profile,
@@ -1588,6 +1619,10 @@ static void test_tool_catalog(void)
     assert_true(espclaw_find_tool("app_patterns.list") != NULL, "app patterns tool exists");
     assert_true(espclaw_find_tool("component.list") != NULL, "component list tool exists");
     assert_true(espclaw_find_tool("component.install") != NULL, "component install tool exists");
+    assert_true(espclaw_find_tool("component.install_from_file") != NULL, "component install from file tool exists");
+    assert_true(espclaw_find_tool("component.install_from_url") != NULL, "component install from url tool exists");
+    assert_true(espclaw_find_tool("app.install_from_file") != NULL, "app install from file tool exists");
+    assert_true(espclaw_find_tool("app.install_from_url") != NULL, "app install from url tool exists");
     assert_true(espclaw_find_tool("behavior.register") != NULL, "behavior register tool exists");
     assert_true(espclaw_find_tool("task.start") != NULL, "task start tool exists");
     assert_true(espclaw_find_tool("event.emit") != NULL, "event emit tool exists");
@@ -2021,6 +2056,139 @@ static void test_workspace_bootstrap_and_read(void)
         "apps path resolved"
     );
     assert_true(stat(path_buffer, &file_stat) == 0, "apps directory created");
+}
+
+static void test_workspace_blob_lifecycle(void)
+{
+    char temp_dir[128];
+    char file_buffer[256];
+    espclaw_workspace_blob_status_t status;
+
+    make_temp_dir(temp_dir, sizeof(temp_dir));
+    assert_true(espclaw_workspace_bootstrap(temp_dir) == 0, "workspace bootstrap for blobs");
+    assert_true(
+        espclaw_workspace_blob_begin(temp_dir, "ctx_doc", "memory/context.md", "text/markdown") == 0,
+        "blob upload began"
+    );
+    assert_true(espclaw_workspace_blob_status(temp_dir, "ctx_doc", &status) == 0, "open blob status readable");
+    assert_true(status.stage == ESPCLAW_WORKSPACE_BLOB_STAGE_OPEN, "blob status open");
+    assert_true(strcmp(status.target_path, "memory/context.md") == 0, "blob target path recorded");
+    assert_true(strcmp(status.content_type, "text/markdown") == 0, "blob content type recorded");
+    assert_true(status.bytes_written == 0U, "fresh blob starts empty");
+
+    assert_true(
+        espclaw_workspace_blob_append(temp_dir, "ctx_doc", "## Part 1\nhello\n", strlen("## Part 1\nhello\n"), NULL) == 0,
+        "first blob chunk appended"
+    );
+    assert_true(
+        espclaw_workspace_blob_append(temp_dir, "ctx_doc", "## Part 2\nworld\n", strlen("## Part 2\nworld\n"), NULL) == 0,
+        "second blob chunk appended"
+    );
+    assert_true(espclaw_workspace_blob_status(temp_dir, "ctx_doc", &status) == 0, "blob status updated after append");
+    assert_true(status.bytes_written == strlen("## Part 1\nhello\n## Part 2\nworld\n"), "blob byte count accumulated");
+
+    assert_true(
+        espclaw_workspace_blob_commit(temp_dir, "ctx_doc", NULL, 0, NULL) == 0,
+        "blob commit succeeded"
+    );
+    assert_true(espclaw_workspace_blob_status(temp_dir, "ctx_doc", &status) == 0, "committed blob status readable");
+    assert_true(status.stage == ESPCLAW_WORKSPACE_BLOB_STAGE_COMMITTED, "blob status committed");
+    assert_true(espclaw_workspace_read_file(temp_dir, "memory/context.md", file_buffer, sizeof(file_buffer)) == 0, "blob target file readable");
+    assert_string_contains(file_buffer, "## Part 1", "first blob chunk persisted");
+    assert_string_contains(file_buffer, "## Part 2", "second blob chunk persisted");
+}
+
+static void test_install_from_file_and_url(void)
+{
+    char temp_dir[128];
+    char source_buffer[512];
+    char result[256];
+
+    make_temp_dir(temp_dir, sizeof(temp_dir));
+    assert_true(espclaw_workspace_bootstrap(temp_dir) == 0, "workspace bootstrap for install_from_file/url");
+
+    assert_true(
+        espclaw_workspace_write_file(
+            temp_dir,
+            "memory/ms5611.lua",
+            "local M = {}\n"
+            "function M.identity()\n"
+            "  return 'ms5611-file'\n"
+            "end\n"
+            "return M\n") == 0,
+        "component source file written"
+    );
+    assert_true(
+        espclaw_component_install_from_file(
+            temp_dir,
+            "ms5611_driver",
+            "MS5611 Driver",
+            "sensors.ms5611",
+            "Barometric driver",
+            "1.0.0",
+            "memory/ms5611.lua") == 0,
+        "component installed from file"
+    );
+    assert_true(
+        espclaw_workspace_read_file(temp_dir, "lib/sensors/ms5611.lua", source_buffer, sizeof(source_buffer)) == 0,
+        "published component module readable"
+    );
+    assert_string_contains(source_buffer, "ms5611-file", "component lib copy persisted");
+
+    assert_true(
+        espclaw_workspace_write_file(
+            temp_dir,
+            "memory/weather_station.lua",
+            "function handle(trigger, payload)\n"
+            "  local sensor = require('sensors.ms5611')\n"
+            "  return sensor.identity()\n"
+            "end\n") == 0,
+        "app source file written"
+    );
+    assert_true(
+        espclaw_app_install_from_file(
+            temp_dir,
+            "weather_station",
+            "Weather Station",
+            "fs.read",
+            "manual",
+            "memory/weather_station.lua") == 0,
+        "app installed from file"
+    );
+    assert_true(
+        espclaw_app_run(temp_dir, "weather_station", "manual", "", result, sizeof(result)) == 0,
+        "app installed from file runs"
+    );
+    assert_true(strcmp(result, "ms5611-file") == 0, "app from file used installed component");
+
+    espclaw_web_set_http_adapter(install_source_http_adapter, NULL);
+    assert_true(
+        espclaw_component_install_from_url(
+            temp_dir,
+            "ms5611_driver_url",
+            "MS5611 Driver URL",
+            "sensors.ms5611_url",
+            "Barometric driver URL",
+            "1.1.0",
+            "https://components.example/ms5611_url.lua") == 0,
+        "component installed from url"
+    );
+    assert_true(
+        espclaw_app_install_from_url(
+            temp_dir,
+            "weather_station_url",
+            "Weather Station URL",
+            "fs.read",
+            "manual",
+            "https://apps.example/weather_url.lua") == 0,
+        "app installed from url"
+    );
+    espclaw_web_set_http_adapter(NULL, NULL);
+    assert_true(
+        espclaw_app_run(temp_dir, "weather_station_url", "manual", "", result, sizeof(result)) == 0,
+        "app installed from url runs"
+    );
+    assert_true(strcmp(result, "ms5611-url") == 0, "app from url used installed component");
 }
 
 static void test_session_store(void)
@@ -4198,6 +4366,8 @@ int main(void)
     test_runtime_wifi_boot_deferral_policy();
     test_provisioning_descriptor();
     test_workspace_bootstrap_and_read();
+    test_workspace_blob_lifecycle();
+    test_install_from_file_and_url();
     test_session_store();
     test_ota_state_machine();
     test_admin_ui_asset();

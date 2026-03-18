@@ -11,6 +11,7 @@
 #include <unistd.h>
 
 #include "espclaw/workspace.h"
+#include "espclaw/web_tools.h"
 
 static bool component_id_valid(const char *value)
 {
@@ -140,6 +141,42 @@ static int write_text_file(const char *path, const char *content)
     return 0;
 }
 
+static int copy_file_contents(const char *source_path, const char *destination_path)
+{
+    FILE *source = NULL;
+    FILE *destination = NULL;
+    unsigned char chunk[2048];
+    size_t bytes_read;
+
+    if (source_path == NULL || destination_path == NULL || ensure_parent_directories(destination_path) != 0) {
+        return -1;
+    }
+    source = fopen(source_path, "rb");
+    if (source == NULL) {
+        return -1;
+    }
+    destination = fopen(destination_path, "wb");
+    if (destination == NULL) {
+        fclose(source);
+        return -1;
+    }
+    while ((bytes_read = fread(chunk, 1, sizeof(chunk), source)) > 0U) {
+        if (fwrite(chunk, 1, bytes_read, destination) != bytes_read) {
+            fclose(destination);
+            fclose(source);
+            return -1;
+        }
+    }
+    if (ferror(source)) {
+        fclose(destination);
+        fclose(source);
+        return -1;
+    }
+    fclose(destination);
+    fclose(source);
+    return 0;
+}
+
 static int build_component_relative_path(const char *component_id, const char *leaf, char *buffer, size_t buffer_size)
 {
     if (!component_id_valid(component_id) || leaf == NULL || buffer == NULL || buffer_size == 0) {
@@ -258,6 +295,108 @@ int espclaw_component_install(
         return -1;
     }
     return 0;
+}
+
+int espclaw_component_install_from_file(
+    const char *workspace_root,
+    const char *component_id,
+    const char *title,
+    const char *module_name,
+    const char *summary,
+    const char *version,
+    const char *source_path
+)
+{
+    char manifest_relative[192];
+    char component_source_relative[192];
+    char lib_relative[192];
+    char manifest_path[512];
+    char component_source_path[512];
+    char lib_path[512];
+    char input_path[512];
+    char manifest_json[1024];
+    const char *effective_title = title != NULL && title[0] != '\0' ? title : component_id;
+    const char *effective_summary = summary != NULL ? summary : "";
+    const char *effective_version = version != NULL && version[0] != '\0' ? version : "0.1.0";
+
+    if (workspace_root == NULL || source_path == NULL || source_path[0] == '\0' ||
+        !component_id_valid(component_id) || !module_name_valid(module_name)) {
+        return -1;
+    }
+    if (espclaw_workspace_bootstrap(workspace_root) != 0 ||
+        build_component_relative_path(component_id, "component.json", manifest_relative, sizeof(manifest_relative)) != 0 ||
+        build_component_relative_path(component_id, "module.lua", component_source_relative, sizeof(component_source_relative)) != 0 ||
+        module_name_to_relative_path(module_name, lib_relative, sizeof(lib_relative)) != 0 ||
+        espclaw_workspace_resolve_path(workspace_root, source_path, input_path, sizeof(input_path)) != 0 ||
+        espclaw_workspace_resolve_path(workspace_root, manifest_relative, manifest_path, sizeof(manifest_path)) != 0 ||
+        espclaw_workspace_resolve_path(workspace_root, component_source_relative, component_source_path, sizeof(component_source_path)) != 0 ||
+        espclaw_workspace_resolve_path(workspace_root, lib_relative, lib_path, sizeof(lib_path)) != 0) {
+        return -1;
+    }
+
+    snprintf(
+        manifest_json,
+        sizeof(manifest_json),
+        "{\n"
+        "  \"id\": \"%s\",\n"
+        "  \"version\": \"%s\",\n"
+        "  \"title\": \"%s\",\n"
+        "  \"module\": \"%s\",\n"
+        "  \"summary\": \"%s\",\n"
+        "  \"source\": \"module.lua\",\n"
+        "  \"lib_path\": \"%s\"\n"
+        "}\n",
+        component_id,
+        effective_version,
+        effective_title,
+        module_name,
+        effective_summary,
+        lib_relative
+    );
+
+    if (write_text_file(manifest_path, manifest_json) != 0 ||
+        copy_file_contents(input_path, component_source_path) != 0 ||
+        copy_file_contents(input_path, lib_path) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+int espclaw_component_install_from_url(
+    const char *workspace_root,
+    const char *component_id,
+    const char *title,
+    const char *module_name,
+    const char *summary,
+    const char *version,
+    const char *source_url
+)
+{
+    char temp_relative[128];
+    char temp_absolute[512];
+    int result;
+
+    if (workspace_root == NULL || source_url == NULL || source_url[0] == '\0' || !component_id_valid(component_id)) {
+        return -1;
+    }
+    if (snprintf(temp_relative, sizeof(temp_relative), "blobs/.staging/component_%s.lua", component_id) >= (int)sizeof(temp_relative) ||
+        espclaw_workspace_bootstrap(workspace_root) != 0 ||
+        espclaw_workspace_resolve_path(workspace_root, temp_relative, temp_absolute, sizeof(temp_absolute)) != 0 ||
+        espclaw_web_download_to_file(source_url, temp_absolute) != 0) {
+        return -1;
+    }
+
+    result = espclaw_component_install_from_file(
+        workspace_root,
+        component_id,
+        title,
+        module_name,
+        summary,
+        version,
+        temp_relative
+    );
+    unlink(temp_absolute);
+    return result;
 }
 
 int espclaw_component_collect_ids(

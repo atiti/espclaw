@@ -164,6 +164,19 @@ static uint32_t load_query_u32(httpd_req_t *req, const char *key, uint32_t fallb
     return fallback;
 }
 
+static const char *blob_stage_name(espclaw_workspace_blob_stage_t stage)
+{
+    switch (stage) {
+    case ESPCLAW_WORKSPACE_BLOB_STAGE_OPEN:
+        return "open";
+    case ESPCLAW_WORKSPACE_BLOB_STAGE_COMMITTED:
+        return "committed";
+    case ESPCLAW_WORKSPACE_BLOB_STAGE_NONE:
+    default:
+        return "missing";
+    }
+}
+
 static bool json_bool_value(const char *json, const char *key, bool *value_out)
 {
     char pattern[64];
@@ -459,7 +472,7 @@ static esp_err_t telegram_config_post_handler(httpd_req_t *req)
 
 static esp_err_t tools_get_handler(httpd_req_t *req)
 {
-    char buffer[12288];
+    char buffer[65536];
 
     espclaw_render_tools_json(buffer, sizeof(buffer));
     return send_json(req, buffer);
@@ -1170,6 +1183,42 @@ static esp_err_t workspace_get_handler(httpd_req_t *req)
     return send_json(req, buffer);
 }
 
+static esp_err_t blob_status_get_handler(httpd_req_t *req)
+{
+    char blob_id[65];
+    char response[768];
+    espclaw_workspace_blob_status_t status;
+    const espclaw_runtime_status_t *runtime = espclaw_runtime_status();
+
+    if (runtime == NULL || !runtime->storage_ready) {
+        espclaw_admin_render_result_json(false, "workspace storage is not available", response, sizeof(response));
+        return send_json_status(req, response, 503, "Service Unavailable");
+    }
+    if (!load_query_value(req, "blob_id", blob_id, sizeof(blob_id))) {
+        espclaw_admin_render_result_json(false, "missing blob_id query parameter", response, sizeof(response));
+        return send_json_status(req, response, 400, "Bad Request");
+    }
+    if (espclaw_workspace_blob_status(runtime->workspace_root, blob_id, &status) != 0 &&
+        status.stage == ESPCLAW_WORKSPACE_BLOB_STAGE_NONE) {
+        espclaw_admin_render_result_json(false, "blob not found", response, sizeof(response));
+        return send_json_status(req, response, 404, "Not Found");
+    }
+
+    snprintf(
+        response,
+        sizeof(response),
+        "{\"ok\":true,\"blob_id\":\"%s\",\"stage\":\"%s\",\"bytes_written\":%lu,\"target_path\":",
+        status.blob_id,
+        blob_stage_name(status.stage),
+        (unsigned long)status.bytes_written
+    );
+    append_escaped_json(response, sizeof(response), strlen(response), status.target_path);
+    append_text(response, sizeof(response), ",\"content_type\":");
+    append_escaped_json(response, sizeof(response), strlen(response), status.content_type);
+    append_text(response, sizeof(response), "}");
+    return send_json(req, response);
+}
+
 static esp_err_t apps_get_handler(httpd_req_t *req)
 {
     char buffer[2048];
@@ -1348,6 +1397,199 @@ static esp_err_t component_install_post_handler(httpd_req_t *req)
     return send_json(req, buffer);
 }
 
+static esp_err_t component_install_from_file_post_handler(httpd_req_t *req)
+{
+    char component_id[ESPCLAW_COMPONENT_ID_MAX + 1];
+    char title[ESPCLAW_COMPONENT_TITLE_MAX + 1];
+    char module[ESPCLAW_COMPONENT_MODULE_MAX + 1];
+    char summary[ESPCLAW_COMPONENT_SUMMARY_MAX + 1];
+    char version[ESPCLAW_COMPONENT_VERSION_MAX + 1];
+    char source_path[256];
+    char buffer[256];
+    const espclaw_runtime_status_t *status = espclaw_runtime_status();
+
+    if (status == NULL || !status->storage_ready) {
+        espclaw_admin_render_result_json(false, "workspace storage is not available", buffer, sizeof(buffer));
+        return send_json_status(req, buffer, 503, "Service Unavailable");
+    }
+    if (!load_query_value(req, "component_id", component_id, sizeof(component_id)) ||
+        !load_query_value(req, "module", module, sizeof(module)) ||
+        !load_query_value(req, "source_path", source_path, sizeof(source_path))) {
+        espclaw_admin_render_result_json(false, "missing component_id, module, or source_path query parameter", buffer, sizeof(buffer));
+        return send_json_status(req, buffer, 400, "Bad Request");
+    }
+    title[0] = '\0';
+    summary[0] = '\0';
+    version[0] = '\0';
+    load_query_value(req, "title", title, sizeof(title));
+    load_query_value(req, "summary", summary, sizeof(summary));
+    load_query_value(req, "version", version, sizeof(version));
+    if (espclaw_component_install_from_file(status->workspace_root, component_id, title, module, summary, version, source_path) != 0) {
+        espclaw_admin_render_result_json(false, "failed to install component from file", buffer, sizeof(buffer));
+        return send_json_status(req, buffer, 500, "Internal Server Error");
+    }
+    espclaw_admin_render_result_json(true, "component installed from file", buffer, sizeof(buffer));
+    return send_json(req, buffer);
+}
+
+static esp_err_t component_install_from_url_post_handler(httpd_req_t *req)
+{
+    char component_id[ESPCLAW_COMPONENT_ID_MAX + 1];
+    char title[ESPCLAW_COMPONENT_TITLE_MAX + 1];
+    char module[ESPCLAW_COMPONENT_MODULE_MAX + 1];
+    char summary[ESPCLAW_COMPONENT_SUMMARY_MAX + 1];
+    char version[ESPCLAW_COMPONENT_VERSION_MAX + 1];
+    char source_url[512];
+    char buffer[256];
+    const espclaw_runtime_status_t *status = espclaw_runtime_status();
+
+    if (status == NULL || !status->storage_ready) {
+        espclaw_admin_render_result_json(false, "workspace storage is not available", buffer, sizeof(buffer));
+        return send_json_status(req, buffer, 503, "Service Unavailable");
+    }
+    if (!load_query_value(req, "component_id", component_id, sizeof(component_id)) ||
+        !load_query_value(req, "module", module, sizeof(module)) ||
+        !load_query_value(req, "source_url", source_url, sizeof(source_url))) {
+        espclaw_admin_render_result_json(false, "missing component_id, module, or source_url query parameter", buffer, sizeof(buffer));
+        return send_json_status(req, buffer, 400, "Bad Request");
+    }
+    title[0] = '\0';
+    summary[0] = '\0';
+    version[0] = '\0';
+    load_query_value(req, "title", title, sizeof(title));
+    load_query_value(req, "summary", summary, sizeof(summary));
+    load_query_value(req, "version", version, sizeof(version));
+    if (espclaw_component_install_from_url(status->workspace_root, component_id, title, module, summary, version, source_url) != 0) {
+        espclaw_admin_render_result_json(false, "failed to install component from url", buffer, sizeof(buffer));
+        return send_json_status(req, buffer, 500, "Internal Server Error");
+    }
+    espclaw_admin_render_result_json(true, "component installed from url", buffer, sizeof(buffer));
+    return send_json(req, buffer);
+}
+
+static esp_err_t blob_begin_post_handler(httpd_req_t *req)
+{
+    char blob_id[65];
+    char target_path[256];
+    char content_type[64];
+    char response[768];
+    espclaw_workspace_blob_status_t status;
+    const espclaw_runtime_status_t *runtime = espclaw_runtime_status();
+
+    if (runtime == NULL || !runtime->storage_ready) {
+        espclaw_admin_render_result_json(false, "workspace storage is not available", response, sizeof(response));
+        return send_json_status(req, response, 503, "Service Unavailable");
+    }
+    if (!load_query_value(req, "blob_id", blob_id, sizeof(blob_id))) {
+        espclaw_admin_render_result_json(false, "missing blob_id query parameter", response, sizeof(response));
+        return send_json_status(req, response, 400, "Bad Request");
+    }
+    target_path[0] = '\0';
+    content_type[0] = '\0';
+    load_query_value(req, "target_path", target_path, sizeof(target_path));
+    load_query_value(req, "content_type", content_type, sizeof(content_type));
+    if (espclaw_workspace_blob_begin(runtime->workspace_root, blob_id, target_path, content_type) != 0 ||
+        espclaw_workspace_blob_status(runtime->workspace_root, blob_id, &status) != 0) {
+        espclaw_admin_render_result_json(false, "failed to begin blob upload", response, sizeof(response));
+        return send_json_status(req, response, 500, "Internal Server Error");
+    }
+
+    snprintf(
+        response,
+        sizeof(response),
+        "{\"ok\":true,\"blob_id\":\"%s\",\"stage\":\"%s\",\"bytes_written\":%lu,\"target_path\":",
+        status.blob_id,
+        blob_stage_name(status.stage),
+        (unsigned long)status.bytes_written
+    );
+    append_escaped_json(response, sizeof(response), strlen(response), status.target_path);
+    append_text(response, sizeof(response), ",\"content_type\":");
+    append_escaped_json(response, sizeof(response), strlen(response), status.content_type);
+    append_text(response, sizeof(response), "}");
+    return send_json(req, response);
+}
+
+static esp_err_t blob_append_post_handler(httpd_req_t *req)
+{
+    char blob_id[65];
+    char response[512];
+    unsigned char chunk[2048];
+    size_t bytes_written = 0;
+    const espclaw_runtime_status_t *runtime = espclaw_runtime_status();
+
+    if (runtime == NULL || !runtime->storage_ready) {
+        espclaw_admin_render_result_json(false, "workspace storage is not available", response, sizeof(response));
+        return send_json_status(req, response, 503, "Service Unavailable");
+    }
+    if (!load_query_value(req, "blob_id", blob_id, sizeof(blob_id))) {
+        espclaw_admin_render_result_json(false, "missing blob_id query parameter", response, sizeof(response));
+        return send_json_status(req, response, 400, "Bad Request");
+    }
+    if (req->content_len <= 0) {
+        espclaw_admin_render_result_json(false, "missing blob body", response, sizeof(response));
+        return send_json_status(req, response, 400, "Bad Request");
+    }
+
+    while (bytes_written < (size_t)req->content_len) {
+        int to_read = req->content_len - (int)bytes_written;
+        int received;
+        size_t total_after_write = 0;
+
+        if (to_read > (int)sizeof(chunk)) {
+            to_read = (int)sizeof(chunk);
+        }
+        received = httpd_req_recv(req, (char *)chunk, to_read);
+        if (received <= 0 ||
+            espclaw_workspace_blob_append(runtime->workspace_root, blob_id, chunk, (size_t)received, &total_after_write) != 0) {
+            espclaw_admin_render_result_json(false, "failed to append blob chunk", response, sizeof(response));
+            return send_json_status(req, response, 500, "Internal Server Error");
+        }
+        bytes_written = total_after_write;
+    }
+
+    snprintf(
+        response,
+        sizeof(response),
+        "{\"ok\":true,\"blob_id\":\"%s\",\"stage\":\"open\",\"bytes_written\":%lu}",
+        blob_id,
+        (unsigned long)bytes_written
+    );
+    return send_json(req, response);
+}
+
+static esp_err_t blob_commit_post_handler(httpd_req_t *req)
+{
+    char blob_id[65];
+    char response[768];
+    const espclaw_runtime_status_t *runtime = espclaw_runtime_status();
+    char committed_path[256];
+    size_t bytes_written = 0;
+
+    if (runtime == NULL || !runtime->storage_ready) {
+        espclaw_admin_render_result_json(false, "workspace storage is not available", response, sizeof(response));
+        return send_json_status(req, response, 503, "Service Unavailable");
+    }
+    if (!load_query_value(req, "blob_id", blob_id, sizeof(blob_id))) {
+        espclaw_admin_render_result_json(false, "missing blob_id query parameter", response, sizeof(response));
+        return send_json_status(req, response, 400, "Bad Request");
+    }
+    if (espclaw_workspace_blob_commit(runtime->workspace_root, blob_id, committed_path, sizeof(committed_path), &bytes_written) != 0) {
+        espclaw_admin_render_result_json(false, "failed to commit blob", response, sizeof(response));
+        return send_json_status(req, response, 500, "Internal Server Error");
+    }
+
+    snprintf(
+        response,
+        sizeof(response),
+        "{\"ok\":true,\"blob_id\":\"%s\",\"stage\":\"committed\",\"bytes_written\":%lu,\"target_path\":",
+        blob_id,
+        (unsigned long)bytes_written
+    );
+    append_escaped_json(response, sizeof(response), strlen(response), committed_path);
+    append_text(response, sizeof(response), "}");
+    return send_json(req, response);
+}
+
 static esp_err_t component_delete_handler(httpd_req_t *req)
 {
     char component_id[ESPCLAW_COMPONENT_ID_MAX + 1];
@@ -1397,6 +1639,72 @@ static esp_err_t app_source_put_handler(httpd_req_t *req)
 
     espclaw_admin_render_result_json(false, "failed to update app source", buffer, sizeof(buffer));
     return send_json_status(req, buffer, 500, "Internal Server Error");
+}
+
+static esp_err_t app_install_from_file_post_handler(httpd_req_t *req)
+{
+    char app_id[ESPCLAW_APP_ID_MAX + 1];
+    char title[ESPCLAW_APP_TITLE_MAX + 1];
+    char permissions[256];
+    char triggers[256];
+    char source_path[256];
+    char buffer[256];
+    const espclaw_runtime_status_t *status = espclaw_runtime_status();
+
+    if (status == NULL || !status->storage_ready) {
+        espclaw_admin_render_result_json(false, "workspace storage is not available", buffer, sizeof(buffer));
+        return send_json_status(req, buffer, 503, "Service Unavailable");
+    }
+    if (!load_query_value(req, "app_id", app_id, sizeof(app_id)) ||
+        !load_query_value(req, "source_path", source_path, sizeof(source_path))) {
+        espclaw_admin_render_result_json(false, "missing app_id or source_path query parameter", buffer, sizeof(buffer));
+        return send_json_status(req, buffer, 400, "Bad Request");
+    }
+    title[0] = '\0';
+    permissions[0] = '\0';
+    triggers[0] = '\0';
+    load_query_value(req, "title", title, sizeof(title));
+    load_query_value(req, "permissions", permissions, sizeof(permissions));
+    load_query_value(req, "triggers", triggers, sizeof(triggers));
+    if (espclaw_app_install_from_file(status->workspace_root, app_id, title, permissions, triggers, source_path) != 0) {
+        espclaw_admin_render_result_json(false, "failed to install app from file", buffer, sizeof(buffer));
+        return send_json_status(req, buffer, 500, "Internal Server Error");
+    }
+    espclaw_admin_render_result_json(true, "app installed from file", buffer, sizeof(buffer));
+    return send_json(req, buffer);
+}
+
+static esp_err_t app_install_from_url_post_handler(httpd_req_t *req)
+{
+    char app_id[ESPCLAW_APP_ID_MAX + 1];
+    char title[ESPCLAW_APP_TITLE_MAX + 1];
+    char permissions[256];
+    char triggers[256];
+    char source_url[512];
+    char buffer[256];
+    const espclaw_runtime_status_t *status = espclaw_runtime_status();
+
+    if (status == NULL || !status->storage_ready) {
+        espclaw_admin_render_result_json(false, "workspace storage is not available", buffer, sizeof(buffer));
+        return send_json_status(req, buffer, 503, "Service Unavailable");
+    }
+    if (!load_query_value(req, "app_id", app_id, sizeof(app_id)) ||
+        !load_query_value(req, "source_url", source_url, sizeof(source_url))) {
+        espclaw_admin_render_result_json(false, "missing app_id or source_url query parameter", buffer, sizeof(buffer));
+        return send_json_status(req, buffer, 400, "Bad Request");
+    }
+    title[0] = '\0';
+    permissions[0] = '\0';
+    triggers[0] = '\0';
+    load_query_value(req, "title", title, sizeof(title));
+    load_query_value(req, "permissions", permissions, sizeof(permissions));
+    load_query_value(req, "triggers", triggers, sizeof(triggers));
+    if (espclaw_app_install_from_url(status->workspace_root, app_id, title, permissions, triggers, source_url) != 0) {
+        espclaw_admin_render_result_json(false, "failed to install app from url", buffer, sizeof(buffer));
+        return send_json_status(req, buffer, 500, "Internal Server Error");
+    }
+    espclaw_admin_render_result_json(true, "app installed from url", buffer, sizeof(buffer));
+    return send_json(req, buffer);
 }
 
 static esp_err_t app_run_post_handler(httpd_req_t *req)
@@ -1771,6 +2079,10 @@ esp_err_t espclaw_admin_server_start(void)
         {.uri = "/api/ota/status", .method = HTTP_GET, .handler = ota_status_get_handler, .user_ctx = NULL},
         {.uri = "/api/ota/upload", .method = HTTP_POST, .handler = ota_upload_post_handler, .user_ctx = NULL},
         {.uri = "/api/workspace/files", .method = HTTP_GET, .handler = workspace_get_handler, .user_ctx = NULL},
+        {.uri = "/api/blobs/status", .method = HTTP_GET, .handler = blob_status_get_handler, .user_ctx = NULL},
+        {.uri = "/api/blobs/begin", .method = HTTP_POST, .handler = blob_begin_post_handler, .user_ctx = NULL},
+        {.uri = "/api/blobs/append", .method = HTTP_POST, .handler = blob_append_post_handler, .user_ctx = NULL},
+        {.uri = "/api/blobs/commit", .method = HTTP_POST, .handler = blob_commit_post_handler, .user_ctx = NULL},
         {.uri = "/api/monitor", .method = HTTP_GET, .handler = monitor_get_handler, .user_ctx = NULL},
         {.uri = "/api/camera", .method = HTTP_GET, .handler = camera_get_handler, .user_ctx = NULL},
         {.uri = "/api/camera/capture", .method = HTTP_POST, .handler = camera_capture_post_handler, .user_ctx = NULL},
@@ -1794,7 +2106,11 @@ esp_err_t espclaw_admin_server_start(void)
         {.uri = "/api/components/detail", .method = HTTP_GET, .handler = component_detail_get_handler, .user_ctx = NULL},
         {.uri = "/api/apps/scaffold", .method = HTTP_POST, .handler = app_scaffold_post_handler, .user_ctx = NULL},
         {.uri = "/api/components/install", .method = HTTP_POST, .handler = component_install_post_handler, .user_ctx = NULL},
+        {.uri = "/api/components/install/from-file", .method = HTTP_POST, .handler = component_install_from_file_post_handler, .user_ctx = NULL},
+        {.uri = "/api/components/install/from-url", .method = HTTP_POST, .handler = component_install_from_url_post_handler, .user_ctx = NULL},
         {.uri = "/api/apps/source", .method = HTTP_PUT, .handler = app_source_put_handler, .user_ctx = NULL},
+        {.uri = "/api/apps/install/from-file", .method = HTTP_POST, .handler = app_install_from_file_post_handler, .user_ctx = NULL},
+        {.uri = "/api/apps/install/from-url", .method = HTTP_POST, .handler = app_install_from_url_post_handler, .user_ctx = NULL},
         {.uri = "/api/apps/run", .method = HTTP_POST, .handler = app_run_post_handler, .user_ctx = NULL},
         {.uri = "/api/chat/run", .method = HTTP_POST, .handler = chat_run_post_handler, .user_ctx = NULL},
         {.uri = "/api/chat/session", .method = HTTP_GET, .handler = chat_session_get_handler, .user_ctx = NULL},

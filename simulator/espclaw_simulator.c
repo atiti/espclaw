@@ -35,7 +35,7 @@
 #include "espclaw/workspace.h"
 
 #define ESPCLAW_SIM_REQUEST_MAX 65536
-#define ESPCLAW_SIM_RESPONSE_MAX 16384
+#define ESPCLAW_SIM_RESPONSE_MAX 131072
 
 typedef struct {
     espclaw_board_profile_t profile;
@@ -62,6 +62,7 @@ static const espclaw_sim_wifi_network_t s_sim_wifi_networks[] = {
 };
 
 static size_t append_escaped_json(char *buffer, size_t buffer_size, size_t used, const char *value);
+static void append_text(char *buffer, size_t buffer_size, const char *value);
 
 static void describe_sim_provisioning(
     const espclaw_simulator_config_t *config,
@@ -414,6 +415,20 @@ static size_t append_escaped_json(char *buffer, size_t buffer_size, size_t used,
     return used >= buffer_size ? buffer_size - 1 : used;
 }
 
+static void append_text(char *buffer, size_t buffer_size, const char *value)
+{
+    size_t used;
+
+    if (buffer == NULL || buffer_size == 0 || value == NULL) {
+        return;
+    }
+    used = strlen(buffer);
+    if (used >= buffer_size) {
+        return;
+    }
+    snprintf(buffer + used, buffer_size - used, "%s", value);
+}
+
 static void merge_auth_profile_from_body(espclaw_auth_profile_t *profile, const char *body)
 {
     long expires_at = 0;
@@ -662,6 +677,144 @@ static void handle_api_request(
         return;
     }
 
+    if (strcmp(method, "GET") == 0 && strcmp(path, "/api/blobs/status") == 0) {
+        char blob_id[65];
+        espclaw_workspace_blob_status_t status;
+
+        if (!espclaw_admin_query_value(query, "blob_id", blob_id, sizeof(blob_id))) {
+            espclaw_admin_render_result_json(false, "missing blob_id query parameter", response, sizeof(response));
+            send_http_response(client_fd, 400, "Bad Request", "application/json", response);
+            return;
+        }
+        if (espclaw_workspace_blob_status(config->workspace_root, blob_id, &status) != 0 &&
+            status.stage == ESPCLAW_WORKSPACE_BLOB_STAGE_NONE) {
+            espclaw_admin_render_result_json(false, "blob not found", response, sizeof(response));
+            send_http_response(client_fd, 404, "Not Found", "application/json", response);
+            return;
+        }
+        snprintf(
+            response,
+            sizeof(response),
+            "{"
+            "\"ok\":true,"
+            "\"blob_id\":\"%s\","
+            "\"stage\":\"%s\","
+            "\"bytes_written\":%lu,"
+            "\"target_path\":",
+            status.blob_id,
+            status.stage == ESPCLAW_WORKSPACE_BLOB_STAGE_OPEN
+                ? "open"
+                : (status.stage == ESPCLAW_WORKSPACE_BLOB_STAGE_COMMITTED ? "committed" : "none"),
+            (unsigned long)status.bytes_written
+        );
+        append_escaped_json(response, sizeof(response), strlen(response), status.target_path);
+        append_text(response, sizeof(response), ",\"content_type\":");
+        append_escaped_json(response, sizeof(response), strlen(response), status.content_type);
+        append_text(response, sizeof(response), "}");
+        send_http_response(client_fd, 200, "OK", "application/json", response);
+        return;
+    }
+
+    if (strcmp(method, "POST") == 0 && strcmp(path, "/api/blobs/begin") == 0) {
+        char blob_id[65];
+        char target_path[256];
+        char content_type[64];
+        espclaw_workspace_blob_status_t status;
+
+        if (!espclaw_admin_query_value(query, "blob_id", blob_id, sizeof(blob_id))) {
+            espclaw_admin_render_result_json(false, "missing blob_id query parameter", response, sizeof(response));
+            send_http_response(client_fd, 400, "Bad Request", "application/json", response);
+            return;
+        }
+        target_path[0] = '\0';
+        content_type[0] = '\0';
+        espclaw_admin_query_value(query, "target_path", target_path, sizeof(target_path));
+        espclaw_admin_query_value(query, "content_type", content_type, sizeof(content_type));
+        if (espclaw_workspace_blob_begin(config->workspace_root, blob_id, target_path, content_type) != 0 ||
+            espclaw_workspace_blob_status(config->workspace_root, blob_id, &status) != 0) {
+            espclaw_admin_render_result_json(false, "failed to begin blob upload", response, sizeof(response));
+            send_http_response(client_fd, 500, "Internal Server Error", "application/json", response);
+            return;
+        }
+        snprintf(
+            response,
+            sizeof(response),
+            "{"
+            "\"ok\":true,"
+            "\"blob_id\":\"%s\","
+            "\"stage\":\"%s\","
+            "\"bytes_written\":%lu,"
+            "\"target_path\":",
+            status.blob_id,
+            status.stage == ESPCLAW_WORKSPACE_BLOB_STAGE_OPEN ? "open" : "committed",
+            (unsigned long)status.bytes_written
+        );
+        append_escaped_json(response, sizeof(response), strlen(response), status.target_path);
+        append_text(response, sizeof(response), ",\"content_type\":");
+        append_escaped_json(response, sizeof(response), strlen(response), status.content_type);
+        append_text(response, sizeof(response), "}");
+        send_http_response(client_fd, 200, "OK", "application/json", response);
+        return;
+    }
+
+    if (strcmp(method, "POST") == 0 && strcmp(path, "/api/blobs/append") == 0) {
+        char blob_id[65];
+        size_t bytes_written = 0;
+
+        if (!espclaw_admin_query_value(query, "blob_id", blob_id, sizeof(blob_id))) {
+            espclaw_admin_render_result_json(false, "missing blob_id query parameter", response, sizeof(response));
+            send_http_response(client_fd, 400, "Bad Request", "application/json", response);
+            return;
+        }
+        if (body == NULL || body[0] == '\0') {
+            espclaw_admin_render_result_json(false, "missing blob body", response, sizeof(response));
+            send_http_response(client_fd, 400, "Bad Request", "application/json", response);
+            return;
+        }
+        if (espclaw_workspace_blob_append(config->workspace_root, blob_id, body, strlen(body), &bytes_written) != 0) {
+            espclaw_admin_render_result_json(false, "failed to append blob chunk", response, sizeof(response));
+            send_http_response(client_fd, 500, "Internal Server Error", "application/json", response);
+            return;
+        }
+        snprintf(
+            response,
+            sizeof(response),
+            "{\"ok\":true,\"blob_id\":\"%s\",\"stage\":\"open\",\"bytes_written\":%lu}",
+            blob_id,
+            (unsigned long)bytes_written
+        );
+        send_http_response(client_fd, 200, "OK", "application/json", response);
+        return;
+    }
+
+    if (strcmp(method, "POST") == 0 && strcmp(path, "/api/blobs/commit") == 0) {
+        char blob_id[65];
+        char committed_path[256];
+        size_t bytes_written = 0;
+
+        if (!espclaw_admin_query_value(query, "blob_id", blob_id, sizeof(blob_id))) {
+            espclaw_admin_render_result_json(false, "missing blob_id query parameter", response, sizeof(response));
+            send_http_response(client_fd, 400, "Bad Request", "application/json", response);
+            return;
+        }
+        if (espclaw_workspace_blob_commit(config->workspace_root, blob_id, committed_path, sizeof(committed_path), &bytes_written) != 0) {
+            espclaw_admin_render_result_json(false, "failed to commit blob", response, sizeof(response));
+            send_http_response(client_fd, 500, "Internal Server Error", "application/json", response);
+            return;
+        }
+        snprintf(
+            response,
+            sizeof(response),
+            "{\"ok\":true,\"blob_id\":\"%s\",\"stage\":\"committed\",\"bytes_written\":%lu,\"target_path\":",
+            blob_id,
+            (unsigned long)bytes_written
+        );
+        append_escaped_json(response, sizeof(response), strlen(response), committed_path);
+        append_text(response, sizeof(response), "}");
+        send_http_response(client_fd, 200, "OK", "application/json", response);
+        return;
+    }
+
     if (strcmp(method, "GET") == 0 && strcmp(path, "/api/monitor") == 0) {
         espclaw_system_monitor_snapshot_t snapshot;
         struct statvfs fs_stats;
@@ -747,6 +900,74 @@ static void handle_api_request(
         }
 
         espclaw_admin_render_result_json(true, "component installed", response, sizeof(response));
+        send_http_response(client_fd, 200, "OK", "application/json", response);
+        return;
+    }
+
+    if (strcmp(method, "POST") == 0 && strcmp(path, "/api/components/install/from-file") == 0) {
+        char component_id[ESPCLAW_APP_ID_MAX + 1];
+        char title[ESPCLAW_APP_TITLE_MAX + 1];
+        char module[ESPCLAW_COMPONENT_MODULE_MAX + 1];
+        char summary[ESPCLAW_COMPONENT_SUMMARY_MAX + 1];
+        char version[ESPCLAW_COMPONENT_VERSION_MAX + 1];
+        char source_path[256];
+
+        if (!espclaw_admin_query_value(query, "component_id", component_id, sizeof(component_id)) ||
+            !espclaw_admin_query_value(query, "module", module, sizeof(module)) ||
+            !espclaw_admin_query_value(query, "source_path", source_path, sizeof(source_path))) {
+            espclaw_admin_render_result_json(false, "missing component_id, module, or source_path query parameter", response, sizeof(response));
+            send_http_response(client_fd, 400, "Bad Request", "application/json", response);
+            return;
+        }
+
+        title[0] = '\0';
+        summary[0] = '\0';
+        version[0] = '\0';
+        espclaw_admin_query_value(query, "title", title, sizeof(title));
+        espclaw_admin_query_value(query, "summary", summary, sizeof(summary));
+        espclaw_admin_query_value(query, "version", version, sizeof(version));
+
+        if (espclaw_component_install_from_file(config->workspace_root, component_id, title, module, summary, version, source_path) != 0) {
+            espclaw_admin_render_result_json(false, "component install from file failed", response, sizeof(response));
+            send_http_response(client_fd, 500, "Internal Server Error", "application/json", response);
+            return;
+        }
+
+        espclaw_admin_render_result_json(true, "component installed from file", response, sizeof(response));
+        send_http_response(client_fd, 200, "OK", "application/json", response);
+        return;
+    }
+
+    if (strcmp(method, "POST") == 0 && strcmp(path, "/api/components/install/from-url") == 0) {
+        char component_id[ESPCLAW_APP_ID_MAX + 1];
+        char title[ESPCLAW_APP_TITLE_MAX + 1];
+        char module[ESPCLAW_COMPONENT_MODULE_MAX + 1];
+        char summary[ESPCLAW_COMPONENT_SUMMARY_MAX + 1];
+        char version[ESPCLAW_COMPONENT_VERSION_MAX + 1];
+        char source_url[512];
+
+        if (!espclaw_admin_query_value(query, "component_id", component_id, sizeof(component_id)) ||
+            !espclaw_admin_query_value(query, "module", module, sizeof(module)) ||
+            !espclaw_admin_query_value(query, "source_url", source_url, sizeof(source_url))) {
+            espclaw_admin_render_result_json(false, "missing component_id, module, or source_url query parameter", response, sizeof(response));
+            send_http_response(client_fd, 400, "Bad Request", "application/json", response);
+            return;
+        }
+
+        title[0] = '\0';
+        summary[0] = '\0';
+        version[0] = '\0';
+        espclaw_admin_query_value(query, "title", title, sizeof(title));
+        espclaw_admin_query_value(query, "summary", summary, sizeof(summary));
+        espclaw_admin_query_value(query, "version", version, sizeof(version));
+
+        if (espclaw_component_install_from_url(config->workspace_root, component_id, title, module, summary, version, source_url) != 0) {
+            espclaw_admin_render_result_json(false, "component install from url failed", response, sizeof(response));
+            send_http_response(client_fd, 500, "Internal Server Error", "application/json", response);
+            return;
+        }
+
+        espclaw_admin_render_result_json(true, "component installed from url", response, sizeof(response));
         send_http_response(client_fd, 200, "OK", "application/json", response);
         return;
     }
@@ -844,6 +1065,70 @@ static void handle_api_request(
             espclaw_admin_render_result_json(false, "failed to update app source", response, sizeof(response));
             send_http_response(client_fd, 500, "Internal Server Error", "application/json", response);
         }
+        return;
+    }
+
+    if (strcmp(method, "POST") == 0 && strcmp(path, "/api/apps/install/from-file") == 0) {
+        char app_id[ESPCLAW_APP_ID_MAX + 1];
+        char title[ESPCLAW_APP_TITLE_MAX + 1];
+        char permissions[256];
+        char triggers[256];
+        char source_path[256];
+
+        if (!espclaw_admin_query_value(query, "app_id", app_id, sizeof(app_id)) ||
+            !espclaw_admin_query_value(query, "source_path", source_path, sizeof(source_path))) {
+            espclaw_admin_render_result_json(false, "missing app_id or source_path query parameter", response, sizeof(response));
+            send_http_response(client_fd, 400, "Bad Request", "application/json", response);
+            return;
+        }
+
+        title[0] = '\0';
+        permissions[0] = '\0';
+        triggers[0] = '\0';
+        espclaw_admin_query_value(query, "title", title, sizeof(title));
+        espclaw_admin_query_value(query, "permissions", permissions, sizeof(permissions));
+        espclaw_admin_query_value(query, "triggers", triggers, sizeof(triggers));
+
+        if (espclaw_app_install_from_file(config->workspace_root, app_id, title, permissions, triggers, source_path) != 0) {
+            espclaw_admin_render_result_json(false, "app install from file failed", response, sizeof(response));
+            send_http_response(client_fd, 500, "Internal Server Error", "application/json", response);
+            return;
+        }
+
+        espclaw_admin_render_result_json(true, "app installed from file", response, sizeof(response));
+        send_http_response(client_fd, 200, "OK", "application/json", response);
+        return;
+    }
+
+    if (strcmp(method, "POST") == 0 && strcmp(path, "/api/apps/install/from-url") == 0) {
+        char app_id[ESPCLAW_APP_ID_MAX + 1];
+        char title[ESPCLAW_APP_TITLE_MAX + 1];
+        char permissions[256];
+        char triggers[256];
+        char source_url[512];
+
+        if (!espclaw_admin_query_value(query, "app_id", app_id, sizeof(app_id)) ||
+            !espclaw_admin_query_value(query, "source_url", source_url, sizeof(source_url))) {
+            espclaw_admin_render_result_json(false, "missing app_id or source_url query parameter", response, sizeof(response));
+            send_http_response(client_fd, 400, "Bad Request", "application/json", response);
+            return;
+        }
+
+        title[0] = '\0';
+        permissions[0] = '\0';
+        triggers[0] = '\0';
+        espclaw_admin_query_value(query, "title", title, sizeof(title));
+        espclaw_admin_query_value(query, "permissions", permissions, sizeof(permissions));
+        espclaw_admin_query_value(query, "triggers", triggers, sizeof(triggers));
+
+        if (espclaw_app_install_from_url(config->workspace_root, app_id, title, permissions, triggers, source_url) != 0) {
+            espclaw_admin_render_result_json(false, "app install from url failed", response, sizeof(response));
+            send_http_response(client_fd, 500, "Internal Server Error", "application/json", response);
+            return;
+        }
+
+        espclaw_admin_render_result_json(true, "app installed from url", response, sizeof(response));
+        send_http_response(client_fd, 200, "OK", "application/json", response);
         return;
     }
 
