@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  host:
+    name: Host Build And Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build zsh
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  firmware:
+    name: Firmware Build (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - esp32
+          - esp32s3
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install firmware dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git zsh ninja-build
+
+      - name: Cache ESP-IDF
+        uses: actions/cache@v4
+        with:
+          path: |
+            .deps/esp-idf-v5.5.2
+            .deps/.espressif
+          key: esp-idf-v5.5.2-${{ runner.os }}
+
+      - name: Install ESP-IDF
+        shell: bash
+        run: |
+          mkdir -p .deps
+          if [ ! -d .deps/esp-idf-v5.5.2/.git ]; then
+            git clone -b v5.5.2 --recursive https://github.com/espressif/esp-idf.git .deps/esp-idf-v5.5.2
+          fi
+          IDF_TOOLS_PATH="$PWD/.deps/.espressif" ./.deps/esp-idf-v5.5.2/install.sh ${{ matrix.target }}
+
+      - name: Build firmware
+        shell: bash
+        run: |
+          zsh -lc 'source scripts/use-idf.sh && cd firmware && idf.py -B build-${{ matrix.target }} set-target ${{ matrix.target }} && idf.py -B build-${{ matrix.target }} build'

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Added the public open-source repo scaffolding: MIT license, contributing guide, security policy, code of conduct, support/security/release docs, issue/PR templates, code owners, and GitHub Actions for CI plus tagged release artifact publishing.
 - Added a generic chunked blob-transfer store with `/api/blobs/begin`, `/api/blobs/append`, `/api/blobs/commit`, and `/api/blobs/status`, so large markdown or Lua content can be streamed straight into workspace files without one large RAM-bound request body.
 - Added `app.install_from_file`, `app.install_from_url`, `component.install_from_file`, and `component.install_from_url` across runtime, tool, admin, and simulator surfaces, so chunk-uploaded or community-hosted raw Lua can be installed without forcing source inline through one tool call.
 - Added `app.install_from_blob` and `component.install_from_blob` as thin install-by-reference aliases over committed workspace blobs, so large chunk-uploaded Lua can move from staging into apps/components without an extra path-management step.

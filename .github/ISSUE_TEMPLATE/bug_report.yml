@@ -1,0 +1,60 @@
+name: Bug report
+description: Report a reproducible problem in ESPClaw.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Please do not include secrets, tokens, cookies, or private auth material.
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: v0.2.0 or 32c0485
+    validations:
+      required: true
+  - type: dropdown
+    id: target
+    attributes:
+      label: Target
+      options:
+        - esp32s3
+        - esp32cam
+        - simulator
+        - other
+    validations:
+      required: true
+  - type: input
+    id: surface
+    attributes:
+      label: Surface
+      placeholder: admin UI, UART, Telegram, OTA, camera, simulator
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Boot board
+        2. Open admin UI
+        3. Run ...
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: Redact secrets before posting.

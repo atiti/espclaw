@@ -1,10 +1,47 @@
 # ESPClaw
 
+[![CI](https://github.com/atiti/espclaw/actions/workflows/ci.yml/badge.svg)](https://github.com/atiti/espclaw/actions/workflows/ci.yml)
+[![Release](https://github.com/atiti/espclaw/actions/workflows/release.yml/badge.svg)](https://github.com/atiti/espclaw/actions/workflows/release.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 ESPClaw is an ESP32-native AI agent runtime inspired by OpenClaw, NanoClaw, and PicoClaw. It targets PSRAM-capable boards first, with ESP32-S3-class boards as the primary profile and classic AI Thinker ESP32-CAM as the camera-first compatibility profile.
 
 The project is designed around a simple rule: remote LLMs, local tools. The device stores its workspace on SD, connects to Wi-Fi, exposes a local admin UI, talks to chat channels, and executes hardware-aware tool calls directly on the MCU.
 It can also host Lua-based dynamic apps directly from the workspace filesystem.
 The current provider path now also supports OpenAI Codex-style ChatGPT account auth, so the iterative chat loop can run against ChatGPT/Codex subscription credentials instead of only API keys.
+
+## Why ESPClaw
+
+- local hardware control with remote-model reasoning
+- installable Lua apps and reusable components without reflashing
+- same operator model across admin web UI, UART, simulator, and Telegram
+- chunk-aware blob and context flows for large markdown and Lua artifacts
+- OTA-ready firmware for supported boards
+
+## Quick Links
+
+- [Quick start and onboarding](docs/onboarding.md)
+- [Architecture](docs/architecture.md)
+- [Apps](docs/apps.md)
+- [Components](docs/components.md)
+- [Component registry manifests](docs/component-registry.md)
+- [Support matrix](docs/support-matrix.md)
+- [Security and privacy](docs/security-and-privacy.md)
+- [Release process](docs/release-process.md)
+- [Contributing](CONTRIBUTING.md)
+
+## Project Status
+
+ESPClaw is usable today for local operator workflows, on-device tool use, Lua apps/components, OTA updates, and the simulator flow. It is still an embedded systems project, so some areas remain sharper-edged than a server-hosted agent runtime.
+
+Public support today:
+
+- `esp32s3` as the primary full-agent target
+- AI Thinker `esp32cam` as the camera-first compatibility target
+- admin UI, UART console, and simulator as the main operator surfaces
+- Telegram as an experimental remote surface
+
+See the full [support matrix](docs/support-matrix.md) before choosing a board or deployment shape.
 
 ## Current State
 
@@ -104,6 +141,21 @@ The host build also produces a local simulator binary:
 ```
 
 Then open `http://127.0.0.1:8080/` to use the same admin UI and app-management API without hardware.
+
+## Open Source Project Files
+
+This repository includes the standard public project contract:
+
+- [MIT license](LICENSE)
+- [Contributing guide](CONTRIBUTING.md)
+- [Security policy](SECURITY.md)
+- [Code of conduct](CODE_OF_CONDUCT.md)
+- [Release process](docs/release-process.md)
+
+GitHub Actions:
+
+- `CI`: host build/tests plus firmware builds for `esp32` and `esp32s3`
+- `Release`: tagged simulator and firmware artifacts published on GitHub Releases
 
 The simulator can import ChatGPT/Codex credentials from a local Codex CLI auth store:
 

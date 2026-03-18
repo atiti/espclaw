@@ -1,0 +1,38 @@
+name: Feature request
+description: Propose an improvement for ESPClaw.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      placeholder: What is missing or painful today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      placeholder: What should ESPClaw do instead?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - runtime
+        - apps/components
+        - admin UI
+        - UART console
+        - Telegram
+        - OTA
+        - simulator
+        - docs
+        - CI/release
