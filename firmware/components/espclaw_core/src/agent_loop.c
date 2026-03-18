@@ -63,10 +63,7 @@
 
 #define ESPCLAW_AGENT_MEDIA_MAX 2
 
-typedef struct {
-    char role[16];
-    char content[1024];
-} espclaw_history_message_t;
+typedef espclaw_agent_history_message_t espclaw_history_message_t;
 
 typedef struct {
     char id[ESPCLAW_AGENT_RESPONSE_ID_MAX + 1];
@@ -96,6 +93,37 @@ static int build_initial_request_body(
     char *buffer,
     size_t buffer_size
 );
+static void copy_text(char *buffer, size_t buffer_size, const char *value);
+
+static size_t seed_history_messages(
+    espclaw_history_message_t *destination,
+    size_t max_messages,
+    const espclaw_history_message_t *seed_history,
+    size_t seed_history_count,
+    const char *user_message
+)
+{
+    size_t copied = 0;
+    size_t start = 0;
+    size_t index;
+
+    if (destination == NULL || max_messages == 0U || user_message == NULL) {
+        return 0U;
+    }
+
+    if (seed_history != NULL && seed_history_count > max_messages - 1U) {
+        start = seed_history_count - (max_messages - 1U);
+    }
+    for (index = start; seed_history != NULL && index < seed_history_count && copied + 1U < max_messages; ++index) {
+        copy_text(destination[copied].role, sizeof(destination[copied].role), seed_history[index].role);
+        copy_text(destination[copied].content, sizeof(destination[copied].content), seed_history[index].content);
+        copied++;
+    }
+
+    copy_text(destination[copied].role, sizeof(destination[copied].role), "user");
+    copy_text(destination[copied].content, sizeof(destination[copied].content), user_message);
+    return copied + 1U;
+}
 
 static void *agent_calloc(size_t count, size_t size)
 {
@@ -4338,14 +4366,14 @@ int espclaw_agent_reduce_sse_stream_to_response_json(
     return 0;
 }
 #else
-static const unsigned char CHATGPT_LE_E7_SHA256[32] = {
+static const unsigned char CHATGPT_LE_E7_SHA256[32] __attribute__((unused)) = {
     0xae, 0xb1, 0xfd, 0x74, 0x10, 0xe8, 0x3b, 0xc9,
     0x6f, 0x5d, 0xa3, 0xc6, 0xa7, 0xc2, 0xc1, 0xbb,
     0x83, 0x6d, 0x1f, 0xa5, 0xcb, 0x86, 0xe7, 0x08,
     0x51, 0x58, 0x90, 0xe4, 0x28, 0xa8, 0x77, 0x0b,
 };
 
-static bool cert_chain_contains_sha256(const mbedtls_x509_crt *cert, const unsigned char *expected_digest, size_t expected_len)
+static bool __attribute__((unused)) cert_chain_contains_sha256(const mbedtls_x509_crt *cert, const unsigned char *expected_digest, size_t expected_len)
 {
     unsigned char digest[32];
 
@@ -4915,7 +4943,7 @@ static int codex_sse_feed_body_bytes(
     return 0;
 }
 
-static int codex_sse_feed_chunked_bytes(
+static int __attribute__((unused)) codex_sse_feed_chunked_bytes(
     espclaw_codex_sse_parser_t *parser,
     const char *chunk,
     size_t chunk_len,
@@ -5104,6 +5132,7 @@ int espclaw_agent_reduce_sse_stream_to_response_json(
     return result;
 }
 
+#if !defined(ESP_PLATFORM)
 static int raw_codex_http_post(
     const char *endpoint,
     const espclaw_auth_profile_t *profile,
@@ -5382,6 +5411,7 @@ cleanup:
 #undef WRITE_LITERAL_OR_FAIL
     return result;
 }
+#endif
 
 static void configure_codex_transport(
     esp_http_client_config_t *config,
@@ -5446,10 +5476,12 @@ static int host_http_post(
 
     snprintf(endpoint, sizeof(endpoint), "%s/responses", url);
     if (is_chatgpt_codex) {
+#if !defined(ESP_PLATFORM)
         if (raw_codex_http_post(endpoint, profile, body, response, response_size, error_text, error_text_size) == 0) {
             return 0;
         }
         ESP_LOGE(TAG, "raw Codex transport failed: %s", error_text);
+#endif
     }
     for (attempt = 0; attempt < attempt_count; ++attempt) {
         espclaw_codex_transport_mode_t transport_mode =
@@ -5629,6 +5661,13 @@ static int host_http_post(
                 esp_http_client_cleanup(client);
                 return -1;
             }
+            /* The esp_http_client path has already completed HTTP header parsing
+             * via esp_http_client_fetch_headers(), so the embedded SSE reducer
+             * must start in body mode or codex_sse_finish_stream() will reject
+             * the completed stream as an incomplete HTTP response. */
+            parser->headers_done = true;
+            parser->status_code = status_code;
+            parser->is_chunked = esp_http_client_is_chunked_response(client);
             parser->data = response;
             parser->data_capacity = response_size;
 
@@ -5822,6 +5861,8 @@ static int espclaw_agent_loop_run_with_options(
     const char *user_message,
     bool allow_mutations,
     bool yolo_mode,
+    const espclaw_history_message_t *seed_history,
+    size_t seed_history_count,
     bool persist_transcript,
     espclaw_agent_run_result_t *result
 )
@@ -5948,9 +5989,13 @@ static int espclaw_agent_loop_run_with_options(
         espclaw_session_append_message(workspace_root, session_id, "user", user_message);
         load_history(workspace_root, session_id, history, runtime_budget.agent_history_max, &history_count);
     } else if (runtime_budget.agent_history_max > 0) {
-        copy_text(history[0].role, sizeof(history[0].role), "user");
-        copy_text(history[0].content, sizeof(history[0].content), user_message);
-        history_count = 1;
+        history_count = seed_history_messages(
+            history,
+            runtime_budget.agent_history_max,
+            seed_history,
+            seed_history_count,
+            user_message
+        );
     }
     explicit_required_tool_count = collect_required_tool_names(
         user_message,
@@ -6513,6 +6558,8 @@ int espclaw_agent_loop_run(
         user_message,
         allow_mutations,
         yolo_mode,
+        NULL,
+        0U,
         true,
         result
     );
@@ -6537,6 +6584,32 @@ int espclaw_agent_loop_run_stateless(
         user_message,
         allow_mutations,
         yolo_mode,
+        NULL,
+        0U,
+        false,
+        result
+    );
+}
+
+int espclaw_agent_loop_run_stateless_with_history(
+    const char *workspace_root,
+    const char *session_id,
+    const char *user_message,
+    bool allow_mutations,
+    bool yolo_mode,
+    const espclaw_agent_history_message_t *history,
+    size_t history_count,
+    espclaw_agent_run_result_t *result
+)
+{
+    return espclaw_agent_loop_run_with_options(
+        workspace_root,
+        session_id,
+        user_message,
+        allow_mutations,
+        yolo_mode,
+        history,
+        history_count,
         false,
         result
     );

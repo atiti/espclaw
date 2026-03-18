@@ -367,6 +367,7 @@ static esp_err_t status_get_handler(httpd_req_t *req)
         profile->provider_id,
         "telegram",
         status != NULL && status->storage_ready,
+        espclaw_runtime_get_yolo_mode(),
         &ota_snapshot.state,
         buffer,
         sizeof(buffer)
@@ -1034,6 +1035,7 @@ static esp_err_t auth_import_json_post_handler(httpd_req_t *req)
 static esp_err_t chat_run_post_handler(httpd_req_t *req)
 {
     char session_id[ESPCLAW_AGENT_SESSION_ID_MAX + 1];
+    char yolo_value[8];
     char *response = NULL;
     char *body = NULL;
     espclaw_agent_run_result_t *result = NULL;
@@ -1063,7 +1065,11 @@ static esp_err_t chat_run_post_handler(httpd_req_t *req)
     if (!load_query_value(req, "session_id", session_id, sizeof(session_id))) {
         copy_text(session_id, sizeof(session_id), "admin");
     }
-    yolo_mode = load_query_u32(req, "yolo", 0) != 0;
+    if (load_query_value(req, "yolo", yolo_value, sizeof(yolo_value))) {
+        yolo_mode = strtoul(yolo_value, NULL, 10) != 0U;
+    } else {
+        yolo_mode = espclaw_runtime_get_yolo_mode();
+    }
     if (req->content_len <= 0 || read_request_body(req, body, 2048) != ESP_OK) {
         espclaw_admin_render_result_json(false, "missing chat body", response, 12288);
         send_json_status(req, response, 400, "Bad Request");
@@ -1693,16 +1699,31 @@ esp_err_t espclaw_admin_server_start(void)
     config.lru_purge_enable = true;
     config.core_id = admin_core >= 0 ? admin_core : tskNO_AFFINITY;
     config.uri_match_fn = httpd_uri_match_wildcard;
-    if (httpd_start(&s_admin_server, &config) != ESP_OK) {
-        return ESP_FAIL;
+    {
+        esp_err_t err = httpd_start(&s_admin_server, &config);
+
+        if (err != ESP_OK) {
+            ESP_LOGE(
+                TAG,
+                "httpd_start failed err=0x%x port=%d stack=%d max_uri=%d max_open_sockets=%d",
+                (unsigned int)err,
+                config.server_port,
+                config.stack_size,
+                config.max_uri_handlers,
+                config.max_open_sockets
+            );
+            return err;
+        }
     }
 
     for (index = 0; index < sizeof(routes) / sizeof(routes[0]); ++index) {
-        if (httpd_register_uri_handler(s_admin_server, &routes[index]) != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to register route %s", routes[index].uri);
+        esp_err_t err = httpd_register_uri_handler(s_admin_server, &routes[index]);
+
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to register route %s err=0x%x", routes[index].uri, (unsigned int)err);
             httpd_stop(s_admin_server);
             s_admin_server = NULL;
-            return ESP_FAIL;
+            return err;
         }
     }
 

@@ -48,6 +48,7 @@ typedef struct {
 } espclaw_telegram_config_t;
 
 esp_err_t espclaw_runtime_start(espclaw_board_profile_id_t profile_id, espclaw_runtime_status_t *status);
+esp_err_t espclaw_runtime_start_operator_surfaces(void);
 const espclaw_runtime_status_t *espclaw_runtime_status(void);
 esp_err_t espclaw_runtime_wifi_scan(
     espclaw_wifi_network_t *networks,
@@ -66,6 +67,8 @@ esp_err_t espclaw_runtime_set_telegram_config(
     char *message,
     size_t message_size
 );
+bool espclaw_runtime_get_yolo_mode(void);
+esp_err_t espclaw_runtime_set_yolo_mode(bool enabled, char *message, size_t message_size);
 esp_err_t espclaw_runtime_get_provisioning_descriptor(espclaw_provisioning_descriptor_t *descriptor);
 bool espclaw_runtime_time_is_sane(void);
 bool espclaw_runtime_wait_for_time_sync(uint32_t timeout_ms);

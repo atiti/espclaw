@@ -18,6 +18,7 @@ size_t espclaw_render_admin_status_json(
     const char *provider_id,
     const char *channel_id,
     bool workspace_ready,
+    bool yolo_mode,
     const espclaw_ota_state_t *ota_state,
     char *buffer,
     size_t buffer_size

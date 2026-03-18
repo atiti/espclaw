@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Promoted `YOLO mode` into a shared runtime-wide operator policy, enabled by default and persisted in NVS, so UART, admin chat, simulator chat, and Telegram all stop asking for redundant mutation approval unless the operator explicitly turns YOLO back off.
+- Moved Telegram poller working buffers and photo-upload scratch space to PSRAM-backed heap allocations and doubled the reserved internal heap on `esp32cam`, which preserves the contiguous 32 KB DMA block the OV2640 camera needs for `/camera` over Telegram after the device has been up for a while.
+- Reduced the ESP32 JPEG camera DMA ring in the managed `esp32-camera` component for `esp32cam`, so live `/camera` captures can still initialize after Wi‑Fi/admin/Telegram have fragmented the internal DMA-capable heap.
+- Deferred UART and Telegram operator-surface startup until after the admin server start attempt, added exact `httpd_start` / route-registration error logging, and guarded UART startup against duplicate task creation so ESP32-CAM boot brings up the control plane in a safer order.
+- Switched embedded ChatGPT/Codex requests to prefer the safer `esp_http_client` path instead of the raw TLS/SSE transport, avoiding the live ESP32-CAM heap corruption seen during Telegram/stateless provider turns.
+- Fixed the embedded `esp_http_client` Codex SSE reducer to mark headers as already parsed before feeding body chunks, which restores successful `200/chunked` provider turns instead of falsely reporting an incomplete HTTP response.
 - Moved Telegram bot setup from compile-time `menuconfig` into runtime NVS-backed config, exposed through both the admin UI and the serial `/telegram ...` commands, so boards can be provisioned and updated without rebuilding firmware just to change the bot token or poll interval.
 - Expanded explicit tool-call enforcement so plain-language requests like "emit an event" map to the right runtime tools, and short follow-ups like `yes try that` / `do that` now approve the assistant's previously proposed concrete tool step instead of being treated as narration prompts.
 - Hardened transcript history loading so malformed or stale rows with missing/invalid roles are ignored instead of poisoning future Codex requests with `role:""`.
@@ -191,3 +197,4 @@
 - fix(telegram): parse 64-bit Telegram chat/user ids correctly on ESP32 so private-chat updates are no longer ignored on 32-bit builds
 - fix(telegram): switch Telegram `getUpdates` polling to explicit open/fetch_headers/read flow so response bodies are actually parsed on embedded builds
 - fix(telegram): run embedded Telegram LLM turns without SD-backed session transcripts to avoid polling-task FATFS crashes on esp32cam
+- feat(telegram): keep a small in-memory per-chat context on embedded builds so follow-up Telegram turns retain recent user/assistant context without workspace transcript writes

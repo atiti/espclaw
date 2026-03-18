@@ -9,6 +9,9 @@
 
 #include "esp_event.h"
 #include "esp_crt_bundle.h"
+#ifdef ESP_PLATFORM
+#include "esp_heap_caps.h"
+#endif
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_mac.h"
@@ -52,6 +55,7 @@
 static const char *TAG = "espclaw_runtime";
 static const char *ESPCLAW_PROVISIONING_POP = "espclaw-pass";
 static const char *ESPCLAW_TELEGRAM_NAMESPACE = "espclaw_tg";
+static const char *ESPCLAW_OPERATOR_NAMESPACE = "espclaw_op";
 
 #ifndef CONFIG_ESPCLAW_TELEGRAM_BOT_TOKEN
 #define CONFIG_ESPCLAW_TELEGRAM_BOT_TOKEN ""
@@ -82,14 +86,16 @@ static espclaw_runtime_status_t s_runtime_status;
 static long s_telegram_offset;
 static espclaw_telegram_config_t s_telegram_config;
 static bool s_telegram_task_started;
+static bool s_uart_console_started;
 static bool s_softap_onboarding_active;
 static bool s_ble_provisioning_active;
 static bool s_sta_connect_enabled;
 static bool s_time_sync_started;
 static bool s_time_sync_completed;
 static esp_sntp_config_t s_sntp_config;
-static bool s_console_yolo_mode;
+static bool s_operator_yolo_mode;
 static esp_err_t maybe_start_telegram(void);
+esp_err_t espclaw_runtime_start_operator_surfaces(void);
 
 #ifdef ESP_PLATFORM
 #define ESPCLAW_BEHAVIOR_AUTOSTART_DELAY_MS 8000
@@ -98,8 +104,84 @@ static esp_err_t maybe_start_telegram(void);
 #define ESPCLAW_TELEGRAM_URL_BYTES 512
 #define ESPCLAW_TELEGRAM_RESPONSE_BYTES 8192
 #define ESPCLAW_TELEGRAM_REPLY_BYTES 768
+#define ESPCLAW_TELEGRAM_CONTEXT_SLOTS 4
+#define ESPCLAW_TELEGRAM_CONTEXT_MESSAGES 6
 #define ESPCLAW_UART_CONSOLE_STACK_BYTES 32768
 #endif
+
+typedef struct {
+    bool active;
+    char chat_id[32];
+    espclaw_agent_history_message_t messages[ESPCLAW_TELEGRAM_CONTEXT_MESSAGES];
+    size_t count;
+} espclaw_telegram_chat_context_t;
+
+static espclaw_telegram_chat_context_t s_telegram_contexts[ESPCLAW_TELEGRAM_CONTEXT_SLOTS];
+
+static void *runtime_external_malloc(size_t size)
+{
+#ifdef ESP_PLATFORM
+#if defined(CONFIG_SPIRAM_USE_MALLOC)
+    void *ptr = heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+
+    if (ptr != NULL) {
+        return ptr;
+    }
+#endif
+#endif
+    return malloc(size);
+}
+
+static void *runtime_external_calloc(size_t count, size_t size)
+{
+#ifdef ESP_PLATFORM
+#if defined(CONFIG_SPIRAM_USE_MALLOC)
+    void *ptr = heap_caps_calloc(count, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+
+    if (ptr != NULL) {
+        return ptr;
+    }
+#endif
+#endif
+    return calloc(count, size);
+}
+
+static esp_err_t load_operator_config_from_nvs(bool *yolo_mode)
+{
+    nvs_handle_t handle;
+    uint8_t enabled = 1U;
+
+    if (yolo_mode == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *yolo_mode = true;
+    if (nvs_open(ESPCLAW_OPERATOR_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) {
+        return ESP_OK;
+    }
+    if (nvs_get_u8(handle, "yolo", &enabled) == ESP_OK) {
+        *yolo_mode = enabled != 0U;
+    }
+    nvs_close(handle);
+    return ESP_OK;
+}
+
+static esp_err_t save_operator_config_to_nvs(bool yolo_mode)
+{
+    nvs_handle_t handle;
+    esp_err_t err;
+
+    err = nvs_open(ESPCLAW_OPERATOR_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        return err;
+    }
+    if (nvs_set_u8(handle, "yolo", yolo_mode ? 1U : 0U) != ESP_OK ||
+        nvs_commit(handle) != ESP_OK) {
+        nvs_close(handle);
+        return ESP_FAIL;
+    }
+    nvs_close(handle);
+    return ESP_OK;
+}
 
 static bool should_skip_boot_automation_for_reset_reason(esp_reset_reason_t reason)
 {
@@ -121,6 +203,57 @@ static void trim_trailing_whitespace(char *text)
     while (length > 0 && isspace((unsigned char)text[length - 1])) {
         text[--length] = '\0';
     }
+}
+
+static espclaw_telegram_chat_context_t *telegram_context_for_chat(const char *chat_id, bool create_if_missing)
+{
+    size_t index;
+    espclaw_telegram_chat_context_t *empty_slot = NULL;
+
+    if (chat_id == NULL || chat_id[0] == '\0') {
+        return NULL;
+    }
+    for (index = 0; index < ESPCLAW_TELEGRAM_CONTEXT_SLOTS; ++index) {
+        if (s_telegram_contexts[index].active &&
+            strcmp(s_telegram_contexts[index].chat_id, chat_id) == 0) {
+            return &s_telegram_contexts[index];
+        }
+        if (empty_slot == NULL && !s_telegram_contexts[index].active) {
+            empty_slot = &s_telegram_contexts[index];
+        }
+    }
+    if (!create_if_missing) {
+        return NULL;
+    }
+    if (empty_slot == NULL) {
+        empty_slot = &s_telegram_contexts[0];
+    }
+    memset(empty_slot, 0, sizeof(*empty_slot));
+    empty_slot->active = true;
+    snprintf(empty_slot->chat_id, sizeof(empty_slot->chat_id), "%s", chat_id);
+    return empty_slot;
+}
+
+static void telegram_context_append_message(
+    espclaw_telegram_chat_context_t *context,
+    const char *role,
+    const char *content
+)
+{
+    size_t index;
+
+    if (context == NULL || role == NULL || content == NULL || role[0] == '\0' || content[0] == '\0') {
+        return;
+    }
+    if (context->count >= ESPCLAW_TELEGRAM_CONTEXT_MESSAGES) {
+        for (index = 1; index < context->count; ++index) {
+            context->messages[index - 1] = context->messages[index];
+        }
+        context->count = ESPCLAW_TELEGRAM_CONTEXT_MESSAGES - 1U;
+    }
+    snprintf(context->messages[context->count].role, sizeof(context->messages[context->count].role), "%s", role);
+    snprintf(context->messages[context->count].content, sizeof(context->messages[context->count].content), "%s", content);
+    context->count++;
 }
 
 static void copy_text(char *buffer, size_t buffer_size, const char *value)
@@ -382,6 +515,9 @@ static void provisioning_event_cb(void *user_data, wifi_prov_cb_event_t event, v
         wifi_prov_mgr_deinit();
         if (espclaw_admin_server_start() != ESP_OK) {
             ESP_LOGE(TAG, "Failed to start admin server after provisioning");
+        }
+        if (espclaw_runtime_start_operator_surfaces() != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to start operator surfaces after provisioning");
         }
         break;
     default:
@@ -972,7 +1108,7 @@ static esp_err_t telegram_send_photo(
         goto cleanup;
     }
 
-    file_buffer = malloc(1024);
+    file_buffer = runtime_external_malloc(1024);
     if (file_buffer == NULL) {
         goto cleanup;
     }
@@ -1013,6 +1149,26 @@ esp_err_t espclaw_runtime_get_telegram_config(espclaw_telegram_config_t *config)
         return ESP_ERR_INVALID_ARG;
     }
     telegram_config_to_runtime_snapshot(&s_telegram_config, config);
+    return ESP_OK;
+}
+
+bool espclaw_runtime_get_yolo_mode(void)
+{
+    return s_operator_yolo_mode;
+}
+
+esp_err_t espclaw_runtime_set_yolo_mode(bool enabled, char *message, size_t message_size)
+{
+    if (save_operator_config_to_nvs(enabled) != ESP_OK) {
+        if (message != NULL && message_size > 0U) {
+            snprintf(message, message_size, "failed to save YOLO mode");
+        }
+        return ESP_FAIL;
+    }
+    s_operator_yolo_mode = enabled;
+    if (message != NULL && message_size > 0U) {
+        snprintf(message, message_size, "YOLO mode %s.", enabled ? "enabled" : "disabled");
+    }
     return ESP_OK;
 }
 
@@ -1181,7 +1337,7 @@ static void uart_console_task(void *arg)
                                 "uart0",
                                 line,
                                 true,
-                                s_console_yolo_mode,
+                                s_operator_yolo_mode,
                                 result) == 0 || result->ok) {
                             snprintf(reply, ESPCLAW_AGENT_TEXT_MAX + 64U, "\r\n%s", result->final_text);
                         } else {
@@ -1240,6 +1396,7 @@ static void build_status_reply(char *buffer, size_t buffer_size)
         provider_id,
         "telegram",
         s_runtime_status.storage_ready,
+        s_operator_yolo_mode,
         &ota_state,
         admin_status,
         sizeof(admin_status)
@@ -1385,10 +1542,12 @@ static void telegram_polling_task(void *arg)
     espclaw_agent_run_result_t *run_result;
 
     (void)arg;
-    url = malloc(ESPCLAW_TELEGRAM_URL_BYTES);
-    response = malloc(ESPCLAW_TELEGRAM_RESPONSE_BYTES);
-    reply = malloc(ESPCLAW_TELEGRAM_REPLY_BYTES);
-    run_result = calloc(1, sizeof(*run_result));
+    /* Keep Telegram worker buffers out of internal RAM so the ESP32 camera can
+       still reserve a contiguous DMA block when /camera is handled later. */
+    url = runtime_external_malloc(ESPCLAW_TELEGRAM_URL_BYTES);
+    response = runtime_external_malloc(ESPCLAW_TELEGRAM_RESPONSE_BYTES);
+    reply = runtime_external_malloc(ESPCLAW_TELEGRAM_REPLY_BYTES);
+    run_result = runtime_external_calloc(1, sizeof(*run_result));
     if (url == NULL || response == NULL || reply == NULL || run_result == NULL) {
         ESP_LOGE(TAG, "Telegram polling task failed to allocate working buffers");
         free(url);
@@ -1432,6 +1591,7 @@ static void telegram_polling_task(void *arg)
             esp_http_client_config_t client_config = {0};
             esp_http_client_handle_t client;
             espclaw_telegram_update_t update;
+            espclaw_telegram_chat_context_t *chat_context = NULL;
 
             snprintf(
                 url,
@@ -1460,6 +1620,7 @@ static void telegram_polling_task(void *arg)
                 bool append_exchange = true;
 
                 s_telegram_offset = update.update_id + 1;
+                chat_context = telegram_context_for_chat(update.chat_id, true);
                 telegram_send_chat_action(config.bot_token, update.chat_id, "typing");
 
                 if (strcmp(update.text, "/camera") == 0 || strcmp(update.text, "/photo") == 0) {
@@ -1539,12 +1700,14 @@ static void telegram_polling_task(void *arg)
                     } else {
                         memset(run_result, 0, sizeof(*run_result));
                     }
-                    if (s_runtime_status.storage_ready && (espclaw_agent_loop_run_stateless(
+                    if (s_runtime_status.storage_ready && (espclaw_agent_loop_run_stateless_with_history(
                                    s_runtime_status.workspace_root,
                                    update.chat_id,
                                    update.text,
                                    false,
-                                   false,
+                                   s_operator_yolo_mode,
+                                   chat_context != NULL ? chat_context->messages : NULL,
+                                   chat_context != NULL ? chat_context->count : 0U,
                                    run_result) == 0 || run_result->ok)) {
                         copy_text(reply, ESPCLAW_TELEGRAM_REPLY_BYTES, run_result->final_text);
                     } else if (s_runtime_status.storage_ready) {
@@ -1566,6 +1729,9 @@ static void telegram_polling_task(void *arg)
                         reply
                     );
                 }
+
+                telegram_context_append_message(chat_context, "user", update.text);
+                telegram_context_append_message(chat_context, "assistant", reply);
 
                 if (telegram_send_message(config.bot_token, update.chat_id, reply) == ESP_OK) {
                     s_runtime_status.telegram_ready = true;
@@ -1617,6 +1783,9 @@ static esp_err_t maybe_start_uart_console(void)
 {
     int core = espclaw_task_policy_core_for(ESPCLAW_TASK_KIND_CONSOLE);
 
+    if (s_uart_console_started) {
+        return ESP_OK;
+    }
     esp_log_level_set("wifi", ESP_LOG_WARN);
     esp_log_level_set("esp_netif_handlers", ESP_LOG_WARN);
     if (xTaskCreatePinnedToCore(
@@ -1629,7 +1798,18 @@ static esp_err_t maybe_start_uart_console(void)
             core >= 0 ? core : tskNO_AFFINITY) != pdPASS) {
         return ESP_FAIL;
     }
+    s_uart_console_started = true;
     return ESP_OK;
+}
+
+esp_err_t espclaw_runtime_start_operator_surfaces(void)
+{
+    esp_err_t err = maybe_start_uart_console();
+
+    if (err != ESP_OK) {
+        return err;
+    }
+    return maybe_start_telegram();
 }
 
 esp_err_t espclaw_runtime_start(espclaw_board_profile_id_t profile_id, espclaw_runtime_status_t *status)
@@ -1643,7 +1823,8 @@ esp_err_t espclaw_runtime_start(espclaw_board_profile_id_t profile_id, espclaw_r
     s_time_sync_started = false;
     s_time_sync_completed = false;
     s_telegram_task_started = false;
-    s_console_yolo_mode = false;
+    s_uart_console_started = false;
+    s_operator_yolo_mode = true;
     memset(&s_sntp_config, 0, sizeof(s_sntp_config));
     telegram_config_defaults(&s_telegram_config);
     s_runtime_status.profile = espclaw_board_profile_for(profile_id);
@@ -1668,6 +1849,7 @@ esp_err_t espclaw_runtime_start(espclaw_board_profile_id_t profile_id, espclaw_r
 
     ESP_ERROR_CHECK(init_nvs_flash_store());
     load_telegram_config_from_nvs(&s_telegram_config);
+    load_operator_config_from_nvs(&s_operator_yolo_mode);
     ESP_ERROR_CHECK(init_wifi_stack());
     saved_wifi_credentials = has_saved_sta_credentials();
 
@@ -1717,9 +1899,6 @@ esp_err_t espclaw_runtime_start(espclaw_board_profile_id_t profile_id, espclaw_r
             );
             if (start_softap_onboarding(false) != ESP_OK) {
                 ESP_LOGW(TAG, "Failed to start station boot with saved Wi-Fi credentials during safe-start");
-            } else {
-                ESP_ERROR_CHECK(maybe_start_telegram());
-                ESP_ERROR_CHECK(maybe_start_uart_console());
             }
         } else if (espclaw_runtime_should_force_softap_only_boot(
                        &s_runtime_status.profile,
@@ -1731,14 +1910,10 @@ esp_err_t espclaw_runtime_start(espclaw_board_profile_id_t profile_id, espclaw_r
             );
             if (start_softap_onboarding(true) != ESP_OK) {
                 ESP_LOGW(TAG, "Failed to start AP-only onboarding during safe-start");
-            } else {
-                ESP_ERROR_CHECK(maybe_start_uart_console());
             }
         }
     } else {
         ESP_ERROR_CHECK(start_wifi_provisioning(&s_runtime_status.profile));
-        ESP_ERROR_CHECK(maybe_start_telegram());
-        ESP_ERROR_CHECK(maybe_start_uart_console());
     }
 
     if (status != NULL) {

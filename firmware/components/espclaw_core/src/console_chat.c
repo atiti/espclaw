@@ -217,6 +217,7 @@ static size_t render_help(char *buffer, size_t buffer_size)
         "/telegram token <bot_token>\n"
         "/telegram poll <seconds>\n"
         "/telegram enable | disable | clear-token\n"
+        "/yolo status | on | off\n"
         "/memory\n"
         "/reboot\n"
         "/factory-reset\n\n"
@@ -254,7 +255,7 @@ static size_t render_status(char *buffer, size_t buffer_size)
     size_t written = (size_t)snprintf(
         buffer,
         buffer_size,
-        "Board: %s\nStorage: %s (%s)\nWorkspace: %s\nWi-Fi: %s%s%s\nProvisioning: %s\nProvider: %s (%s)",
+        "Board: %s\nStorage: %s (%s)\nWorkspace: %s\nWi-Fi: %s%s%s\nProvisioning: %s\nProvider: %s (%s)\nYOLO: %s",
         status != NULL && status->profile.display_name != NULL ? status->profile.display_name : "unknown",
         status != NULL ? espclaw_storage_backend_name(status->storage_backend) : "unknown",
         status != NULL && status->storage_ready ? "ready" : "not ready",
@@ -264,7 +265,8 @@ static size_t render_status(char *buffer, size_t buffer_size)
         status != NULL && status->wifi_ssid[0] != '\0' ? status->wifi_ssid : "",
         status != NULL && status->provisioning_active ? "active" : "inactive",
         provider_id,
-        model
+        model,
+        espclaw_runtime_get_yolo_mode() ? "enabled" : "disabled"
     );
 
 #ifdef ESP_PLATFORM
@@ -513,6 +515,29 @@ int espclaw_console_run(
                 sizeof(result->final_text),
                 "Usage: /telegram status | /telegram token <bot_token> | /telegram poll <seconds> | /telegram enable | /telegram disable | /telegram clear-token"
             );
+        }
+    } else if (strcmp(command, "yolo") == 0) {
+        char subcommand[16];
+
+        if (!extract_token(&cursor, subcommand, sizeof(subcommand)) || strcmp(subcommand, "status") == 0) {
+            snprintf(
+                result->final_text,
+                sizeof(result->final_text),
+                "YOLO mode is %s.",
+                espclaw_runtime_get_yolo_mode() ? "enabled" : "disabled"
+            );
+        } else if (strcmp(subcommand, "on") == 0 || strcmp(subcommand, "enable") == 0) {
+            if (espclaw_runtime_set_yolo_mode(true, result->final_text, sizeof(result->final_text)) != 0 &&
+                result->final_text[0] == '\0') {
+                copy_text(result->final_text, sizeof(result->final_text), "Failed to enable YOLO mode.");
+            }
+        } else if (strcmp(subcommand, "off") == 0 || strcmp(subcommand, "disable") == 0) {
+            if (espclaw_runtime_set_yolo_mode(false, result->final_text, sizeof(result->final_text)) != 0 &&
+                result->final_text[0] == '\0') {
+                copy_text(result->final_text, sizeof(result->final_text), "Failed to disable YOLO mode.");
+            }
+        } else {
+            copy_text(result->final_text, sizeof(result->final_text), "Usage: /yolo status | on | off");
         }
     } else if (strcmp(command, "tool") == 0) {
         char tool_name[ESPCLAW_AGENT_TOOL_NAME_MAX + 1];

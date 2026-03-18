@@ -26,6 +26,11 @@ typedef struct {
 } espclaw_agent_tool_call_t;
 
 typedef struct {
+    char role[16];
+    char content[1024];
+} espclaw_agent_history_message_t;
+
+typedef struct {
     bool ok;
     bool used_tools;
     bool hit_iteration_limit;
@@ -58,6 +63,17 @@ int espclaw_agent_loop_run_stateless(
     const char *user_message,
     bool allow_mutations,
     bool yolo_mode,
+    espclaw_agent_run_result_t *result
+);
+
+int espclaw_agent_loop_run_stateless_with_history(
+    const char *workspace_root,
+    const char *session_id,
+    const char *user_message,
+    bool allow_mutations,
+    bool yolo_mode,
+    const espclaw_agent_history_message_t *history,
+    size_t history_count,
     espclaw_agent_run_result_t *result
 );
 

@@ -118,7 +118,7 @@ curl -s -X POST http://127.0.0.1:8080/api/auth/import-json \
 
 Credentials are stored in device auth storage (`NVS` on firmware, workspace config in the simulator) and survive normal reflashes unless that storage is explicitly erased.
 
-The local admin chat and simulator chat run with mutation-enabled tool access so the model can install Lua apps, start tasks, and emit events from the operator console. Telegram and other remote channels still keep confirmation gating for mutating tools.
+All operator chat surfaces now share one runtime-wide `YOLO mode` policy. It is enabled by default, so UART, admin chat, simulator chat, and Telegram will execute permitted tools directly instead of asking for an extra confirmation hop unless you explicitly disable it.
 The system prompt now also includes an automatic live tool inventory snapshot on every run, so the model starts with a readable capability list before it decides whether it needs a separate `tool.list` call.
 Lua and app-generation runs also get a compact Lua contract snapshot sourced from the runtime API registry, and the model can call `lua_api.list` for the authoritative `espclaw.*` function surface when generating or debugging Lua code.
 
@@ -142,6 +142,9 @@ Supported slash commands:
 - `/telegram enable`
 - `/telegram disable`
 - `/telegram clear-token`
+- `/yolo status`
+- `/yolo on`
+- `/yolo off`
 - `/tools`
 - `/tool <name> [json]`
 - `/wifi status`

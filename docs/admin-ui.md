@@ -31,7 +31,7 @@ Current routes:
 Current UI behavior:
 
 - `Send To Model` runs the iterative tool-using loop for the current session.
-- `YOLO mode` adds a stronger system instruction for trusted local operator runs, telling the model to execute permitted tools directly instead of asking for another approval hop.
+- `YOLO mode` reflects the shared runtime-wide operator policy, which is enabled by default and also applies to UART, simulator, and Telegram chat.
 - local admin chat runs with mutation-enabled tools, so the model can install Lua apps, start tasks, and emit events from the browser.
 - local admin chat can now also register and start persisted autonomous behaviors from the same tool loop.
 - `Refresh` reloads the stored transcript.

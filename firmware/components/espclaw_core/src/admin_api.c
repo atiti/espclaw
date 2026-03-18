@@ -155,6 +155,7 @@ size_t espclaw_render_admin_status_json(
     const char *provider_id,
     const char *channel_id,
     bool workspace_ready,
+    bool yolo_mode,
     const espclaw_ota_state_t *ota_state,
     char *buffer,
     size_t buffer_size
@@ -192,6 +193,7 @@ size_t espclaw_render_admin_status_json(
         "\"provisioning\":\"%s\","
         "\"storage_backend\":\"%s\","
         "\"workspace_ready\":%s,"
+        "\"yolo_mode\":%s,"
         "\"provider\":\"%s\","
         "\"channel\":\"%s\","
         "\"ota\":{"
@@ -204,6 +206,7 @@ size_t espclaw_render_admin_status_json(
         provisioning,
         storage,
         workspace_ready ? "true" : "false",
+        yolo_mode ? "true" : "false",
         provider,
         channel,
         ota_status,

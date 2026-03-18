@@ -1817,11 +1817,16 @@ static void test_telegram_agent_turns_use_stateless_loop(void)
     snprintf(path, sizeof(path), "%s/firmware/components/espclaw_core/src/runtime.c", ESPCLAW_SOURCE_DIR);
     read_text_file(path, contents, sizeof(contents));
     assert_string_contains(contents, "espclaw_agent_loop_run_stateless(", "telegram polling uses the stateless agent loop");
+    assert_string_contains(contents, "ESPCLAW_TELEGRAM_CONTEXT_MESSAGES 6", "telegram runtime keeps a small in-memory chat context");
+    assert_string_contains(contents, "telegram_context_append_message(chat_context, \"user\", update.text);", "telegram runtime stores the latest user turn in RAM");
+    assert_string_contains(contents, "telegram_context_append_message(chat_context, \"assistant\", reply);", "telegram runtime stores the latest assistant turn in RAM");
 
     snprintf(path, sizeof(path), "%s/firmware/components/espclaw_core/src/agent_loop.c", ESPCLAW_SOURCE_DIR);
     read_text_file(path, contents, sizeof(contents));
     assert_string_contains(contents, "int espclaw_agent_loop_run_stateless(", "agent loop exposes a stateless entrypoint");
+    assert_string_contains(contents, "int espclaw_agent_loop_run_stateless_with_history(", "agent loop exposes a stateless seeded-history entrypoint");
     assert_string_contains(contents, "persist_transcript,\n        false,", "stateless agent loop disables transcript persistence");
+    assert_string_contains(contents, "seed_history_messages(", "agent loop can seed transient history without workspace transcripts");
 }
 
 static void test_runtime_uses_larger_uart_console_stack(void)
@@ -2011,6 +2016,7 @@ static void test_admin_ui_asset(void)
     assert_string_contains(html, "/api/tools", "tools api wired into ui");
     assert_string_contains(html, "/api/chat/run", "chat api wired into ui");
     assert_string_contains(html, "&yolo=1", "chat yolo query wiring present");
+    assert_string_contains(html, "$('chat-yolo').checked = !!status.yolo_mode;", "chat yolo toggle follows runtime status");
     assert_string_contains(html, "/api/behaviors", "behaviors api wired into ui");
     assert_string_contains(html, "/api/behaviors/register", "behavior register api wired into ui");
     assert_string_contains(html, "/api/tasks", "tasks api wired into ui");
@@ -2104,6 +2110,7 @@ static void test_admin_api_json(void)
             "openai_compat",
             "telegram",
             true,
+            true,
             &state,
             status_json,
             sizeof(status_json)
@@ -2113,6 +2120,7 @@ static void test_admin_api_json(void)
     assert_string_contains(status_json, "\"board_profile\":\"esp32s3\"", "status board profile");
     assert_string_contains(status_json, "\"storage_backend\":\"sdcard\"", "status storage backend");
     assert_string_contains(status_json, "\"workspace_ready\":true", "status workspace flag");
+    assert_string_contains(status_json, "\"yolo_mode\":true", "status yolo flag");
     assert_string_contains(status_json, "\"status\":\"downloaded\"", "status ota state");
 
     assert_true(
@@ -3934,9 +3942,13 @@ static void test_console_chat_and_web_tools(void)
     assert_string_contains(transcript, "uart_console_write_raw(\"\\r\\n\")", "uart console emits newline before running commands");
     assert_string_contains(transcript, "Telegram polling idle: empty bot token", "runtime reports idle telegram state");
     assert_string_contains(transcript, "espclaw_runtime_set_telegram_config", "runtime exposes telegram setter");
+    assert_string_contains(transcript, "espclaw_runtime_set_yolo_mode", "runtime exposes yolo setter");
+    assert_string_contains(transcript, "load_operator_config_from_nvs(&s_operator_yolo_mode);", "runtime loads persisted yolo policy");
+    assert_string_contains(transcript, "s_operator_yolo_mode = true;", "runtime defaults yolo mode to enabled");
     assert_string_contains(transcript, "#define ESPCLAW_TELEGRAM_STACK_BYTES 16384", "telegram task stack budget is increased");
-    assert_string_contains(transcript, "response = malloc(ESPCLAW_TELEGRAM_RESPONSE_BYTES);", "telegram response buffer moves off stack");
-    assert_string_contains(transcript, "run_result = calloc(1, sizeof(*run_result));", "telegram agent result moves off stack");
+    assert_string_contains(transcript, "runtime_external_malloc(ESPCLAW_TELEGRAM_RESPONSE_BYTES)", "telegram response buffer prefers PSRAM");
+    assert_string_contains(transcript, "run_result = runtime_external_calloc(1, sizeof(*run_result));", "telegram agent result prefers PSRAM");
+    assert_string_contains(transcript, "runtime_external_malloc(1024)", "telegram photo upload scratch buffer prefers PSRAM");
     assert_string_contains(transcript, "\"espclaw_tg\",\n            ESPCLAW_TELEGRAM_STACK_BYTES,", "telegram task uses named stack budget");
     assert_string_contains(transcript, "config.crt_bundle_attach = esp_crt_bundle_attach;", "telegram send message attaches cert bundle");
     assert_string_contains(transcript, "client_config.crt_bundle_attach = esp_crt_bundle_attach;", "telegram get updates attaches cert bundle");
@@ -3949,10 +3961,34 @@ static void test_console_chat_and_web_tools(void)
     assert_string_contains(transcript, "esp_http_client_fetch_headers(client) >= 0", "telegram polling fetches headers before reads");
 
     read_text_file(
+        ESPCLAW_SOURCE_DIR "/firmware/sdkconfig.defaults.esp32",
+        transcript,
+        sizeof(transcript)
+    );
+    assert_string_contains(transcript, "CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=65536", "esp32 config reserves enough internal RAM for camera DMA");
+
+    read_text_file(
+        ESPCLAW_SOURCE_DIR "/firmware/managed_components/espressif__esp32-camera/target/esp32/ll_cam.c",
+        transcript,
+        sizeof(transcript)
+    );
+    assert_string_contains(transcript, "cam->dma_half_buffer_cnt = 3;", "esp32 camera jpeg DMA ring is reduced for live esp32cam workloads");
+    assert_string_contains(transcript, "cam->dma_node_buffer_size = 1024;", "esp32 camera jpeg DMA node size is reduced for live esp32cam workloads");
+
+    read_text_file(
         ESPCLAW_SOURCE_DIR "/firmware/components/espclaw_core/src/admin_ui.c",
         transcript,
         sizeof(transcript)
     );
+    assert_string_contains(transcript, "$('chat-yolo').checked = !!status.yolo_mode;", "admin ui syncs yolo toggle from runtime status");
+
+    read_text_file(
+        ESPCLAW_SOURCE_DIR "/firmware/components/espclaw_core/src/console_chat.c",
+        transcript,
+        sizeof(transcript)
+    );
+    assert_string_contains(transcript, "/yolo status | on | off", "console help documents yolo command");
+    assert_string_contains(transcript, "YOLO mode is %s.", "console supports yolo status command");
     assert_string_contains(transcript, "/api/telegram/config", "admin ui loads telegram config endpoint");
     assert_string_contains(transcript, "saveTelegramConfig", "admin ui exposes telegram save action");
 
@@ -3975,6 +4011,8 @@ static void test_console_chat_and_web_tools(void)
     assert_string_contains(transcript, "ESP_LOGD(TAG, \"raw Codex headers parsed status=", "raw codex header log moved to debug");
     assert_string_contains(transcript, "log_tool_call_summary(&provider_response->tool_calls[tool_index], \"model\")", "model tool calls log summary");
     assert_string_contains(transcript, "log_tool_call_summary(&tool_call, \"manual\")", "manual tool calls log summary");
+    assert_string_contains(transcript, "parser->headers_done = true;", "http client codex parser marks headers complete before body reduction");
+    assert_string_contains(transcript, "parser->status_code = status_code;", "http client codex parser preserves fetched status code");
 
     memset(&result, 0, sizeof(result));
     assert_true(
@@ -3999,6 +4037,49 @@ static void test_console_chat_and_web_tools(void)
 
     espclaw_web_set_http_adapter(NULL, NULL);
     espclaw_console_set_runtime_adapter(NULL);
+}
+
+static void test_runtime_defers_operator_surfaces_until_after_admin_start(void)
+{
+    char runtime_source[32768];
+    char main_source[4096];
+    char admin_source[16384];
+
+    read_text_file(
+        ESPCLAW_SOURCE_DIR "/firmware/components/espclaw_core/src/runtime.c",
+        runtime_source,
+        sizeof(runtime_source)
+    );
+    read_text_file(
+        ESPCLAW_SOURCE_DIR "/firmware/main/main.c",
+        main_source,
+        sizeof(main_source)
+    );
+    read_text_file(
+        ESPCLAW_SOURCE_DIR "/firmware/components/espclaw_core/src/admin_server.c",
+        admin_source,
+        sizeof(admin_source)
+    );
+
+    assert_string_contains(runtime_source, "static bool s_uart_console_started;", "runtime tracks uart console startup state");
+    assert_string_contains(runtime_source, "esp_err_t espclaw_runtime_start_operator_surfaces(void)", "runtime exposes deferred operator surface startup");
+    assert_string_contains(runtime_source, "Failed to start operator surfaces after provisioning", "provisioning path logs deferred operator surface startup failures");
+    assert_string_not_contains(runtime_source, "ESP_ERROR_CHECK(maybe_start_telegram());\n                ESP_ERROR_CHECK(maybe_start_uart_console());", "runtime no longer starts operator surfaces inside safe-start branch");
+    assert_string_not_contains(runtime_source, "ESP_ERROR_CHECK(maybe_start_telegram());\n        ESP_ERROR_CHECK(maybe_start_uart_console());", "runtime no longer starts operator surfaces directly in normal startup");
+    assert_string_contains(main_source, "if (espclaw_runtime_start_operator_surfaces() != ESP_OK) {", "main starts operator surfaces after admin startup attempt");
+    assert_string_contains(admin_source, "httpd_start failed err=0x%x", "admin server logs exact httpd_start errors");
+}
+
+static void test_embedded_codex_transport_prefers_http_client_path(void)
+{
+    char source[16384];
+
+    read_text_file(
+        ESPCLAW_SOURCE_DIR "/firmware/components/espclaw_core/src/agent_loop.c",
+        source,
+        sizeof(source)
+    );
+    assert_string_contains(source, "#if !defined(ESP_PLATFORM)\n        if (raw_codex_http_post(endpoint, profile, body, response, response_size, error_text, error_text_size) == 0) {", "embedded builds skip the raw codex transport path");
 }
 
 int main(void)
@@ -4064,6 +4145,8 @@ int main(void)
     test_board_boot_defaults_force_flash_led_low();
     test_agent_loop();
     test_console_chat_and_web_tools();
+    test_runtime_defers_operator_surfaces_until_after_admin_start();
+    test_embedded_codex_transport_prefers_http_client_path();
 
     printf("espclaw core tests passed\n");
     return 0;

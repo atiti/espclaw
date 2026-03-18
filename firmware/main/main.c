@@ -33,6 +33,9 @@ void app_main(void)
     if (espclaw_admin_server_start() != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start admin server");
     }
+    if (espclaw_runtime_start_operator_surfaces() != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start operator surfaces");
+    }
     if (espclaw_ota_manager_confirm_running(ota_message, sizeof(ota_message)) == ESP_OK) {
         ESP_LOGI(TAG, "%s", ota_message);
     } else {
@@ -51,6 +54,7 @@ void app_main(void)
         "openai_compat",
         "telegram",
         runtime_status.storage_ready,
+        espclaw_runtime_get_yolo_mode(),
         &ota_snapshot.state,
         s_status_buffer,
         sizeof(s_status_buffer)

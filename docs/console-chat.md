@@ -53,7 +53,8 @@ On firmware builds, ESPClaw starts a line-oriented console task on `UART0`.
 
 ## YOLO Mode
 
-The shared console supports a local `YOLO mode` flag.
+ESPClaw now uses one runtime-wide `YOLO mode` flag across UART, the web chat, the simulator, and Telegram.
 
-- When enabled on the local operator surface, the model is instructed to execute allowed tools directly instead of adding another approval hop.
-- This is intended for trusted local debugging, bench work, and hardware bring-up.
+- It is enabled by default.
+- When enabled, the model is instructed to execute allowed tools directly instead of adding another approval hop.
+- You can inspect or change it from the console with `/yolo status`, `/yolo on`, and `/yolo off`.
