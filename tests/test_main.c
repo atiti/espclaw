@@ -22,6 +22,7 @@
 #include "espclaw/config_render.h"
 #include "espclaw/console_chat.h"
 #include "espclaw/control_loop.h"
+#include "espclaw/context_runtime.h"
 #include "espclaw/event_watch.h"
 #include "espclaw/hardware.h"
 #include "espclaw/lua_api_registry.h"
@@ -1620,9 +1621,14 @@ static void test_tool_catalog(void)
     assert_true(espclaw_find_tool("component.list") != NULL, "component list tool exists");
     assert_true(espclaw_find_tool("component.install") != NULL, "component install tool exists");
     assert_true(espclaw_find_tool("component.install_from_file") != NULL, "component install from file tool exists");
+    assert_true(espclaw_find_tool("component.install_from_blob") != NULL, "component install from blob tool exists");
     assert_true(espclaw_find_tool("component.install_from_url") != NULL, "component install from url tool exists");
     assert_true(espclaw_find_tool("app.install_from_file") != NULL, "app install from file tool exists");
+    assert_true(espclaw_find_tool("app.install_from_blob") != NULL, "app install from blob tool exists");
     assert_true(espclaw_find_tool("app.install_from_url") != NULL, "app install from url tool exists");
+    assert_true(espclaw_find_tool("context.chunks") != NULL, "context chunks tool exists");
+    assert_true(espclaw_find_tool("context.load") != NULL, "context load tool exists");
+    assert_true(espclaw_find_tool("context.search") != NULL, "context search tool exists");
     assert_true(espclaw_find_tool("behavior.register") != NULL, "behavior register tool exists");
     assert_true(espclaw_find_tool("task.start") != NULL, "task start tool exists");
     assert_true(espclaw_find_tool("event.emit") != NULL, "event emit tool exists");
@@ -2189,6 +2195,99 @@ static void test_install_from_file_and_url(void)
         "app installed from url runs"
     );
     assert_true(strcmp(result, "ms5611-url") == 0, "app from url used installed component");
+}
+
+static void test_install_from_blob_and_context(void)
+{
+    char temp_dir[128];
+    char result[256];
+    char json[4096];
+
+    make_temp_dir(temp_dir, sizeof(temp_dir));
+    assert_true(espclaw_workspace_bootstrap(temp_dir) == 0, "workspace bootstrap for blob install and context");
+
+    assert_true(
+        espclaw_workspace_blob_begin(temp_dir, "ms_blob", "memory/ms_blob.lua", "text/x-lua") == 0,
+        "component blob begin"
+    );
+    assert_true(
+        espclaw_workspace_blob_append(
+            temp_dir,
+            "ms_blob",
+            "local M = {}\nfunction M.sample() return 998.4 end\nreturn M\n",
+            strlen("local M = {}\nfunction M.sample() return 998.4 end\nreturn M\n"),
+            NULL) == 0,
+        "component blob append"
+    );
+    assert_true(espclaw_workspace_blob_commit(temp_dir, "ms_blob", NULL, 0, NULL) == 0, "component blob commit");
+    assert_true(
+        espclaw_component_install_from_blob(
+            temp_dir,
+            "ms5611_blob_driver",
+            "MS5611 Blob Driver",
+            "sensors.ms5611_blob",
+            "Blob-installed barometric driver",
+            "1.0.0",
+            "ms_blob") == 0,
+        "component installed from blob"
+    );
+
+    assert_true(
+        espclaw_workspace_blob_begin(temp_dir, "weather_blob", "memory/weather_blob.lua", "text/x-lua") == 0,
+        "app blob begin"
+    );
+    assert_true(
+        espclaw_workspace_blob_append(
+            temp_dir,
+            "weather_blob",
+            "function handle(trigger, payload)\n  local sensor = require('sensors.ms5611_blob')\n  return string.format('pressure=%.1f', sensor.sample())\nend\n",
+            strlen("function handle(trigger, payload)\n  local sensor = require('sensors.ms5611_blob')\n  return string.format('pressure=%.1f', sensor.sample())\nend\n"),
+            NULL) == 0,
+        "app blob append"
+    );
+    assert_true(espclaw_workspace_blob_commit(temp_dir, "weather_blob", NULL, 0, NULL) == 0, "app blob commit");
+    assert_true(
+        espclaw_app_install_from_blob(
+            temp_dir,
+            "weather_blob_app",
+            "Weather Blob App",
+            "fs.read",
+            "manual",
+            "weather_blob") == 0,
+        "app installed from blob"
+    );
+    assert_true(
+        espclaw_app_run(temp_dir, "weather_blob_app", "manual", "", result, sizeof(result)) == 0,
+        "blob-installed app runs"
+    );
+    assert_true(strcmp(result, "pressure=998.4") == 0, "blob-installed app used blob-installed component");
+
+    assert_true(
+        espclaw_workspace_write_file(
+            temp_dir,
+            "memory/context.md",
+            "# Weather Notes\n"
+            "MS5611 is a high resolution barometric pressure sensor.\n"
+            "Paragliding variometers derive climb rate from pressure changes.\n"
+            "Weather station dashboards can reuse the same pressure driver.\n") == 0,
+        "context file written"
+    );
+    assert_true(
+        espclaw_context_render_chunks_json(temp_dir, "memory/context.md", 64U, json, sizeof(json)) == 0,
+        "context chunks rendered"
+    );
+    assert_string_contains(json, "\"chunk_count\":", "context chunks count reported");
+    assert_true(
+        espclaw_context_render_chunk_json(temp_dir, "memory/context.md", 0U, 96U, json, sizeof(json)) == 0,
+        "context chunk rendered"
+    );
+    assert_string_contains(json, "MS5611 is a high resolution", "context chunk contains expected text");
+    assert_true(
+        espclaw_context_search_json(temp_dir, "memory/context.md", "paragliding pressure", 96U, 2U, json, sizeof(json)) == 0,
+        "context search rendered"
+    );
+    assert_string_contains(json, "\"results\":[", "context search results array rendered");
+    assert_string_contains(json, "Paragliding variometers", "context search returned matching excerpt");
 }
 
 static void test_session_store(void)
@@ -4368,6 +4467,7 @@ int main(void)
     test_workspace_bootstrap_and_read();
     test_workspace_blob_lifecycle();
     test_install_from_file_and_url();
+    test_install_from_blob_and_context();
     test_session_store();
     test_ota_state_machine();
     test_admin_ui_asset();

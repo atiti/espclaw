@@ -61,20 +61,24 @@ curl -s -X POST 'http://127.0.0.1:8080/api/blobs/commit?blob_id=context_doc'
 
 ### Large Lua Source
 
-This first slice only solves storage. The next intended layer is:
+ESPClaw now supports install-by-reference on top of staged blobs:
 
 - `app.install_from_file`
+- `app.install_from_blob`
 - `app.install_from_url`
 - `component.install_from_file`
+- `component.install_from_blob`
 - `component.install_from_url`
 
-That now lets the model or operator upload large Lua code in pieces, commit it, and then install it from a workspace path rather than forcing all source through one JSON string.
+That lets the model or operator upload large Lua code in pieces, commit it, and then install it by file path or blob id rather than forcing all source through one JSON string.
 
 Install endpoints:
 
 - `POST /api/apps/install/from-file?app_id=<id>&source_path=<workspace_path>`
+- `POST /api/apps/install/from-blob?app_id=<id>&blob_id=<blob_id>`
 - `POST /api/apps/install/from-url?app_id=<id>&source_url=<raw_lua_url>`
 - `POST /api/components/install/from-file?component_id=<id>&module=<module_name>&source_path=<workspace_path>`
+- `POST /api/components/install/from-blob?component_id=<id>&module=<module_name>&blob_id=<blob_id>`
 - `POST /api/components/install/from-url?component_id=<id>&module=<module_name>&source_url=<raw_lua_url>`
 
 Recommended operator/model sequence for large source:
@@ -82,7 +86,7 @@ Recommended operator/model sequence for large source:
 1. `blobs/begin`
 2. `blobs/append` as many times as needed
 3. `blobs/commit`
-4. `app.install_from_file` or `component.install_from_file`
+4. `app.install_from_blob` or `component.install_from_blob`
 
 Use `*_from_url` when the source already lives at a stable raw URL and should be fetched directly into the workspace staging area.
 
@@ -90,10 +94,23 @@ Use `*_from_url` when the source already lives at a stable raw URL and should be
 
 This blob store is the right primitive for large context inputs, but large documents should still not be injected wholesale into every model run.
 
-Recommended next step:
+Chunk-aware retrieval is now available through:
+
+- `context.chunks`
+- `context.load`
+- `context.search`
+
+HTTP:
+
+- `GET /api/context/chunks?path=<workspace_path>[&chunk_bytes=<n>]`
+- `GET /api/context/load?path=<workspace_path>&chunk_index=<n>[&chunk_bytes=<n>]`
+- `GET /api/context/search?path=<workspace_path>&query=<text>[&chunk_bytes=<n>&limit=<n>]`
+
+Recommended use:
 
 - chunk and store large docs in the workspace
-- retrieve only the relevant excerpts or bounded segments for a given run
+- use `context.search` to find the right excerpt
+- use `context.load` for exact chunk retrieval
 - pass selected chunks into the prompt instead of the entire file
 
 That keeps the system memory-safe while still allowing large external context to be used deliberately.

@@ -16,6 +16,7 @@ idf_component_register(
     "src/control_loop.c"
     "src/config_render.c"
     "src/console_chat.c"
+    "src/context_runtime.c"
     "src/event_watch.c"
     "src/hardware.c"
     "src/lua_api_registry.c"

@@ -4,6 +4,8 @@
 
 - Added a generic chunked blob-transfer store with `/api/blobs/begin`, `/api/blobs/append`, `/api/blobs/commit`, and `/api/blobs/status`, so large markdown or Lua content can be streamed straight into workspace files without one large RAM-bound request body.
 - Added `app.install_from_file`, `app.install_from_url`, `component.install_from_file`, and `component.install_from_url` across runtime, tool, admin, and simulator surfaces, so chunk-uploaded or community-hosted raw Lua can be installed without forcing source inline through one tool call.
+- Added `app.install_from_blob` and `component.install_from_blob` as thin install-by-reference aliases over committed workspace blobs, so large chunk-uploaded Lua can move from staging into apps/components without an extra path-management step.
+- Added bounded `context.chunks`, `context.load`, and `context.search` surfaces across runtime, admin, and simulator flows, so large workspace markdown/docs can be searched and loaded incrementally instead of being shoved wholesale into one prompt.
 - Added first-class shareable Lua components with metadata, install/list/remove APIs, and `component.install` / `component.list` / `component.remove` model tools.
 - Added generated app-architecture guidance through `app_patterns.list` and prompt snapshots so the model defaults to `component -> app -> task/behavior -> optional event` composition instead of inventing new runtime types.
 - Workspace bootstrap now creates `components/` and `lib/` so reusable modules are available for `require(...)` without manual directory setup.

@@ -17,8 +17,10 @@ static const char *RULES[] = {
     "An event is a named signal. Use it only when producers and consumers should be decoupled.",
     "Default to component plus app. Introduce events only when multiple live consumers need the same hardware or sensor stream.",
     "If Lua source already exists in the workspace, prefer app.install_from_file or component.install_from_file over large inline source strings.",
+    "If the large source was uploaded through the chunked blob store, prefer app.install_from_blob or component.install_from_blob.",
     "If installing a community-shared raw source URL directly, prefer app.install_from_url or component.install_from_url.",
     "Use inline app.install or component.install only when the source is comfortably small for a single tool call.",
+    "For large markdown or docs in the workspace, prefer context.search and context.load over reading the entire file into one turn.",
 };
 
 static const espclaw_app_pattern_t PATTERNS[] = {

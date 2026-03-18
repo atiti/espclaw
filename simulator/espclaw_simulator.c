@@ -26,6 +26,7 @@
 #include "espclaw/board_profile.h"
 #include "espclaw/component_runtime.h"
 #include "espclaw/control_loop.h"
+#include "espclaw/context_runtime.h"
 #include "espclaw/event_watch.h"
 #include "espclaw/ota_state.h"
 #include "espclaw/provisioning.h"
@@ -815,6 +816,80 @@ static void handle_api_request(
         return;
     }
 
+    if (strcmp(method, "GET") == 0 && strcmp(path, "/api/context/chunks") == 0) {
+        char context_path[ESPCLAW_CONTEXT_PATH_MAX + 1];
+        size_t chunk_bytes = 0U;
+        char chunk_value[32];
+
+        if (!espclaw_admin_query_value(query, "path", context_path, sizeof(context_path))) {
+            espclaw_admin_render_result_json(false, "missing path query parameter", response, sizeof(response));
+            send_http_response(client_fd, 400, "Bad Request", "application/json", response);
+            return;
+        }
+        if (espclaw_admin_query_value(query, "chunk_bytes", chunk_value, sizeof(chunk_value))) {
+            chunk_bytes = (size_t)strtoul(chunk_value, NULL, 10);
+        }
+        if (espclaw_context_render_chunks_json(config->workspace_root, context_path, chunk_bytes, response, sizeof(response)) != 0) {
+            send_http_response(client_fd, 404, "Not Found", "application/json", response);
+            return;
+        }
+        send_http_response(client_fd, 200, "OK", "application/json", response);
+        return;
+    }
+
+    if (strcmp(method, "GET") == 0 && strcmp(path, "/api/context/load") == 0) {
+        char context_path[ESPCLAW_CONTEXT_PATH_MAX + 1];
+        char index_value[32];
+        char chunk_value[32];
+        size_t chunk_index;
+        size_t chunk_bytes = 0U;
+
+        if (!espclaw_admin_query_value(query, "path", context_path, sizeof(context_path)) ||
+            !espclaw_admin_query_value(query, "chunk_index", index_value, sizeof(index_value))) {
+            espclaw_admin_render_result_json(false, "missing path or chunk_index query parameter", response, sizeof(response));
+            send_http_response(client_fd, 400, "Bad Request", "application/json", response);
+            return;
+        }
+        chunk_index = (size_t)strtoul(index_value, NULL, 10);
+        if (espclaw_admin_query_value(query, "chunk_bytes", chunk_value, sizeof(chunk_value))) {
+            chunk_bytes = (size_t)strtoul(chunk_value, NULL, 10);
+        }
+        if (espclaw_context_render_chunk_json(config->workspace_root, context_path, chunk_index, chunk_bytes, response, sizeof(response)) != 0) {
+            send_http_response(client_fd, 404, "Not Found", "application/json", response);
+            return;
+        }
+        send_http_response(client_fd, 200, "OK", "application/json", response);
+        return;
+    }
+
+    if (strcmp(method, "GET") == 0 && strcmp(path, "/api/context/search") == 0) {
+        char context_path[ESPCLAW_CONTEXT_PATH_MAX + 1];
+        char query_text[ESPCLAW_CONTEXT_QUERY_MAX + 1];
+        char chunk_value[32];
+        char limit_value[32];
+        size_t chunk_bytes = 0U;
+        size_t limit = 0U;
+
+        if (!espclaw_admin_query_value(query, "path", context_path, sizeof(context_path)) ||
+            !espclaw_admin_query_value(query, "query", query_text, sizeof(query_text))) {
+            espclaw_admin_render_result_json(false, "missing path or query parameter", response, sizeof(response));
+            send_http_response(client_fd, 400, "Bad Request", "application/json", response);
+            return;
+        }
+        if (espclaw_admin_query_value(query, "chunk_bytes", chunk_value, sizeof(chunk_value))) {
+            chunk_bytes = (size_t)strtoul(chunk_value, NULL, 10);
+        }
+        if (espclaw_admin_query_value(query, "limit", limit_value, sizeof(limit_value))) {
+            limit = (size_t)strtoul(limit_value, NULL, 10);
+        }
+        if (espclaw_context_search_json(config->workspace_root, context_path, query_text, chunk_bytes, limit, response, sizeof(response)) != 0) {
+            send_http_response(client_fd, 404, "Not Found", "application/json", response);
+            return;
+        }
+        send_http_response(client_fd, 200, "OK", "application/json", response);
+        return;
+    }
+
     if (strcmp(method, "GET") == 0 && strcmp(path, "/api/monitor") == 0) {
         espclaw_system_monitor_snapshot_t snapshot;
         struct statvfs fs_stats;
@@ -934,6 +1009,40 @@ static void handle_api_request(
         }
 
         espclaw_admin_render_result_json(true, "component installed from file", response, sizeof(response));
+        send_http_response(client_fd, 200, "OK", "application/json", response);
+        return;
+    }
+
+    if (strcmp(method, "POST") == 0 && strcmp(path, "/api/components/install/from-blob") == 0) {
+        char component_id[ESPCLAW_APP_ID_MAX + 1];
+        char title[ESPCLAW_APP_TITLE_MAX + 1];
+        char module[ESPCLAW_COMPONENT_MODULE_MAX + 1];
+        char summary[ESPCLAW_COMPONENT_SUMMARY_MAX + 1];
+        char version[ESPCLAW_COMPONENT_VERSION_MAX + 1];
+        char blob_id[65];
+
+        if (!espclaw_admin_query_value(query, "component_id", component_id, sizeof(component_id)) ||
+            !espclaw_admin_query_value(query, "module", module, sizeof(module)) ||
+            !espclaw_admin_query_value(query, "blob_id", blob_id, sizeof(blob_id))) {
+            espclaw_admin_render_result_json(false, "missing component_id, module, or blob_id query parameter", response, sizeof(response));
+            send_http_response(client_fd, 400, "Bad Request", "application/json", response);
+            return;
+        }
+
+        title[0] = '\0';
+        summary[0] = '\0';
+        version[0] = '\0';
+        espclaw_admin_query_value(query, "title", title, sizeof(title));
+        espclaw_admin_query_value(query, "summary", summary, sizeof(summary));
+        espclaw_admin_query_value(query, "version", version, sizeof(version));
+
+        if (espclaw_component_install_from_blob(config->workspace_root, component_id, title, module, summary, version, blob_id) != 0) {
+            espclaw_admin_render_result_json(false, "component install from blob failed", response, sizeof(response));
+            send_http_response(client_fd, 500, "Internal Server Error", "application/json", response);
+            return;
+        }
+
+        espclaw_admin_render_result_json(true, "component installed from blob", response, sizeof(response));
         send_http_response(client_fd, 200, "OK", "application/json", response);
         return;
     }
@@ -1096,6 +1205,38 @@ static void handle_api_request(
         }
 
         espclaw_admin_render_result_json(true, "app installed from file", response, sizeof(response));
+        send_http_response(client_fd, 200, "OK", "application/json", response);
+        return;
+    }
+
+    if (strcmp(method, "POST") == 0 && strcmp(path, "/api/apps/install/from-blob") == 0) {
+        char app_id[ESPCLAW_APP_ID_MAX + 1];
+        char title[ESPCLAW_APP_TITLE_MAX + 1];
+        char permissions[256];
+        char triggers[256];
+        char blob_id[65];
+
+        if (!espclaw_admin_query_value(query, "app_id", app_id, sizeof(app_id)) ||
+            !espclaw_admin_query_value(query, "blob_id", blob_id, sizeof(blob_id))) {
+            espclaw_admin_render_result_json(false, "missing app_id or blob_id query parameter", response, sizeof(response));
+            send_http_response(client_fd, 400, "Bad Request", "application/json", response);
+            return;
+        }
+
+        title[0] = '\0';
+        permissions[0] = '\0';
+        triggers[0] = '\0';
+        espclaw_admin_query_value(query, "title", title, sizeof(title));
+        espclaw_admin_query_value(query, "permissions", permissions, sizeof(permissions));
+        espclaw_admin_query_value(query, "triggers", triggers, sizeof(triggers));
+
+        if (espclaw_app_install_from_blob(config->workspace_root, app_id, title, permissions, triggers, blob_id) != 0) {
+            espclaw_admin_render_result_json(false, "app install from blob failed", response, sizeof(response));
+            send_http_response(client_fd, 500, "Internal Server Error", "application/json", response);
+            return;
+        }
+
+        espclaw_admin_render_result_json(true, "app installed from blob", response, sizeof(response));
         send_http_response(client_fd, 200, "OK", "application/json", response);
         return;
     }

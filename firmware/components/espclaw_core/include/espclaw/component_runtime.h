@@ -35,6 +35,15 @@ int espclaw_component_install_from_file(
     const char *version,
     const char *source_path
 );
+int espclaw_component_install_from_blob(
+    const char *workspace_root,
+    const char *component_id,
+    const char *title,
+    const char *module_name,
+    const char *summary,
+    const char *version,
+    const char *blob_id
+);
 int espclaw_component_install_from_url(
     const char *workspace_root,
     const char *component_id,

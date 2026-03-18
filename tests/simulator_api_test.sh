@@ -113,9 +113,14 @@ grep -q '"name":"tool.list"' <<<"$TOOLS_JSON"
 grep -q '"name":"behavior.register"' <<<"$TOOLS_JSON"
 grep -q '"name":"component.install"' <<<"$TOOLS_JSON"
 grep -q '"name":"component.install_from_file"' <<<"$TOOLS_JSON"
+grep -q '"name":"component.install_from_blob"' <<<"$TOOLS_JSON"
 grep -q '"name":"component.install_from_url"' <<<"$TOOLS_JSON"
 grep -q '"name":"app.install_from_file"' <<<"$TOOLS_JSON"
+grep -q '"name":"app.install_from_blob"' <<<"$TOOLS_JSON"
 grep -q '"name":"app.install_from_url"' <<<"$TOOLS_JSON"
+grep -q '"name":"context.chunks"' <<<"$TOOLS_JSON"
+grep -q '"name":"context.load"' <<<"$TOOLS_JSON"
+grep -q '"name":"context.search"' <<<"$TOOLS_JSON"
 grep -q '"name":"app_patterns.list"' <<<"$TOOLS_JSON"
 
 APP_PATTERNS_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/app-patterns")"
@@ -148,6 +153,37 @@ APP_INSTALL_FROM_FILE_JSON="$(curl -sf -X POST "http://127.0.0.1:$PORT/api/apps/
 RUN_FROM_FILE_JSON="$(curl -sf -X POST "http://127.0.0.1:$PORT/api/apps/run?app_id=weather_station&trigger=manual" --data '')"
 [[ "$RUN_FROM_FILE_JSON" == *'"ok":true'* ]]
 [[ "$RUN_FROM_FILE_JSON" == *'pressure=1007.2'* ]]
+
+COMPONENT_BLOB_SOURCE=$'local M = {}\nfunction M.sample() return {pressure_mbar=997.1,temp_c=16.0} end\nreturn M\n'
+APP_BLOB_SOURCE=$'function handle(trigger, payload)\n  local sensor = require("sensors.ms5611_blob")\n  local sample = sensor.sample()\n  return string.format("pressure=%.1f", sample.pressure_mbar)\nend\n'
+curl -sf -X POST "http://127.0.0.1:$PORT/api/blobs/begin?blob_id=ms_blob&target_path=memory/ms_blob.lua&content_type=text%2Fx-lua" >/tmp/espclaw-sim-ms-blob-begin.json
+curl -sf -X POST "http://127.0.0.1:$PORT/api/blobs/append?blob_id=ms_blob" --data-binary "$COMPONENT_BLOB_SOURCE" >/tmp/espclaw-sim-ms-blob-append.json
+curl -sf -X POST "http://127.0.0.1:$PORT/api/blobs/commit?blob_id=ms_blob" >/tmp/espclaw-sim-ms-blob-commit.json
+
+COMPONENT_INSTALL_FROM_BLOB_JSON="$(curl -sf -X POST "http://127.0.0.1:$PORT/api/components/install/from-blob?component_id=ms5611_blob_driver&title=MS5611%20Blob%20Driver&module=sensors.ms5611_blob&summary=Shared%20MS5611%20driver%20from%20blob&version=0.1.0&blob_id=ms_blob")"
+[[ "$COMPONENT_INSTALL_FROM_BLOB_JSON" == *'"ok":true'* ]]
+
+curl -sf -X POST "http://127.0.0.1:$PORT/api/blobs/begin?blob_id=weather_blob&target_path=memory/weather_blob.lua&content_type=text%2Fx-lua" >/tmp/espclaw-sim-weather-blob2-begin.json
+curl -sf -X POST "http://127.0.0.1:$PORT/api/blobs/append?blob_id=weather_blob" --data-binary "$APP_BLOB_SOURCE" >/tmp/espclaw-sim-weather-blob2-append.json
+curl -sf -X POST "http://127.0.0.1:$PORT/api/blobs/commit?blob_id=weather_blob" >/tmp/espclaw-sim-weather-blob2-commit.json
+
+APP_INSTALL_FROM_BLOB_JSON="$(curl -sf -X POST "http://127.0.0.1:$PORT/api/apps/install/from-blob?app_id=weather_station_blob&title=Weather%20Station%20Blob&permissions=fs.read&triggers=manual&blob_id=weather_blob")"
+[[ "$APP_INSTALL_FROM_BLOB_JSON" == *'"ok":true'* ]]
+
+RUN_FROM_BLOB_JSON="$(curl -sf -X POST "http://127.0.0.1:$PORT/api/apps/run?app_id=weather_station_blob&trigger=manual" --data '')"
+[[ "$RUN_FROM_BLOB_JSON" == *'"ok":true'* ]]
+[[ "$RUN_FROM_BLOB_JSON" == *'pressure=997.1'* ]]
+
+CONTEXT_CHUNKS_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/context/chunks?path=memory/context.md&chunk_bytes=8")"
+[[ "$CONTEXT_CHUNKS_JSON" == *'"chunk_count":4'* ]]
+
+CONTEXT_LOAD_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/context/load?path=memory/context.md&chunk_index=1&chunk_bytes=8")"
+[[ "$CONTEXT_LOAD_JSON" == *'"chunk_index":1'* ]]
+[[ "$CONTEXT_LOAD_JSON" == *'hello'* ]]
+
+CONTEXT_SEARCH_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/context/search?path=memory/context.md&query=world&chunk_bytes=8&limit=2")"
+[[ "$CONTEXT_SEARCH_JSON" == *'"results":['* ]]
+[[ "$CONTEXT_SEARCH_JSON" == *'world'* ]]
 
 HTTP_ROOT="$WORKSPACE/http-src"
 mkdir -p "$HTTP_ROOT"

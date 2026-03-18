@@ -179,7 +179,11 @@ The workspace bootstrap creates:
 - `HEARTBEAT.md`
 - `memory/MEMORY.md`
 
-Today these markdown files are injected directly into the system prompt whenever workspace storage is ready. They are not yet selectively retrieved, summarized, or indexed semantically.
+Today these markdown files are injected directly into the system prompt whenever workspace storage is ready. Large workspace docs can now also be handled deliberately through chunk-aware context tools instead of forcing the whole file into one run:
+
+- `context.chunks`
+- `context.load`
+- `context.search`
 
 They can be updated through normal workspace writes:
 
@@ -211,28 +215,36 @@ curl -s -X POST 'http://127.0.0.1:8080/api/blobs/append?blob_id=context_doc' --d
 curl -s -X POST 'http://127.0.0.1:8080/api/blobs/commit?blob_id=context_doc'
 ```
 
-This is the foundation for future:
-
-- `app.install_from_file`
-- `app.install_from_url`
-- `component.install_from_file`
-- `component.install_from_url`
-- bounded context-file inclusion into model runs without stuffing large documents into one prompt buffer
-
 Large-source install flows now available:
 
 - `POST /api/apps/install/from-file?app_id=<id>&source_path=<workspace_path>[&title=...&permissions=...&triggers=...]`
+- `POST /api/apps/install/from-blob?app_id=<id>&blob_id=<blob_id>[&title=...&permissions=...&triggers=...]`
 - `POST /api/apps/install/from-url?app_id=<id>&source_url=<raw_lua_url>[&title=...&permissions=...&triggers=...]`
 - `POST /api/components/install/from-file?component_id=<id>&module=<module_name>&source_path=<workspace_path>[&title=...&summary=...&version=...]`
+- `POST /api/components/install/from-blob?component_id=<id>&module=<module_name>&blob_id=<blob_id>[&title=...&summary=...&version=...]`
 - `POST /api/components/install/from-url?component_id=<id>&module=<module_name>&source_url=<raw_lua_url>[&title=...&summary=...&version=...]`
 
 Recommended sequence for large Lua:
 
 1. chunk-upload source into `memory/...` or `blobs/...`
 2. commit the blob
-3. call `app.install_from_file` or `component.install_from_file`
+3. call `app.install_from_blob` or `component.install_from_blob`
 
 Use `*_from_url` for directly installable community-shared raw Lua sources.
+
+Chunk-aware context retrieval now available:
+
+- `GET /api/context/chunks?path=<workspace_path>[&chunk_bytes=<n>]`
+- `GET /api/context/load?path=<workspace_path>&chunk_index=<n>[&chunk_bytes=<n>]`
+- `GET /api/context/search?path=<workspace_path>&query=<text>[&chunk_bytes=<n>&limit=<n>]`
+
+The matching model tools are:
+
+- `context.chunks`
+- `context.load`
+- `context.search`
+
+Use them when a markdown/doc file is too large to safely inline into a single prompt turn.
 
 ## Web Search And Fetch
 

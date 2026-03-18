@@ -50,6 +50,7 @@
 #include "espclaw/behavior_runtime.h"
 #include "espclaw/board_config.h"
 #include "espclaw/component_runtime.h"
+#include "espclaw/context_runtime.h"
 #include "espclaw/event_watch.h"
 #include "espclaw/hardware.h"
 #include "espclaw/lua_api_registry.h"
@@ -1509,6 +1510,8 @@ static int load_system_prompt(
         "Use lua_api.list when generating or debugging Lua apps and you need exact espclaw.* signatures or handler rules.\n"
         "Use app_patterns.list when you need to decide whether something should be a component, app, task, behavior, or event.\n"
         "Use component.list before writing a new shared driver or helper, and use component.install when reusable code should be shared by multiple apps.\n"
+        "Use app.install_from_blob or component.install_from_blob when large Lua source was chunk-uploaded through the blob store.\n"
+        "Use context.search and context.load for large workspace docs instead of trying to stuff an entire file into one prompt turn.\n"
         "If the operator explicitly tells you to run a tool by name, call that tool in this turn instead of asking them to paste its output.\n"
         "If your previous reply said a named tool still needs to be run, or described a concrete next tool step like emit an event or check task.list, and the next operator turn is an approval like yes/ok/do it/do that/try that/go ahead, treat that as approval to call the missing tool immediately.\n"
         "If the user says this is a tool-call compliance test, says the transcript is audited, or explicitly lists tools you must use, call every applicable listed tool before replying, even if some of those tool calls fail.\n"
@@ -2617,6 +2620,36 @@ static int tool_component_install_from_file(const char *workspace_root, const ch
     return espclaw_render_components_json(workspace_root, buffer, buffer_size);
 }
 
+static int tool_component_install_from_blob(const char *workspace_root, const char *arguments_json, char *buffer, size_t buffer_size)
+{
+    char component_id[ESPCLAW_COMPONENT_ID_MAX + 1];
+    char title[ESPCLAW_COMPONENT_TITLE_MAX + 1];
+    char module[ESPCLAW_COMPONENT_MODULE_MAX + 1];
+    char summary[ESPCLAW_COMPONENT_SUMMARY_MAX + 1];
+    char version[ESPCLAW_COMPONENT_VERSION_MAX + 1];
+    char blob_id[65];
+
+    if (!json_argument_string(arguments_json, "component_id", component_id, sizeof(component_id)) ||
+        !json_argument_string(arguments_json, "module", module, sizeof(module)) ||
+        !json_argument_string(arguments_json, "blob_id", blob_id, sizeof(blob_id))) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"missing component_id, module, or blob_id\"}");
+        return -1;
+    }
+
+    title[0] = '\0';
+    summary[0] = '\0';
+    version[0] = '\0';
+    (void)json_argument_string(arguments_json, "title", title, sizeof(title));
+    (void)json_argument_string(arguments_json, "summary", summary, sizeof(summary));
+    (void)json_argument_string(arguments_json, "version", version, sizeof(version));
+
+    if (espclaw_component_install_from_blob(workspace_root, component_id, title, module, summary, version, blob_id) != 0) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"component install from blob failed\"}");
+        return -1;
+    }
+    return espclaw_render_components_json(workspace_root, buffer, buffer_size);
+}
+
 static int tool_component_install_from_url(const char *workspace_root, const char *arguments_json, char *buffer, size_t buffer_size)
 {
     char component_id[ESPCLAW_COMPONENT_ID_MAX + 1];
@@ -2675,6 +2708,67 @@ static int tool_web_search(const char *arguments_json, char *buffer, size_t buff
         return -1;
     }
     return 0;
+}
+
+static int tool_context_chunks(const char *workspace_root, const char *arguments_json, char *buffer, size_t buffer_size)
+{
+    char path[ESPCLAW_CONTEXT_PATH_MAX + 1];
+    int chunk_bytes = 0;
+
+    if (!json_argument_string_any(arguments_json, (const char *[]){"path", "source_path"}, 2, path, sizeof(path))) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"missing path\"}");
+        return -1;
+    }
+    (void)json_argument_int(arguments_json, "chunk_bytes", &chunk_bytes);
+    return espclaw_context_render_chunks_json(workspace_root, path, (size_t)(chunk_bytes > 0 ? chunk_bytes : 0), buffer, buffer_size);
+}
+
+static int tool_context_load(const char *workspace_root, const char *arguments_json, char *buffer, size_t buffer_size)
+{
+    char path[ESPCLAW_CONTEXT_PATH_MAX + 1];
+    int chunk_index = -1;
+    int chunk_bytes = 0;
+
+    if (!json_argument_string_any(arguments_json, (const char *[]){"path", "source_path"}, 2, path, sizeof(path)) ||
+        !json_argument_int(arguments_json, "chunk_index", &chunk_index) ||
+        chunk_index < 0) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"missing path or chunk_index\"}");
+        return -1;
+    }
+    (void)json_argument_int(arguments_json, "chunk_bytes", &chunk_bytes);
+    return espclaw_context_render_chunk_json(
+        workspace_root,
+        path,
+        (size_t)chunk_index,
+        (size_t)(chunk_bytes > 0 ? chunk_bytes : 0),
+        buffer,
+        buffer_size
+    );
+}
+
+static int tool_context_search(const char *workspace_root, const char *arguments_json, char *buffer, size_t buffer_size)
+{
+    char path[ESPCLAW_CONTEXT_PATH_MAX + 1];
+    char query[ESPCLAW_CONTEXT_QUERY_MAX + 1];
+    int chunk_bytes = 0;
+    int limit = 0;
+
+    if (!json_argument_string_any(arguments_json, (const char *[]){"path", "source_path"}, 2, path, sizeof(path)) ||
+        !json_argument_string(arguments_json, "query", query, sizeof(query))) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"missing path or query\"}");
+        return -1;
+    }
+    (void)json_argument_int(arguments_json, "chunk_bytes", &chunk_bytes);
+    (void)json_argument_int(arguments_json, "limit", &limit);
+    return espclaw_context_search_json(
+        workspace_root,
+        path,
+        query,
+        (size_t)(chunk_bytes > 0 ? chunk_bytes : 0),
+        (size_t)(limit > 0 ? limit : 0),
+        buffer,
+        buffer_size
+    );
 }
 
 static int tool_web_fetch(const char *workspace_root, const char *arguments_json, char *buffer, size_t buffer_size)
@@ -3107,6 +3201,61 @@ static int tool_app_install_from_file(const char *workspace_root, const char *ar
     }
     if (espclaw_app_install_from_file(workspace_root, app_id, title, permissions, triggers, source_path) != 0) {
         snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"failed to install app from file\"}");
+        return -1;
+    }
+    if (espclaw_app_run(workspace_root, app_id, "manual", "", result, sizeof(result)) != 0) {
+        snprintf(buffer, buffer_size, "{\"ok\":true,\"app_id\":\"%s\",\"saved\":true,\"validated\":false}", app_id);
+        return 0;
+    }
+
+    snprintf(buffer, buffer_size, "{\"ok\":true,\"app_id\":\"%s\",\"saved\":true,\"validated\":true,\"result\":", app_id);
+    append_escaped_json(buffer, buffer_size, strlen(buffer), result);
+    append_text_segment(buffer, buffer_size, "}");
+    return 0;
+}
+
+static int tool_app_install_from_blob(const char *workspace_root, const char *arguments_json, char *buffer, size_t buffer_size)
+{
+    char app_id[ESPCLAW_APP_ID_MAX + 1];
+    char raw_name[ESPCLAW_APP_TITLE_MAX + 1];
+    char title[ESPCLAW_APP_TITLE_MAX + 1];
+    char permissions[256];
+    char triggers[128];
+    char blob_id[65];
+    char result[1024];
+
+    raw_name[0] = '\0';
+    if (!json_argument_string_any(arguments_json, (const char *[]){"app_id", "name", "title"}, 3, raw_name, sizeof(raw_name))) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"missing app_id\"}");
+        return -1;
+    }
+    if (!espclaw_app_id_is_valid(raw_name)) {
+        if (!normalize_app_id_text(raw_name, app_id, sizeof(app_id))) {
+            snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"invalid app_id\"}");
+            return -1;
+        }
+    } else {
+        copy_text(app_id, sizeof(app_id), raw_name);
+    }
+    if (!json_argument_string(arguments_json, "blob_id", blob_id, sizeof(blob_id))) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"missing blob_id\"}");
+        return -1;
+    }
+    if (!json_argument_string_any(arguments_json, (const char *[]){"title", "name", "app_id"}, 3, title, sizeof(title))) {
+        copy_text(title, sizeof(title), raw_name);
+    }
+    if (!json_argument_string_any(arguments_json, (const char *[]){"permissions_csv", "permissions"}, 2, permissions, sizeof(permissions))) {
+        copy_text(
+            permissions,
+            sizeof(permissions),
+            "fs.read,fs.write,gpio.read,gpio.write,pwm.write,adc.read,i2c.read,i2c.write,uart.read,uart.write,camera.capture,temperature.read,imu.read,buzzer.play,ppm.write,task.control"
+        );
+    }
+    if (!json_argument_string_any(arguments_json, (const char *[]){"triggers_csv", "triggers"}, 2, triggers, sizeof(triggers))) {
+        copy_text(triggers, sizeof(triggers), "manual,boot,timer,uart,sensor");
+    }
+    if (espclaw_app_install_from_blob(workspace_root, app_id, title, permissions, triggers, blob_id) != 0) {
+        snprintf(buffer, buffer_size, "{\"ok\":false,\"error\":\"failed to install app from blob\"}");
         return -1;
     }
     if (espclaw_app_run(workspace_root, app_id, "manual", "", result, sizeof(result)) != 0) {
@@ -4070,6 +4219,9 @@ static int tool_execute(
     if (strcmp(tool_call->name, "app.install_from_file") == 0) {
         return tool_app_install_from_file(workspace_root, tool_call->arguments_json, buffer, buffer_size);
     }
+    if (strcmp(tool_call->name, "app.install_from_blob") == 0) {
+        return tool_app_install_from_blob(workspace_root, tool_call->arguments_json, buffer, buffer_size);
+    }
     if (strcmp(tool_call->name, "app.install_from_url") == 0) {
         return tool_app_install_from_url(workspace_root, tool_call->arguments_json, buffer, buffer_size);
     }
@@ -4079,8 +4231,20 @@ static int tool_execute(
     if (strcmp(tool_call->name, "component.install_from_file") == 0) {
         return tool_component_install_from_file(workspace_root, tool_call->arguments_json, buffer, buffer_size);
     }
+    if (strcmp(tool_call->name, "component.install_from_blob") == 0) {
+        return tool_component_install_from_blob(workspace_root, tool_call->arguments_json, buffer, buffer_size);
+    }
     if (strcmp(tool_call->name, "component.install_from_url") == 0) {
         return tool_component_install_from_url(workspace_root, tool_call->arguments_json, buffer, buffer_size);
+    }
+    if (strcmp(tool_call->name, "context.chunks") == 0) {
+        return tool_context_chunks(workspace_root, tool_call->arguments_json, buffer, buffer_size);
+    }
+    if (strcmp(tool_call->name, "context.load") == 0) {
+        return tool_context_load(workspace_root, tool_call->arguments_json, buffer, buffer_size);
+    }
+    if (strcmp(tool_call->name, "context.search") == 0) {
+        return tool_context_search(workspace_root, tool_call->arguments_json, buffer, buffer_size);
     }
     if (strcmp(tool_call->name, "app.remove") == 0) {
         return tool_app_remove(workspace_root, tool_call->arguments_json, buffer, buffer_size);

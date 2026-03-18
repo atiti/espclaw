@@ -1037,6 +1037,35 @@ int espclaw_app_install_from_file(
     return copy_file_contents(source_absolute_path, target_absolute_path);
 }
 
+int espclaw_app_install_from_blob(
+    const char *workspace_root,
+    const char *app_id,
+    const char *title,
+    const char *permissions_csv,
+    const char *triggers_csv,
+    const char *blob_id
+)
+{
+    espclaw_workspace_blob_status_t status;
+
+    if (workspace_root == NULL || blob_id == NULL || blob_id[0] == '\0') {
+        return -1;
+    }
+    if (espclaw_workspace_blob_status(workspace_root, blob_id, &status) != 0 ||
+        status.stage != ESPCLAW_WORKSPACE_BLOB_STAGE_COMMITTED ||
+        status.target_path[0] == '\0') {
+        return -1;
+    }
+    return espclaw_app_install_from_file(
+        workspace_root,
+        app_id,
+        title,
+        permissions_csv,
+        triggers_csv,
+        status.target_path
+    );
+}
+
 int espclaw_app_install_from_url(
     const char *workspace_root,
     const char *app_id,

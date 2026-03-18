@@ -37,6 +37,7 @@ add_library(
   firmware/components/espclaw_core/src/channel.c
   firmware/components/espclaw_core/src/component_runtime.c
   firmware/components/espclaw_core/src/control_loop.c
+  firmware/components/espclaw_core/src/context_runtime.c
   firmware/components/espclaw_core/src/config_render.c
   firmware/components/espclaw_core/src/console_chat.c
   firmware/components/espclaw_core/src/event_watch.c
