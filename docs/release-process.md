@@ -24,6 +24,13 @@ Each firmware bundle should include:
 - `SHA256SUMS.txt`
 
 The browser flasher at `espclaw.dev` consumes those published `esp-web-tools` manifests directly from the latest GitHub release.
+The public site itself is served from Cloudflare Pages.
+
+When the site shell or WebAssembly browser runtime changes, rebuild and deploy it with:
+
+```bash
+./scripts/deploy_site_cloudflare.sh
+```
 
 ## Preparing A Release
 

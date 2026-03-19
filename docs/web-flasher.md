@@ -10,7 +10,7 @@ It is designed to do three things well:
 
 ## How It Works
 
-The site is a static GitHub Pages app.
+The site is a static site deployed to Cloudflare Pages.
 
 At runtime it:
 
@@ -21,6 +21,14 @@ At runtime it:
    - `esp32s3`
 4. links the corresponding release zip bundle for manual flashing
 5. exposes an experimental browser lab that runs the real ESPClaw C runtime compiled to WebAssembly and can use WebLLM or an OpenAI-compatible endpoint for the agent surface
+
+The repo also contains a GitHub Actions site workflow that builds and validates this bundle on every push. That workflow is a build check, not the live host serving `espclaw.dev`.
+
+Manual live deploys use:
+
+```bash
+./scripts/deploy_site_cloudflare.sh
+```
 
 The release workflow publishes:
 

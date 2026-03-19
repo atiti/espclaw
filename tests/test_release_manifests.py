@@ -13,9 +13,19 @@ if str(ROOT) not in sys.path:
 from scripts.generate_release_manifests import build_manifest, build_release_entry, load_flasher_args
 
 
+def sample_flasher_args(chip: str) -> dict:
+    return {
+        "extra_esptool_args": {"chip": chip},
+        "bootloader": {"offset": "0x1000"},
+        "partition-table": {"offset": "0x8000"},
+        "otadata": {"offset": "0xe000"},
+        "app": {"offset": "0x10000"},
+    }
+
+
 class ReleaseManifestTests(unittest.TestCase):
     def test_build_manifest_esp32_release_urls(self) -> None:
-        flasher_args = load_flasher_args(ROOT / "firmware" / "build-esp32" / "flasher_args.json")
+        flasher_args = sample_flasher_args("esp32")
         manifest = build_manifest("atiti/espclaw", "v0.1.0", "esp32", flasher_args)
         self.assertEqual(manifest["name"], "ESPClaw")
         self.assertEqual(manifest["version"], "v0.1.0")
@@ -32,7 +42,7 @@ class ReleaseManifestTests(unittest.TestCase):
         self.assertEqual(entry["manifest_asset"], "esp-web-tools-manifest-esp32s3.json")
 
     def test_manifest_and_entry_are_json_serializable(self) -> None:
-        flasher_args = load_flasher_args(ROOT / "firmware" / "build-esp32s3" / "flasher_args.json")
+        flasher_args = sample_flasher_args("esp32s3")
         manifest = build_manifest("atiti/espclaw", "v9.9.9", "esp32s3", flasher_args)
         entry = build_release_entry("v9.9.9", "esp32s3", flasher_args)
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -42,6 +52,13 @@ class ReleaseManifestTests(unittest.TestCase):
             entry_path.write_text(json.dumps(entry, indent=2))
             self.assertIn("ESP32-S3", manifest_path.read_text())
             self.assertIn("esp-web-tools-manifest-esp32s3.json", entry_path.read_text())
+
+    def test_load_flasher_args_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "flasher_args.json"
+            expected = sample_flasher_args("esp32")
+            path.write_text(json.dumps(expected), encoding="utf-8")
+            self.assertEqual(load_flasher_args(path), expected)
 
     def test_site_redirects_www_to_apex(self) -> None:
         html = (ROOT / "site" / "index.html").read_text(encoding="utf-8")

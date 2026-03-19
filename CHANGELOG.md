@@ -4,6 +4,9 @@
 
 - Rebuilt `espclaw.dev` into a proper public landing page with project framing, capabilities, release-aware browser flashing, docs links, and a browser lab backed by the real ESPClaw C runtime compiled to WebAssembly.
 - Added an Emscripten-backed browser-runtime build plus a Pages workflow step that compiles `espclaw_core` into `site/wasm/espclaw-browser-runtime.{js,wasm}` before deployment, so the web lab exercises the real runtime/tool stack instead of a fake JavaScript kernel.
+- Clarified that the public `espclaw.dev` site is served through Cloudflare Pages, while the repo `pages.yml` workflow is used to build and validate the static site + WebAssembly bundle.
+- Fixed the host CI release-manifest tests so they no longer assume prebuilt `firmware/build-*` directories exist inside the generic host job.
+- Added `scripts/deploy_site_cloudflare.sh` as the manual live deploy entrypoint for the static site and WebAssembly browser lab.
 - Added a bounded in-memory device log buffer with `GET /api/logs` and the read-only `system.logs` tool so operators and the on-device model can inspect recent runtime logs without a serial console.
 - Strengthened the agent’s execution-choice contract and few-shot architecture guidance so it chooses between direct tool sequences, reusable apps, live tasks, persisted behaviors, and shared components more reliably without relying on brittle phrase-specific command rules.
 - Added execution-shape corrective retries for requests like “create a Lua task … then run it,” so the runtime now pushes the model toward the full `app.install` plus `task.start` or `behavior.register` sequence instead of accepting partial hardware narration.
