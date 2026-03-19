@@ -131,6 +131,8 @@ APP_PATTERNS_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/app-patterns")"
 
 APP_PATTERNS_MD="$(curl -sf "http://127.0.0.1:$PORT/api/app-patterns.md")"
 [[ "$APP_PATTERNS_MD" == *'# App Patterns'* ]]
+[[ "$APP_PATTERNS_MD" == *'## Execution Examples'* ]]
+[[ "$APP_PATTERNS_MD" == *'app.install, then task.start'* ]]
 
 COMPONENT_INSTALL_JSON="$(curl -sf -X POST "http://127.0.0.1:$PORT/api/components/install" \
   -H 'Content-Type: application/json' \

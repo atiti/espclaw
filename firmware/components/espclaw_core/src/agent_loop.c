@@ -1034,6 +1034,79 @@ static bool user_message_requests_app_install(const char *user_message)
            contains_case_insensitive_text(user_message, "update");
 }
 
+static bool user_message_contains_creation_verb(const char *user_message)
+{
+    if (user_message == NULL || user_message[0] == '\0') {
+        return false;
+    }
+
+    return contains_case_insensitive_text(user_message, "create") ||
+           contains_case_insensitive_text(user_message, "make") ||
+           contains_case_insensitive_text(user_message, "build") ||
+           contains_case_insensitive_text(user_message, "generate") ||
+           contains_case_insensitive_text(user_message, "write") ||
+           contains_case_insensitive_text(user_message, "install") ||
+           contains_case_insensitive_text(user_message, "update");
+}
+
+static bool user_message_requests_task_artifact(const char *user_message)
+{
+    if (!user_message_contains_creation_verb(user_message)) {
+        return false;
+    }
+
+    return contains_case_insensitive_text(user_message, "task") ||
+           contains_case_insensitive_text(user_message, "background");
+}
+
+static bool user_message_requests_behavior_artifact(const char *user_message)
+{
+    if (user_message == NULL || user_message[0] == '\0') {
+        return false;
+    }
+    if (user_message_contains_creation_verb(user_message) &&
+        contains_case_insensitive_text(user_message, "behavior")) {
+        return true;
+    }
+
+    return user_message_contains_creation_verb(user_message) &&
+           (contains_case_insensitive_text(user_message, "autostart") ||
+            contains_case_insensitive_text(user_message, "survive reboot") ||
+            contains_case_insensitive_text(user_message, "across reboot") ||
+            contains_case_insensitive_text(user_message, "on boot") ||
+            contains_case_insensitive_text(user_message, "persist"));
+}
+
+static bool user_message_requests_reusable_logic_artifact(const char *user_message)
+{
+    if (!user_message_contains_creation_verb(user_message)) {
+        return false;
+    }
+
+    return contains_case_insensitive_text(user_message, "lua") ||
+           contains_case_insensitive_text(user_message, "script") ||
+           contains_case_insensitive_text(user_message, "app") ||
+           user_message_requests_task_artifact(user_message) ||
+           user_message_requests_behavior_artifact(user_message);
+}
+
+static bool user_message_requests_run_after_creation(const char *user_message)
+{
+    if (user_message == NULL || user_message[0] == '\0') {
+        return false;
+    }
+
+    return contains_case_insensitive_text(user_message, "then run") ||
+           contains_case_insensitive_text(user_message, "then start") ||
+           contains_case_insensitive_text(user_message, "and run it") ||
+           contains_case_insensitive_text(user_message, "and start it") ||
+           contains_case_insensitive_text(user_message, "run it") ||
+           contains_case_insensitive_text(user_message, "start it") ||
+           contains_case_insensitive_text(user_message, "run now") ||
+           contains_case_insensitive_text(user_message, "start now") ||
+           contains_case_insensitive_text(user_message, "launch it");
+}
+
 static bool user_message_requests_web_search_and_fetch(const char *user_message)
 {
     bool wants_search;
@@ -1316,6 +1389,82 @@ static int build_web_search_fetch_retry_request_body(
     return status;
 }
 
+static int build_execution_choice_retry_request_body(
+    const espclaw_auth_profile_t *profile,
+    const char *workspace_root,
+    const char *session_id,
+    const char *instructions,
+    const char *assistant_reply,
+    bool need_app_install,
+    bool need_task_start,
+    bool need_behavior_register,
+    char *buffer,
+    size_t buffer_size,
+    size_t history_max
+)
+{
+    char retry_user_message[640];
+    espclaw_history_message_t *history = NULL;
+    size_t history_count = 0;
+    size_t used = 0;
+    int status;
+
+    if (profile == NULL || instructions == NULL || buffer == NULL || buffer_size == 0 || history_max == 0) {
+        return -1;
+    }
+
+    used += (size_t)snprintf(
+        retry_user_message + used,
+        sizeof(retry_user_message) - used,
+        "This request asked for a specific execution shape. "
+    );
+    if (need_app_install) {
+        used += (size_t)snprintf(
+            retry_user_message + used,
+            sizeof(retry_user_message) - used,
+            "You still need app.install"
+        );
+    }
+    if (need_task_start) {
+        used += (size_t)snprintf(
+            retry_user_message + used,
+            sizeof(retry_user_message) - used,
+            "%s task.start",
+            need_app_install ? " and" : "You still need"
+        );
+    }
+    if (need_behavior_register) {
+        used += (size_t)snprintf(
+            retry_user_message + used,
+            sizeof(retry_user_message) - used,
+            "%s behavior.register",
+            (need_app_install || need_task_start) ? " and" : "You still need"
+        );
+    }
+    used += (size_t)snprintf(
+        retry_user_message + used,
+        sizeof(retry_user_message) - used,
+        " in this run. Choose the right execution structure: one-shot action now => direct tool calls; repeated or timed action now => perform the full sequence; reusable logic => app.install; run reusable logic now in the background => task.start after app.install; persist or autostart it => behavior.register after app.install. Call the missing tool%s now in the right order, then answer concisely with the actual result.",
+        (need_app_install + need_task_start + need_behavior_register) == 1 ? "" : "s"
+    );
+
+    history = (espclaw_history_message_t *)agent_calloc(history_max, sizeof(*history));
+    if (history == NULL) {
+        return -1;
+    }
+
+    if (workspace_root != NULL && workspace_root[0] != '\0') {
+        load_history(workspace_root, session_id, history, history_max, &history_count);
+    }
+    if (assistant_reply != NULL && assistant_reply[0] != '\0') {
+        history_append_message(history, history_max, &history_count, "assistant", assistant_reply);
+    }
+    history_append_message(history, history_max, &history_count, "user", retry_user_message);
+    status = build_initial_request_body(profile, instructions, history, history_count, buffer, buffer_size);
+    free(history);
+    return status;
+}
+
 static int build_explicit_tool_retry_request_body(
     const espclaw_auth_profile_t *profile,
     const char *workspace_root,
@@ -1513,6 +1662,8 @@ static int load_system_prompt(
         "Use app.install_from_blob or component.install_from_blob when large Lua source was chunk-uploaded through the blob store.\n"
         "Use app.install_from_url or component.install_from_manifest for community-shared artifacts instead of pasting large inline code.\n"
         "Use context.search, context.select, context.summarize, and context.load for large workspace docs instead of trying to stuff an entire file into one prompt turn.\n"
+        "Choose the execution shape semantically: one-shot action now => direct tool calls; repeated or timed behavior requested now => execute the full sequence; reusable logic => app.install; run reusable logic now in the background => task.start after app.install; persist or autostart reusable logic => behavior.register after app.install.\n"
+        "Do not collapse a repeated or timed request into a single hardware write, and do not answer with hardware narration when the user asked you to create runnable logic.\n"
         "If the operator explicitly tells you to run a tool by name, call that tool in this turn instead of asking them to paste its output.\n"
         "If your previous reply said a named tool still needs to be run, or described a concrete next tool step like emit an event or check task.list, and the next operator turn is an approval like yes/ok/do it/do that/try that/go ahead, treat that as approval to call the missing tool immediately.\n"
         "If the user says this is a tool-call compliance test, says the transcript is audited, or explicitly lists tools you must use, call every applicable listed tool before replying, even if some of those tool calls fail.\n"
@@ -6392,9 +6543,18 @@ static int espclaw_agent_loop_run_with_options(
     size_t history_count = 0;
     unsigned int iteration = 0;
     size_t tool_result_stride = 0;
-    bool enforce_app_install = user_message_requests_app_install(user_message);
-    bool saw_app_install_tool = false;
+    bool enforce_reusable_app_install = user_message_requests_reusable_logic_artifact(user_message);
+    bool enforce_task_start = user_message_requests_task_artifact(user_message) &&
+                              user_message_requests_run_after_creation(user_message);
+    bool enforce_behavior_register = user_message_requests_behavior_artifact(user_message);
+    bool enforce_app_install = user_message_requests_app_install(user_message) &&
+                               !enforce_task_start &&
+                               !enforce_behavior_register;
+    bool saw_app_install_success = false;
+    bool saw_task_start_success = false;
+    bool saw_behavior_register_success = false;
     unsigned int app_install_retry_count = 0;
+    unsigned int execution_choice_retry_count = 0;
     bool enforce_web_search_fetch = user_message_requests_web_search_and_fetch(user_message);
     bool saw_web_search_success = false;
     bool saw_web_fetch_success = false;
@@ -6616,6 +6776,10 @@ static int espclaw_agent_loop_run_with_options(
         result->iterations = iteration;
 
         if (!has_tools) {
+            bool need_execution_app_install = enforce_reusable_app_install && !saw_app_install_success;
+            bool need_execution_task_start = enforce_task_start && !saw_task_start_success;
+            bool need_execution_behavior_register = enforce_behavior_register && !saw_behavior_register_success;
+
             if (enforce_web_search_fetch &&
                 (!saw_web_search_success || !saw_web_fetch_success) &&
                 web_search_fetch_retry_count == 0) {
@@ -6701,7 +6865,43 @@ static int espclaw_agent_loop_run_with_options(
                     continue;
                 }
             }
-            if (enforce_app_install && !saw_app_install_tool && app_install_retry_count == 0) {
+            if ((need_execution_app_install || need_execution_task_start || need_execution_behavior_register) &&
+                execution_choice_retry_count < 2U) {
+                request_body = (char *)agent_calloc(1, runtime_budget.agent_request_buffer_max);
+                if (request_body == NULL) {
+                    free(instructions);
+                    free(codex_items_json);
+                    free(history);
+                    free(response_body);
+                    free_embedded_auth_profile(profile);
+                    copy_text(result->final_text, sizeof(result->final_text), "Out of memory retrying execution-choice request.");
+                    return -1;
+                }
+                if (build_execution_choice_retry_request_body(
+                        profile,
+                        workspace_root,
+                        session_id,
+                        instructions,
+                        result->final_text,
+                        need_execution_app_install,
+                        need_execution_task_start,
+                        need_execution_behavior_register,
+                        request_body,
+                        runtime_budget.agent_request_buffer_max,
+                        runtime_budget.agent_history_max) != 0) {
+                    free(instructions);
+                    free(codex_items_json);
+                    free(history);
+                    free(request_body);
+                    free(response_body);
+                    free_embedded_auth_profile(profile);
+                    copy_text(result->final_text, sizeof(result->final_text), "Failed to retry the execution-choice request.");
+                    return -1;
+                }
+                execution_choice_retry_count++;
+                continue;
+            }
+            if (enforce_app_install && !saw_app_install_success && app_install_retry_count == 0) {
                 request_body = (char *)agent_calloc(1, runtime_budget.agent_request_buffer_max);
                 if (request_body == NULL) {
                     free(instructions);
@@ -6799,9 +6999,6 @@ static int espclaw_agent_loop_run_with_options(
             char *tool_result_buffer = tool_result_at(tool_results, tool_result_stride, tool_index);
             size_t required_index;
 
-            if (strcmp(provider_response->tool_calls[tool_index].name, "app.install") == 0) {
-                saw_app_install_tool = true;
-            }
             for (required_index = 0; required_index < explicit_required_tool_count; ++required_index) {
                 if (strcmp(provider_response->tool_calls[tool_index].name, explicit_required_tools[required_index]) == 0) {
                     explicit_required_tool_called[required_index] = true;
@@ -6824,6 +7021,18 @@ static int espclaw_agent_loop_run_with_options(
             if (strcmp(provider_response->tool_calls[tool_index].name, "web.fetch") == 0 &&
                 tool_result_reports_success(tool_result_buffer)) {
                 saw_web_fetch_success = true;
+            }
+            if (strcmp(provider_response->tool_calls[tool_index].name, "app.install") == 0 &&
+                tool_result_reports_success(tool_result_buffer)) {
+                saw_app_install_success = true;
+            }
+            if (strcmp(provider_response->tool_calls[tool_index].name, "task.start") == 0 &&
+                tool_result_reports_success(tool_result_buffer)) {
+                saw_task_start_success = true;
+            }
+            if (strcmp(provider_response->tool_calls[tool_index].name, "behavior.register") == 0 &&
+                tool_result_reports_success(tool_result_buffer)) {
+                saw_behavior_register_success = true;
             }
             if (tool_media.active && media_count < ESPCLAW_AGENT_MEDIA_MAX) {
                 media_refs[media_count++] = tool_media;
@@ -6887,7 +7096,58 @@ static int espclaw_agent_loop_run_with_options(
             continue;
         }
 
-        if (enforce_app_install && !saw_app_install_tool && app_install_retry_count == 0) {
+        if (((enforce_reusable_app_install && !saw_app_install_success) ||
+             (enforce_task_start && !saw_task_start_success) ||
+             (enforce_behavior_register && !saw_behavior_register_success)) &&
+            execution_choice_retry_count < 2U) {
+            request_body = (char *)agent_calloc(1, runtime_budget.agent_request_buffer_max);
+            if (request_body == NULL) {
+                free(media_refs);
+                free(tool_results);
+                free(provider_response);
+                free(instructions);
+                free(codex_items_json);
+                free(history);
+                free(response_body);
+                free_embedded_auth_profile(profile);
+                copy_text(result->final_text, sizeof(result->final_text), "Out of memory retrying execution-choice request.");
+                return -1;
+            }
+            if (build_execution_choice_retry_request_body(
+                    profile,
+                    workspace_root,
+                    session_id,
+                    instructions,
+                    NULL,
+                    enforce_reusable_app_install && !saw_app_install_success,
+                    enforce_task_start && !saw_task_start_success,
+                    enforce_behavior_register && !saw_behavior_register_success,
+                    request_body,
+                    runtime_budget.agent_request_buffer_max,
+                    runtime_budget.agent_history_max) != 0) {
+                free(media_refs);
+                free(tool_results);
+                free(provider_response);
+                free(instructions);
+                free(codex_items_json);
+                free(history);
+                free(request_body);
+                free(response_body);
+                free_embedded_auth_profile(profile);
+                copy_text(result->final_text, sizeof(result->final_text), "Failed to retry the execution-choice request.");
+                return -1;
+            }
+            execution_choice_retry_count++;
+            free(media_refs);
+            free(tool_results);
+            free(provider_response);
+            media_refs = NULL;
+            tool_results = NULL;
+            provider_response = NULL;
+            continue;
+        }
+
+        if (enforce_app_install && !saw_app_install_success && app_install_retry_count == 0) {
             request_body = (char *)agent_calloc(1, runtime_budget.agent_request_buffer_max);
             if (request_body == NULL) {
                 free(media_refs);

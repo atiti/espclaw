@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Strengthened the agent’s execution-choice contract and few-shot architecture guidance so it chooses between direct tool sequences, reusable apps, live tasks, persisted behaviors, and shared components more reliably without relying on brittle phrase-specific command rules.
+- Added execution-shape corrective retries for requests like “create a Lua task … then run it,” so the runtime now pushes the model toward the full `app.install` plus `task.start` or `behavior.register` sequence instead of accepting partial hardware narration.
 - Added canonical host enforcement on the web flasher so `www.espclaw.dev` immediately redirects to `https://espclaw.dev/`, plus a release-site regression test that keeps the apex redirect behavior in place.
 - Added the public open-source repo scaffolding: MIT license, contributing guide, security policy, code of conduct, support/security/release docs, issue/PR templates, code owners, and GitHub Actions for CI plus tagged release artifact publishing.
 - Fixed GitHub Actions host/release jobs to bootstrap ESP-IDF-managed components before host builds and made ESP-IDF cache keys depend on the dependency lock plus sdkconfig defaults, so fresh CI runners no longer fail the host build just because `managed_components/` was never populated locally.

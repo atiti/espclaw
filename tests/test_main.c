@@ -285,6 +285,7 @@ static int confirmation_http_adapter(
     assert_string_contains(body, "\"store\":false", "agent loop sends store=false");
     assert_string_contains(body, "\"stream\":true", "agent loop sends stream=true for codex");
     assert_string_contains(body, "Tool Inventory Snapshot", "system prompt includes tool inventory snapshot");
+    assert_string_contains(body, "Choose the execution shape semantically", "system prompt includes execution choice contract");
     assert_string_contains(body, "hardware.list", "system prompt includes hardware tool");
     assert_string_contains(body, "behavior.register", "system prompt includes behavior tool");
     assert_string_contains(body, "task.start", "system prompt includes task tool");
@@ -413,6 +414,7 @@ static int app_install_http_adapter(
     }
 
     assert_string_contains(body, "Tool Inventory Snapshot", "app install prompt includes tool inventory snapshot");
+    assert_string_contains(body, "Choose the execution shape semantically", "app install prompt includes execution choice contract");
     assert_string_contains(body, "app.install", "app install prompt includes app install tool");
     assert_string_contains(body, "component.install", "app install prompt includes component install tool");
     assert_string_contains(body, "app_patterns.list", "app install prompt includes app patterns tool");
@@ -420,6 +422,9 @@ static int app_install_http_adapter(
     assert_string_contains(body, "lua_api.list", "app install prompt includes lua api tool");
     assert_string_contains(body, "# App Architecture Contract", "app install prompt injects app architecture contract");
     assert_string_contains(body, "# Lua App Contract", "app install prompt injects lua app contract");
+    assert_string_contains(body, "# Execution Choice Examples", "app install prompt injects execution choice examples");
+    assert_string_contains(body, "flash gpio 4 five times now", "app install prompt includes flash example");
+    assert_string_contains(body, "create a Lua task to blink ten times, then run it", "app install prompt includes task example");
     assert_string_contains(body, "espclaw.pwm.setup", "app install prompt includes lua api snapshot");
     assert_string_contains(body, "function handle(trigger, payload)", "app install prompt includes handler contract");
 
@@ -1146,6 +1151,86 @@ static int behavior_register_http_adapter(
         "\"output\":["
         "{\"type\":\"function_call\",\"call_id\":\"call_behavior\",\"name\":\"behavior.register\",\"arguments\":\"{\\\"behavior_id\\\":\\\"wall_watch\\\",\\\"title\\\":\\\"Wall Watch\\\",\\\"schedule\\\":\\\"event\\\",\\\"trigger\\\":\\\"sensor\\\",\\\"autostart\\\":true,\\\"source\\\":\\\"function on_sensor(payload)\\\\n  return 'watch:' .. payload\\\\nend\\\\nfunction handle(trigger, payload)\\\\n  return on_sensor(payload)\\\\nend\\\\n\\\"}\",\"status\":\"completed\"}"
         "]"
+        "}"
+    );
+    return 0;
+}
+
+static int task_creation_execution_retry_http_adapter(
+    const char *url,
+    const espclaw_auth_profile_t *profile,
+    const char *body,
+    char *response,
+    size_t response_size,
+    void *user_data
+)
+{
+    test_agent_adapter_state_t *state = (test_agent_adapter_state_t *)user_data;
+
+    (void)url;
+    (void)profile;
+
+    if (state != NULL) {
+        state->calls++;
+    }
+
+    assert_string_contains(body, "Choose the execution shape semantically", "task creation prompt includes execution choice contract");
+    assert_string_contains(body, "# Execution Choice Examples", "task creation prompt includes execution choice examples");
+
+    if (state != NULL && state->calls == 1) {
+        snprintf(
+            response,
+            response_size,
+            "{"
+            "\"id\":\"resp_task_shape_first\","
+            "\"status\":\"completed\","
+            "\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Board detected. I can blink the LED manually if you want.\"}]}]"
+            "}"
+        );
+        return 0;
+    }
+
+    if (state != NULL && state->calls == 2) {
+        assert_string_contains(body, "You still need app.install and task.start", "task creation retry demands both missing tools");
+        snprintf(
+            response,
+            response_size,
+            "{"
+            "\"id\":\"resp_task_shape_second\","
+            "\"status\":\"completed\","
+            "\"output\":["
+            "{\"type\":\"function_call\",\"call_id\":\"call_task_shape_install\",\"name\":\"app.install\",\"arguments\":\"{\\\"app_id\\\":\\\"blink_task_demo\\\",\\\"title\\\":\\\"Blink Task Demo\\\",\\\"source\\\":\\\"function handle(trigger, payload)\\\\n  return 'blink-step'\\\\nend\\\\n\\\",\\\"permissions_csv\\\":\\\"gpio.write,time\\\",\\\"triggers_csv\\\":\\\"manual,timer\\\"}\",\"status\":\"completed\"}"
+            "]"
+            "}"
+        );
+        return 0;
+    }
+
+    if (state != NULL && state->calls == 3) {
+        assert_string_contains(body, "You still need task.start", "task creation retry demands the missing task.start");
+        assert_string_contains(body, "\"type\":\"function_call_output\"", "task creation second retry includes tool output");
+        snprintf(
+            response,
+            response_size,
+            "{"
+            "\"id\":\"resp_task_shape_third\","
+            "\"status\":\"completed\","
+            "\"output\":["
+            "{\"type\":\"function_call\",\"call_id\":\"call_task_shape_start\",\"name\":\"task.start\",\"arguments\":\"{\\\"task_id\\\":\\\"blink_task_demo_runner\\\",\\\"app_id\\\":\\\"blink_task_demo\\\",\\\"schedule\\\":\\\"periodic\\\",\\\"interval_ms\\\":1000,\\\"iterations\\\":10,\\\"trigger\\\":\\\"timer\\\",\\\"payload\\\":\\\"blink\\\"}\",\"status\":\"completed\"}"
+            "]"
+            "}"
+        );
+        return 0;
+    }
+
+    assert_string_contains(body, "\"type\":\"function_call_output\"", "task creation final follow-up includes tool output");
+    snprintf(
+        response,
+        response_size,
+        "{"
+        "\"id\":\"resp_task_shape_final\","
+        "\"status\":\"completed\","
+        "\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Installed the blink task app and started it.\"}]}]"
         "}"
     );
     return 0;
@@ -4086,6 +4171,45 @@ static void test_agent_loop(void)
     assert_string_contains(transcript, "\"autostart\":true", "behavior autostart persisted");
 
     adapter_state.calls = 0;
+    espclaw_agent_set_http_adapter(task_creation_execution_retry_http_adapter, &adapter_state);
+    memset(&result, 0, sizeof(result));
+    assert_true(
+        espclaw_agent_loop_run(
+            temp_dir,
+            "chat_task_shape_retry",
+            "Create a Lua task to flash the led, 1 second on and 1 second off for 10 times, then run it.",
+            true,
+            true,
+            &result) == 0,
+        "task creation execution retry loop succeeded"
+    );
+    espclaw_agent_set_http_adapter(NULL, NULL);
+    assert_true(result.ok, "task creation execution retry result ok");
+    assert_true(result.used_tools, "task creation execution retry used tools");
+    assert_true(adapter_state.calls == 4U, "task creation execution retry used two corrective turns");
+    assert_true(
+        espclaw_app_read_source(temp_dir, "blink_task_demo", transcript, sizeof(transcript)) == 0,
+        "task creation retry app source readable"
+    );
+    assert_string_contains(transcript, "blink-step", "task creation retry app source persisted");
+    {
+        espclaw_task_status_t tasks[ESPCLAW_TASK_RUNTIME_MAX];
+        size_t count = espclaw_task_snapshot_all(tasks, ESPCLAW_TASK_RUNTIME_MAX);
+        bool found = false;
+        size_t task_index;
+
+        for (task_index = 0; task_index < count; ++task_index) {
+            if (strcmp(tasks[task_index].task_id, "blink_task_demo_runner") == 0) {
+                found = true;
+                assert_true(strcmp(tasks[task_index].app_id, "blink_task_demo") == 0, "task creation retry started the correct app");
+                break;
+            }
+        }
+        assert_true(found, "task creation retry started the requested task");
+    }
+    espclaw_task_shutdown_all();
+
+    adapter_state.calls = 0;
     espclaw_agent_set_http_adapter(camera_capture_http_adapter, &adapter_state);
     memset(&result, 0, sizeof(result));
     assert_true(
@@ -4414,6 +4538,8 @@ static void test_console_chat_and_web_tools(void)
     assert_string_contains(transcript, "log_tool_call_summary(&tool_call, \"manual\")", "manual tool calls log summary");
     assert_string_contains(transcript, "parser->headers_done = true;", "http client codex parser marks headers complete before body reduction");
     assert_string_contains(transcript, "parser->status_code = status_code;", "http client codex parser preserves fetched status code");
+    assert_string_contains(transcript, "Choose the execution shape semantically", "agent loop includes execution choice contract");
+    assert_string_contains(transcript, "build_execution_choice_retry_request_body", "agent loop includes execution choice retry builder");
 
     memset(&result, 0, sizeof(result));
     assert_true(
