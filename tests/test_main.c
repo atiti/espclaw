@@ -4369,7 +4369,7 @@ static void test_console_chat_and_web_tools(void)
     assert_string_contains(transcript, "CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=65536", "esp32 config reserves enough internal RAM for camera DMA");
 
     read_text_file(
-        ESPCLAW_SOURCE_DIR "/firmware/managed_components/espressif__esp32-camera/target/esp32/ll_cam.c",
+        ESPCLAW_SOURCE_DIR "/firmware/components/esp32-camera/target/esp32/ll_cam.c",
         transcript,
         sizeof(transcript)
     );

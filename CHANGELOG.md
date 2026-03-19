@@ -213,5 +213,5 @@
 - feat(telegram): keep a small in-memory per-chat context on embedded builds so follow-up Telegram turns retain recent user/assistant context without workspace transcript writes
 - fix(test): make the host control-loop regression search by loop id instead of assuming snapshot ordering, which removed the remaining Linux CI flake after the host portability fixes
 - fix(task): avoid overlapping self-copy of `last_result` during task completion, which was corrupting the final control-loop result on Linux host CI
-- fix(build): pin the patched `esp32-camera` as a repo-local path dependency so CI/release builds use the same reduced-DMA camera source as local hardware builds
+- fix(build): vendor the patched `esp32-camera` into `firmware/components/esp32-camera` so CI/release builds use the same reduced-DMA camera source as local hardware builds
 - fix(ci): force GitHub JavaScript actions onto Node 24 mode and upgrade checkout to v5 to clear the pending Node 20 deprecation warning
