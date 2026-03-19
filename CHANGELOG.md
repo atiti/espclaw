@@ -212,3 +212,4 @@
 - fix(telegram): run embedded Telegram LLM turns without SD-backed session transcripts to avoid polling-task FATFS crashes on esp32cam
 - feat(telegram): keep a small in-memory per-chat context on embedded builds so follow-up Telegram turns retain recent user/assistant context without workspace transcript writes
 - fix(test): make the host control-loop regression search by loop id instead of assuming snapshot ordering, which removed the remaining Linux CI flake after the host portability fixes
+- fix(task): avoid overlapping self-copy of `last_result` during task completion, which was corrupting the final control-loop result on Linux host CI

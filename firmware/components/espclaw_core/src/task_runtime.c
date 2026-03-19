@@ -197,16 +197,20 @@ static void notify_task_worker(espclaw_task_slot_t *slot)
 
 static void mark_task_finished(espclaw_task_slot_t *slot, int last_status, const char *result)
 {
+    char result_copy[ESPCLAW_TASK_RESULT_MAX];
+
     if (slot == NULL) {
         return;
     }
+
+    snprintf(result_copy, sizeof(result_copy), "%s", result != NULL ? result : "");
 
     task_lock(slot);
     slot->status.active = false;
     slot->status.completed = true;
     slot->status.last_status = last_status;
     slot->status.last_finished_ms = espclaw_hw_ticks_ms();
-    snprintf(slot->status.last_result, sizeof(slot->status.last_result), "%s", result != NULL ? result : "");
+    snprintf(slot->status.last_result, sizeof(slot->status.last_result), "%s", result_copy);
     task_unlock(slot);
 }
 
