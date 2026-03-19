@@ -215,3 +215,4 @@
 - fix(task): avoid overlapping self-copy of `last_result` during task completion, which was corrupting the final control-loop result on Linux host CI
 - fix(build): vendor the patched `esp32-camera` into `firmware/components/esp32-camera` so CI/release builds use the same reduced-DMA camera source as local hardware builds
 - fix(ci): force GitHub JavaScript actions onto Node 24 mode and upgrade checkout to v5 to clear the pending Node 20 deprecation warning
+- docs(readme): rewrite the top-level README into a cleaner open-source front door with a tighter architecture story, clearer quick-start paths, and a curated docs map
