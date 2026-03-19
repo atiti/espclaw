@@ -13,6 +13,10 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#ifndef INADDR_LOOPBACK
+#define INADDR_LOOPBACK ((uint32_t)0x7f000001UL)
+#endif
+
 #include "espclaw/admin_api.h"
 #include "espclaw/agent_loop.h"
 #include "espclaw/console_chat.h"

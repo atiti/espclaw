@@ -1,3 +1,11 @@
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+
+#ifndef _DEFAULT_SOURCE
+#define _DEFAULT_SOURCE
+#endif
+
 #include <stdbool.h>
 #include <errno.h>
 #include <stdio.h>
@@ -73,8 +81,14 @@ static void assert_string_not_contains(const char *haystack, const char *needle,
 
 static void make_temp_dir(char *buffer, size_t buffer_size)
 {
+    int file_descriptor = -1;
+
     snprintf(buffer, buffer_size, "/tmp/espclaw-test-XXXXXX");
-    assert_true(mkdtemp(buffer) != NULL, "mkdtemp failed");
+    file_descriptor = mkstemp(buffer);
+    assert_true(file_descriptor >= 0, "mkstemp failed");
+    close(file_descriptor);
+    assert_true(unlink(buffer) == 0, "unlink temp file failed");
+    assert_true(mkdir(buffer, 0700) == 0, "mkdir temp dir failed");
 }
 
 static void write_text_file(const char *path, const char *content)

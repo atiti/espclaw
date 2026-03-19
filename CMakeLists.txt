@@ -6,6 +6,13 @@ set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
+if(NOT ESP_PLATFORM)
+  add_compile_definitions(
+    _POSIX_C_SOURCE=200809L
+    _DEFAULT_SOURCE
+  )
+endif()
+
 set(ESPCLAW_HOST_LUA_ONELUA "${CMAKE_CURRENT_SOURCE_DIR}/firmware/managed_components/georgik__lua/lua/onelua.c")
 if(EXISTS "${ESPCLAW_HOST_LUA_ONELUA}")
   add_library(espclaw_host_lua STATIC "${ESPCLAW_HOST_LUA_ONELUA}")
