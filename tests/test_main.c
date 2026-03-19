@@ -3167,6 +3167,8 @@ static void test_app_vm_and_control_loops(void)
     );
 
 #ifdef ESPCLAW_HOST_LUA
+    bool loop_found = false;
+
     assert_true(
         espclaw_app_vm_open(temp_dir, "loop_app", &vm, output, sizeof(output)) == 0,
         "persistent vm opened"
@@ -3192,15 +3194,34 @@ static void test_app_vm_and_control_loops(void)
     for (index = 0; index < 50; ++index) {
         espclaw_hw_sleep_ms(5);
         count = espclaw_control_loop_snapshot_all(loops, ESPCLAW_CONTROL_LOOP_MAX);
-        if (count > 0 && loops[0].completed) {
+        loop_found = false;
+        for (size_t loop_index = 0; loop_index < count; ++loop_index) {
+            if (strcmp(loops[loop_index].loop_id, "demo_loop") == 0) {
+                loop_found = loops[loop_index].completed;
+                break;
+            }
+        }
+        if (loop_found) {
             break;
         }
     }
 
     assert_true(count > 0, "control loop snapshot returned data");
-    assert_true(loops[0].completed, "control loop completed");
-    assert_true(loops[0].iterations_completed == 3, "control loop iteration count tracked");
-    assert_string_contains(loops[0].last_result, "step=3 payload=tick", "control loop reused persistent lua state");
+    loop_found = false;
+    for (size_t loop_index = 0; loop_index < count; ++loop_index) {
+        if (strcmp(loops[loop_index].loop_id, "demo_loop") == 0) {
+            assert_true(loops[loop_index].completed, "control loop completed");
+            assert_true(loops[loop_index].iterations_completed == 3, "control loop iteration count tracked");
+            assert_string_contains(
+                loops[loop_index].last_result,
+                "step=3 payload=tick",
+                "control loop reused persistent lua state"
+            );
+            loop_found = true;
+            break;
+        }
+    }
+    assert_true(loop_found, "control loop snapshot included demo_loop");
     espclaw_control_loop_shutdown_all();
 #else
     assert_true(
