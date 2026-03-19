@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ESPClaw Flash Console</title>
+    <meta
+      name="description"
+      content="Flash ESPClaw firmware directly from the browser onto supported ESP32 boards."
+    />
+    <link rel="stylesheet" href="./styles.css" />
+    <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+    <script type="module" src="./app.js"></script>
+  </head>
+  <body>
+    <div class="noise"></div>
+    <main class="shell">
+      <header class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">ESPCLAW // FIRMWARE CONSOLE</p>
+          <h1>Flash ESPClaw from your browser.</h1>
+          <p class="lede">
+            No IDE. No local build. Grab the latest release, talk over Web Serial, and put a real
+            agent runtime onto a real board.
+          </p>
+          <div class="hero-actions">
+            <a class="button primary" href="https://github.com/atiti/espclaw/releases/latest">Latest Release</a>
+            <a class="button secondary" href="https://github.com/atiti/espclaw">Source</a>
+          </div>
+        </div>
+        <aside class="hero-meta">
+          <div class="meta-card">
+            <span class="meta-label">Repo</span>
+            <code>atiti/espclaw</code>
+          </div>
+          <div class="meta-card">
+            <span class="meta-label">Transport</span>
+            <code>Web Serial + esp-web-tools</code>
+          </div>
+          <div class="meta-card">
+            <span class="meta-label">Boards</span>
+            <code>ESP32 / ESP32-S3</code>
+          </div>
+        </aside>
+      </header>
+
+      <section class="status-panel" id="release-panel">
+        <div>
+          <p class="eyebrow">LATEST BUILD</p>
+          <h2 id="release-title">Looking up release metadata…</h2>
+          <p id="release-summary">The flasher page pulls firmware artifacts from GitHub Releases.</p>
+        </div>
+        <div class="status-grid">
+          <div>
+            <span class="meta-label">Tag</span>
+            <strong id="release-tag">—</strong>
+          </div>
+          <div>
+            <span class="meta-label">Published</span>
+            <strong id="release-date">—</strong>
+          </div>
+          <div>
+            <span class="meta-label">Install path</span>
+            <strong>Browser flash</strong>
+          </div>
+          <div>
+            <span class="meta-label">Fallback</span>
+            <strong>Download .zip</strong>
+          </div>
+        </div>
+      </section>
+
+      <section class="board-grid" id="board-grid">
+        <article class="board-card board-card--loading">
+          <p class="eyebrow">DISCOVERY</p>
+          <h3>Loading release assets…</h3>
+          <p>The page is querying the latest GitHub release and matching its flash manifests.</p>
+        </article>
+      </section>
+
+      <section class="notes-grid">
+        <article class="info-card">
+          <p class="eyebrow">BROWSER REQUIREMENTS</p>
+          <h3>Use a Chromium browser.</h3>
+          <p>
+            Web Serial works in current Chrome, Edge, and Chromium-based Brave. Safari and Firefox
+            are not enough here.
+          </p>
+        </article>
+        <article class="info-card">
+          <p class="eyebrow">FIRST FLASH</p>
+          <h3>Serial cable, then OTA forever.</h3>
+          <p>
+            Most boards only need one wired flash. After that, ESPClaw’s admin UI can take OTA
+            firmware updates directly.
+          </p>
+        </article>
+        <article class="info-card">
+          <p class="eyebrow">MANUAL MODE</p>
+          <h3>Raw binaries are still published.</h3>
+          <p>
+            Every release also ships bootloader, partition table, app image, OTA data, checksums,
+            and a convenient bundle zip for manual flashing.
+          </p>
+        </article>
+      </section>
+    </main>
+  </body>
+</html>

@@ -84,3 +84,15 @@ Current behavior:
 - any other message is acknowledged and stored in the session transcript
 
 This is a bring-up feature, not the final chatbot UX. It exists to validate connectivity, persistence, and outbound messaging on-device.
+
+## Browser Flashing
+
+Public tagged releases are also exposed through the browser flasher at `https://espclaw.dev/`.
+
+That path is intended for:
+
+- first-time board bring-up
+- users who do not want to install ESP-IDF
+- quick installs from a release artifact
+
+For boards already on an OTA-capable layout, the admin UI OTA flow remains the better day-two upgrade path.

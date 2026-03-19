@@ -11,6 +11,7 @@
 - Added `app.install_from_blob` and `component.install_from_blob` as thin install-by-reference aliases over committed workspace blobs, so large chunk-uploaded Lua can move from staging into apps/components without an extra path-management step.
 - Added bounded `context.chunks`, `context.load`, `context.search`, `context.select`, and `context.summarize` surfaces across runtime, admin, and simulator flows, so large workspace markdown/docs can be searched, selected, and extractively summarized incrementally instead of being shoved wholesale into one prompt.
 - Added `component.install_from_manifest` plus a first registry-manifest shape for shareable community components, including `source_url`, `docs_url`, and optional dependency manifest URLs that install recursively before the main component.
+- Added a GitHub Pages web flasher at `espclaw.dev`, plus release-published `esp-web-tools` manifests and zipped per-target firmware bundles so tagged releases are directly installable from a browser or downloadable for manual flashing.
 - Added first-class shareable Lua components with metadata, install/list/remove APIs, and `component.install` / `component.list` / `component.remove` model tools.
 - Added generated app-architecture guidance through `app_patterns.list` and prompt snapshots so the model defaults to `component -> app -> task/behavior -> optional event` composition instead of inventing new runtime types.
 - Workspace bootstrap now creates `components/` and `lib/` so reusable modules are available for `require(...)` without manual directory setup.

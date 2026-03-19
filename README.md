@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/atiti/espclaw/actions/workflows/ci.yml/badge.svg)](https://github.com/atiti/espclaw/actions/workflows/ci.yml)
 [![Release](https://github.com/atiti/espclaw/actions/workflows/release.yml/badge.svg)](https://github.com/atiti/espclaw/actions/workflows/release.yml)
+[![Pages](https://github.com/atiti/espclaw/actions/workflows/pages.yml/badge.svg)](https://github.com/atiti/espclaw/actions/workflows/pages.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-ffd866.svg)](LICENSE)
 [![ESP-IDF](https://img.shields.io/badge/ESP--IDF-5.5.2-ef4444.svg)](https://github.com/espressif/esp-idf)
 [![Boards](https://img.shields.io/badge/boards-ESP32%20%7C%20ESP32--S3-38bdf8.svg)](docs/support-matrix.md)
@@ -18,6 +19,12 @@ It combines:
 - OTA-capable firmware for supported boards
 
 The goal is simple: make an embedded board feel more like a programmable agent system than a fixed-function firmware image.
+
+## Flash It
+
+- Browser flasher: [espclaw.dev](https://espclaw.dev/)
+- Latest binaries: [GitHub Releases](https://github.com/atiti/espclaw/releases/latest)
+- Manual flashing and OTA notes: [docs/ota.md](docs/ota.md)
 
 ## Why ESPClaw
 
@@ -334,6 +341,7 @@ Hardware and validation:
 Project docs:
 - [Contributing](CONTRIBUTING.md)
 - [Release Process](docs/release-process.md)
+- [Web Flasher](docs/web-flasher.md)
 - [Code of Conduct](CODE_OF_CONDUCT.md)
 
 ## Development
@@ -355,6 +363,7 @@ python3 scripts/real_device_bench.py --device http://<device-ip>:8080
 Releases:
 - GitHub Actions builds host artifacts and firmware artifacts
 - tagged `v*` pushes publish GitHub Releases
+- GitHub Pages serves the browser flasher at `espclaw.dev`
 
 ## Open Source Contract
 

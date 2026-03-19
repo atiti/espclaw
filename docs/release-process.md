@@ -9,6 +9,7 @@ For each tag like `v0.2.0`, the release workflow builds and publishes:
 - host simulator artifact
 - `esp32` firmware bundle
 - `esp32s3` firmware bundle
+- `esp-web-tools` manifests for `esp32` and `esp32s3`
 - checksums
 
 Each firmware bundle should include:
@@ -18,7 +19,11 @@ Each firmware bundle should include:
 - `partition-table.bin`
 - `ota_data_initial.bin` when present
 - `flasher_args.json`
+- `esp-web-tools-manifest-<target>.json`
+- `espclaw-<target>-<tag>.zip`
 - `SHA256SUMS.txt`
+
+The browser flasher at `espclaw.dev` consumes those published `esp-web-tools` manifests directly from the latest GitHub release.
 
 ## Preparing A Release
 

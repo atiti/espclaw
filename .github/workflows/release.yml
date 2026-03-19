@@ -80,7 +80,7 @@ jobs:
       - name: Install firmware dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y git zsh ninja-build
+          sudo apt-get install -y git zsh ninja-build zip python3
 
       - name: Cache ESP-IDF
         uses: actions/cache@v4
@@ -117,6 +117,25 @@ jobs:
             cp "$build_dir/ota_data_initial.bin" "$out/ota_data_initial-${{ matrix.target }}.bin"
           fi
           cp "$build_dir/flasher_args.json" "$out/flasher_args-${{ matrix.target }}.json"
+          python3 scripts/generate_release_manifests.py \
+            --repo "${{ github.repository }}" \
+            --tag "${{ github.ref_name }}" \
+            --target "${{ matrix.target }}" \
+            --flasher-args "$out/flasher_args-${{ matrix.target }}.json" \
+            --manifest-output "$out/esp-web-tools-manifest-${{ matrix.target }}.json" \
+            --entry-output "$out/release-entry-${{ matrix.target }}.json"
+          (
+            cd "$out"
+            zip -q "espclaw-${{ matrix.target }}-${{ github.ref_name }}.zip" \
+              "espclaw_firmware-${{ matrix.target }}.bin" \
+              "bootloader-${{ matrix.target }}.bin" \
+              "partition-table-${{ matrix.target }}.bin" \
+              "flasher_args-${{ matrix.target }}.json" \
+              "esp-web-tools-manifest-${{ matrix.target }}.json"
+            if [ -f "ota_data_initial-${{ matrix.target }}.bin" ]; then
+              zip -q "espclaw-${{ matrix.target }}-${{ github.ref_name }}.zip" "ota_data_initial-${{ matrix.target }}.bin"
+            fi
+          )
           (cd "$out" && sha256sum * > SHA256SUMS.txt)
 
       - name: Upload firmware artifact

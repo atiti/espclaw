@@ -28,6 +28,7 @@ endif()
 enable_testing()
 
 find_package(Threads REQUIRED)
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
 add_library(
   espclaw_core
@@ -94,6 +95,10 @@ target_compile_definitions(
 target_link_libraries(espclaw_tests PRIVATE espclaw_core)
 
 add_test(NAME espclaw_tests COMMAND $<TARGET_FILE:espclaw_tests>)
+add_test(
+  NAME espclaw_release_manifest_test
+  COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_release_manifests.py
+)
 
 add_executable(
   espclaw_simulator
