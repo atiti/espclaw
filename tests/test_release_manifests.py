@@ -43,6 +43,12 @@ class ReleaseManifestTests(unittest.TestCase):
             self.assertIn("ESP32-S3", manifest_path.read_text())
             self.assertIn("esp-web-tools-manifest-esp32s3.json", entry_path.read_text())
 
+    def test_site_redirects_www_to_apex(self) -> None:
+        html = (ROOT / "site" / "index.html").read_text(encoding="utf-8")
+        self.assertIn('rel="canonical" href="https://espclaw.dev/"', html)
+        self.assertIn('window.location.hostname === "www.espclaw.dev"', html)
+        self.assertIn('window.location.replace(next);', html)
+
 
 if __name__ == "__main__":
     unittest.main()

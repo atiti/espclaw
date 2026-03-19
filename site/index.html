@@ -8,7 +8,16 @@
       name="description"
       content="Flash ESPClaw firmware directly from the browser onto supported ESP32 boards."
     />
+    <link rel="canonical" href="https://espclaw.dev/" />
     <link rel="stylesheet" href="./styles.css" />
+    <script>
+      // Keep a single canonical host even if Cloudflare serves the site on www.
+      if (window.location.hostname === "www.espclaw.dev") {
+        const next =
+          "https://espclaw.dev" + window.location.pathname + window.location.search + window.location.hash;
+        window.location.replace(next);
+      }
+    </script>
     <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
     <script type="module" src="./app.js"></script>
   </head>

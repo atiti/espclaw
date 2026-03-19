@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Added canonical host enforcement on the web flasher so `www.espclaw.dev` immediately redirects to `https://espclaw.dev/`, plus a release-site regression test that keeps the apex redirect behavior in place.
 - Added the public open-source repo scaffolding: MIT license, contributing guide, security policy, code of conduct, support/security/release docs, issue/PR templates, code owners, and GitHub Actions for CI plus tagged release artifact publishing.
 - Fixed GitHub Actions host/release jobs to bootstrap ESP-IDF-managed components before host builds and made ESP-IDF cache keys depend on the dependency lock plus sdkconfig defaults, so fresh CI runners no longer fail the host build just because `managed_components/` was never populated locally.
 - Fixed the Linux/GCC host build by explicitly including `<stdint.h>` in `web_tools.c` for `uint32_t`, which the GitHub Actions host job caught once the workflow got far enough to compile it.
