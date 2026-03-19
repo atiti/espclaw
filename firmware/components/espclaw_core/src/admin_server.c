@@ -25,6 +25,7 @@
 #include "espclaw/context_runtime.h"
 #include "espclaw/hardware.h"
 #include "espclaw/lua_api_registry.h"
+#include "espclaw/log_buffer.h"
 #include "espclaw/ota_manager.h"
 #include "espclaw/ota_state.h"
 #include "espclaw/runtime.h"
@@ -390,6 +391,18 @@ static esp_err_t status_get_handler(httpd_req_t *req)
     );
     free(profile);
     return send_json(req, buffer);
+}
+
+static esp_err_t logs_get_handler(httpd_req_t *req)
+{
+    char response[6144];
+    uint32_t tail_bytes = load_query_u32(req, "bytes", 4096);
+
+    if (espclaw_log_buffer_render_json((size_t)tail_bytes, response, sizeof(response)) != 0) {
+        espclaw_admin_render_result_json(false, "failed to render log buffer", response, sizeof(response));
+        return send_json_status(req, response, 500, "Internal Server Error");
+    }
+    return send_json(req, response);
 }
 
 static esp_err_t auth_status_get_handler(httpd_req_t *req)
@@ -2299,6 +2312,7 @@ esp_err_t espclaw_admin_server_start(void)
     httpd_uri_t routes[] = {
         {.uri = "/", .method = HTTP_GET, .handler = root_get_handler, .user_ctx = NULL},
         {.uri = "/api/status", .method = HTTP_GET, .handler = status_get_handler, .user_ctx = NULL},
+        {.uri = "/api/logs", .method = HTTP_GET, .handler = logs_get_handler, .user_ctx = NULL},
         {.uri = "/api/board", .method = HTTP_GET, .handler = board_get_handler, .user_ctx = NULL},
         {.uri = "/api/board/presets", .method = HTTP_GET, .handler = board_presets_get_handler, .user_ctx = NULL},
         {.uri = "/api/board/config", .method = HTTP_GET, .handler = board_config_get_handler, .user_ctx = NULL},

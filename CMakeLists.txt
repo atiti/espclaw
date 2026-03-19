@@ -51,6 +51,7 @@ add_library(
   firmware/components/espclaw_core/src/event_watch.c
   firmware/components/espclaw_core/src/hardware.c
   firmware/components/espclaw_core/src/lua_api_registry.c
+  firmware/components/espclaw_core/src/log_buffer.c
   firmware/components/espclaw_core/src/ota_manager.c
   firmware/components/espclaw_core/src/ota_state.c
   firmware/components/espclaw_core/src/provisioning.c

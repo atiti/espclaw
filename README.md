@@ -42,6 +42,7 @@ That leads to a different design:
 - hot-swappable Lua logic instead of reflashing for every iteration
 - explicit board profiles and hardware capability discovery
 - chunked data paths for large markdown and Lua artifacts
+- in-memory log tails over HTTP and tool calls for debugging without serial
 - recoverable, inspectable, operator-visible runtime behavior
 
 ## Core Ideas

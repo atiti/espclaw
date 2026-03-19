@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Added a bounded in-memory device log buffer with `GET /api/logs` and the read-only `system.logs` tool so operators and the on-device model can inspect recent runtime logs without a serial console.
 - Strengthened the agent’s execution-choice contract and few-shot architecture guidance so it chooses between direct tool sequences, reusable apps, live tasks, persisted behaviors, and shared components more reliably without relying on brittle phrase-specific command rules.
 - Added execution-shape corrective retries for requests like “create a Lua task … then run it,” so the runtime now pushes the model toward the full `app.install` plus `task.start` or `behavior.register` sequence instead of accepting partial hardware narration.
 - Added canonical host enforcement on the web flasher so `www.espclaw.dev` immediately redirects to `https://espclaw.dev/`, plus a release-site regression test that keeps the apex redirect behavior in place.

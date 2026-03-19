@@ -53,6 +53,7 @@ This screen maps cleanly to a compact JSON response so the embedded backend can 
 Current route:
 
 - `GET /api/status`
+- `GET /api/logs`
 
 ### Connectivity
 

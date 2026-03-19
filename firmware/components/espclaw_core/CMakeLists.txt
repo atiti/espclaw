@@ -20,6 +20,7 @@ idf_component_register(
     "src/event_watch.c"
     "src/hardware.c"
     "src/lua_api_registry.c"
+    "src/log_buffer.c"
     "src/ota_manager.c"
     "src/ota_state.c"
     "src/provisioning.c"

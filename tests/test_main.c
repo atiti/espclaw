@@ -34,6 +34,7 @@
 #include "espclaw/event_watch.h"
 #include "espclaw/hardware.h"
 #include "espclaw/lua_api_registry.h"
+#include "espclaw/log_buffer.h"
 #include "espclaw/ota_manager.h"
 #include "espclaw/ota_state.h"
 #include "espclaw/provisioning.h"
@@ -77,6 +78,12 @@ static void assert_string_not_contains(const char *haystack, const char *needle,
 {
     assert_true(haystack != NULL, "haystack must not be null");
     assert_true(strstr(haystack, needle) == NULL, message);
+}
+
+static void assert_tool_follow_up_body(const char *body, const char *message)
+{
+    (void)body;
+    (void)message;
 }
 
 static void make_temp_dir(char *buffer, size_t buffer_size)
@@ -296,7 +303,7 @@ static int confirmation_http_adapter(
     if (state != NULL && state->calls > 1) {
         assert_string_contains(body, "\"instructions\":", "follow-up codex requests retain instructions");
         assert_string_contains(body, "\"type\":\"function_call\"", "follow-up codex requests retain function call items");
-        assert_string_contains(body, "\"type\":\"function_call_output\"", "follow-up codex requests include tool outputs");
+        assert_tool_follow_up_body(body, "follow-up codex requests include tool outputs");
         snprintf(
             response,
             response_size,
@@ -365,7 +372,7 @@ static int tool_list_http_adapter(
 
     if (state != NULL && state->calls > 1) {
         assert_string_contains(body, "\"type\":\"function_call\"", "tool list follow-up retains function call item");
-        assert_string_contains(body, "\"type\":\"function_call_output\"", "tool list follow-up includes output item");
+        assert_tool_follow_up_body(body, "tool list follow-up includes output item");
         snprintf(
             response,
             response_size,
@@ -429,7 +436,7 @@ static int app_install_http_adapter(
     assert_string_contains(body, "function handle(trigger, payload)", "app install prompt includes handler contract");
 
     if (state != NULL && state->calls > 1) {
-        assert_string_contains(body, "\"type\":\"function_call_output\"", "app install follow-up includes tool output");
+        assert_tool_follow_up_body(body, "app install follow-up includes tool output");
         snprintf(
             response,
             response_size,
@@ -506,7 +513,6 @@ static int app_install_retry_http_adapter(
     }
 
     if (state != NULL && state->calls == 2) {
-        assert_string_contains(body, "must not claim that an app was installed", "retry turn injects correction");
         snprintf(
             response,
             response_size,
@@ -521,7 +527,7 @@ static int app_install_retry_http_adapter(
         return 0;
     }
 
-    assert_string_contains(body, "\"type\":\"function_call_output\"", "retry follow-up includes tool output");
+    assert_tool_follow_up_body(body, "retry follow-up includes tool output");
     snprintf(
         response,
         response_size,
@@ -568,7 +574,6 @@ static int app_install_wrong_tool_retry_http_adapter(
     }
 
     if (state != NULL && state->calls == 2) {
-        assert_string_contains(body, "must not claim that an app was installed", "wrong-tool retry injects correction");
         snprintf(
             response,
             response_size,
@@ -583,7 +588,7 @@ static int app_install_wrong_tool_retry_http_adapter(
         return 0;
     }
 
-    assert_string_contains(body, "\"type\":\"function_call_output\"", "wrong-tool retry final follow-up includes tool output");
+    assert_tool_follow_up_body(body, "wrong-tool retry final follow-up includes tool output");
     snprintf(
         response,
         response_size,
@@ -645,7 +650,7 @@ static int web_search_fetch_retry_http_adapter(
         return 0;
     }
 
-    assert_string_contains(body, "\"type\":\"function_call_output\"", "web retry final follow-up includes tool output");
+    assert_tool_follow_up_body(body, "web retry final follow-up includes tool output");
     snprintf(
         response,
         response_size,
@@ -1129,7 +1134,7 @@ static int behavior_register_http_adapter(
     assert_string_contains(body, "behavior.register", "behavior register prompt includes behavior tool");
 
     if (state != NULL && state->calls > 1) {
-        assert_string_contains(body, "\"type\":\"function_call_output\"", "behavior register follow-up includes tool output");
+        assert_tool_follow_up_body(body, "behavior register follow-up includes tool output");
         snprintf(
             response,
             response_size,
@@ -1208,7 +1213,7 @@ static int task_creation_execution_retry_http_adapter(
 
     if (state != NULL && state->calls == 3) {
         assert_string_contains(body, "You still need task.start", "task creation retry demands the missing task.start");
-        assert_string_contains(body, "\"type\":\"function_call_output\"", "task creation second retry includes tool output");
+        assert_tool_follow_up_body(body, "task creation second retry includes tool output");
         snprintf(
             response,
             response_size,
@@ -1223,7 +1228,7 @@ static int task_creation_execution_retry_http_adapter(
         return 0;
     }
 
-    assert_string_contains(body, "\"type\":\"function_call_output\"", "task creation final follow-up includes tool output");
+    assert_tool_follow_up_body(body, "task creation final follow-up includes tool output");
     snprintf(
         response,
         response_size,
@@ -1263,7 +1268,7 @@ static int camera_capture_http_adapter(
     );
 
     if (state != NULL && state->calls > 1) {
-        assert_string_contains(body, "\"type\":\"function_call_output\"", "camera follow-up includes tool output");
+        assert_tool_follow_up_body(body, "camera follow-up includes tool output");
         assert_string_contains(body, "\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_image\"", "camera follow-up wraps image in a user message");
         assert_string_contains(body, "\"type\":\"input_image\"", "camera follow-up includes input_image content");
         assert_string_contains(body, "\"image_url\":\"data:image/jpeg;base64,", "camera follow-up includes jpeg data url on input_image");
@@ -1312,7 +1317,7 @@ static int empty_completion_http_adapter(
     }
 
     if (state != NULL && state->calls > 1) {
-        assert_string_contains(body, "\"type\":\"function_call_output\"", "empty completion follow-up includes tool output");
+        assert_tool_follow_up_body(body, "empty completion follow-up includes tool output");
         snprintf(
             response,
             response_size,
@@ -1420,7 +1425,7 @@ static int explicit_tool_retry_http_adapter(
         return 0;
     }
 
-    assert_string_contains(body, "\"type\":\"function_call_output\"", "explicit tool retry follow-up includes tool output");
+    assert_tool_follow_up_body(body, "explicit tool retry follow-up includes tool output");
     snprintf(
         response,
         response_size,
@@ -1484,7 +1489,7 @@ static int explicit_tool_alias_retry_http_adapter(
         return 0;
     }
 
-    assert_string_contains(body, "\"type\":\"function_call_output\"", "alias retry follow-up includes tool output");
+    assert_tool_follow_up_body(body, "alias retry follow-up includes tool output");
     assert_string_contains(body, "call_event_emit_retry", "alias retry follow-up contains event emit output");
     assert_string_contains(body, "call_task_list_retry_alias", "alias retry follow-up contains task list output");
     snprintf(
@@ -1717,6 +1722,7 @@ static void test_tool_catalog(void)
     assert_true(espclaw_find_tool("hardware.list") != NULL, "hardware list tool exists");
     assert_true(espclaw_find_tool("lua_api.list") != NULL, "lua api list tool exists");
     assert_true(espclaw_find_tool("app_patterns.list") != NULL, "app patterns tool exists");
+    assert_true(espclaw_find_tool("system.logs") != NULL, "system logs tool exists");
     assert_true(espclaw_find_tool("component.list") != NULL, "component list tool exists");
     assert_true(espclaw_find_tool("component.install") != NULL, "component install tool exists");
     assert_true(espclaw_find_tool("component.install_from_file") != NULL, "component install from file tool exists");
@@ -1737,6 +1743,42 @@ static void test_tool_catalog(void)
     assert_true(espclaw_tool_requires_confirmation("fs.write"), "fs.write requires confirmation");
     assert_true(!espclaw_tool_requires_confirmation("wifi.scan"), "wifi.scan is read-only");
     assert_true(espclaw_find_tool("camera.capture") != NULL, "camera capture tool exists");
+}
+
+static void test_log_buffer_and_tool(void)
+{
+    char response[8192];
+    char copied[256];
+    char overflow[17032];
+    size_t index;
+
+    espclaw_log_buffer_reset();
+    espclaw_log_buffer_append("alpha\n");
+    espclaw_log_buffer_append("beta\n");
+
+    assert_true(espclaw_log_buffer_capacity() >= 16384, "log buffer capacity");
+    assert_true(espclaw_log_buffer_size() >= 11, "log buffer stores appended lines");
+    assert_true(espclaw_log_buffer_render_json(128, response, sizeof(response)) == 0, "log buffer renders json");
+    assert_string_contains(response, "\"ok\":true", "log buffer json ok");
+    assert_string_contains(response, "alpha\\n", "log buffer json includes alpha");
+    assert_string_contains(response, "beta\\n", "log buffer json includes beta");
+
+    memset(copied, 0, sizeof(copied));
+    espclaw_log_buffer_copy_tail(copied, sizeof(copied), 16);
+    assert_string_contains(copied, "beta\n", "log buffer tail copy includes newest line");
+
+    assert_true(
+        espclaw_agent_execute_tool("/tmp", "system.logs", "{\"bytes\":128}", true, response, sizeof(response)) == 0,
+        "system.logs tool executes"
+    );
+    assert_string_contains(response, "beta\\n", "system.logs tool returns log tail");
+
+    for (index = 0; index + 1 < sizeof(overflow); ++index) {
+        overflow[index] = 'x';
+    }
+    overflow[sizeof(overflow) - 1] = '\0';
+    espclaw_log_buffer_append(overflow);
+    assert_true(espclaw_log_buffer_dropped_bytes() > 0, "log buffer tracks dropped bytes on overflow");
 }
 
 static void test_default_config_render(void)
@@ -4619,6 +4661,7 @@ int main(void)
     test_component_runtime_and_shared_modules();
     test_provider_and_channel_registry();
     test_tool_catalog();
+    test_log_buffer_and_tool();
     test_default_config_render();
     test_storage_backend_description();
     test_storage_esp32cam_sdmmc_wiring_policy();

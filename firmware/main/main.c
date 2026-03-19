@@ -2,6 +2,7 @@
 #include "espclaw/admin_server.h"
 #include "espclaw/admin_ui.h"
 #include "espclaw/config_render.h"
+#include "espclaw/log_buffer.h"
 #include "espclaw/ota_manager.h"
 #include "espclaw/ota_state.h"
 #include "espclaw/runtime.h"
@@ -25,6 +26,7 @@ void app_main(void)
 #else
         ESPCLAW_BOARD_PROFILE_ESP32S3;
 #endif
+    espclaw_log_buffer_init();
     espclaw_ota_manager_init();
     if (espclaw_runtime_start(profile_id, &runtime_status) != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start runtime");

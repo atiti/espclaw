@@ -46,6 +46,11 @@ STATUS_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/status")"
 [[ "$STATUS_JSON" == *'"board_profile":"esp32cam"'* ]]
 [[ "$STATUS_JSON" == *'"storage_backend":"sdcard"'* ]]
 
+LOGS_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/logs?bytes=512")"
+[[ "$LOGS_JSON" == *'"ok":true'* ]]
+[[ "$LOGS_JSON" == *'"capacity_bytes":'* ]]
+[[ "$LOGS_JSON" == *'"tail":'* ]]
+
 BOARD_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/board")"
 [[ "$BOARD_JSON" == *'"configured":true'* ]]
 [[ "$BOARD_JSON" == *'"variant":"ai_thinker_esp32cam"'* ]]
@@ -110,6 +115,7 @@ MONITOR_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/monitor")"
 
 TOOLS_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/tools")"
 grep -q '"name":"tool.list"' <<<"$TOOLS_JSON"
+grep -q '"name":"system.logs"' <<<"$TOOLS_JSON"
 grep -q '"name":"behavior.register"' <<<"$TOOLS_JSON"
 grep -q '"name":"component.install"' <<<"$TOOLS_JSON"
 grep -q '"name":"component.install_from_file"' <<<"$TOOLS_JSON"

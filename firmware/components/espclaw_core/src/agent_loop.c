@@ -54,6 +54,7 @@
 #include "espclaw/event_watch.h"
 #include "espclaw/hardware.h"
 #include "espclaw/lua_api_registry.h"
+#include "espclaw/log_buffer.h"
 #include "espclaw/ota_manager.h"
 #include "espclaw/provider.h"
 #include "espclaw/runtime.h"
@@ -2693,6 +2694,14 @@ static int tool_system_info(const char *workspace_root, char *buffer, size_t buf
     return 0;
 }
 
+static int tool_system_logs(const char *arguments_json, char *buffer, size_t buffer_size)
+{
+    int tail_bytes = 0;
+
+    (void)json_argument_int(arguments_json, "bytes", &tail_bytes);
+    return espclaw_log_buffer_render_json((size_t)(tail_bytes > 0 ? tail_bytes : 4096), buffer, buffer_size);
+}
+
 static int tool_hardware_list(char *buffer, size_t buffer_size)
 {
     return (int)espclaw_render_hardware_json(espclaw_board_current(), buffer, buffer_size);
@@ -4343,6 +4352,9 @@ static int tool_execute(
     }
     if (strcmp(tool_call->name, "system.info") == 0) {
         return tool_system_info(workspace_root, buffer, buffer_size);
+    }
+    if (strcmp(tool_call->name, "system.logs") == 0) {
+        return tool_system_logs(tool_call->arguments_json, buffer, buffer_size);
     }
     if (strcmp(tool_call->name, "hardware.list") == 0) {
         return tool_hardware_list(buffer, buffer_size);

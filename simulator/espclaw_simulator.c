@@ -32,6 +32,7 @@
 #include "espclaw/control_loop.h"
 #include "espclaw/context_runtime.h"
 #include "espclaw/event_watch.h"
+#include "espclaw/log_buffer.h"
 #include "espclaw/ota_state.h"
 #include "espclaw/provisioning.h"
 #include "espclaw/system_monitor.h"
@@ -501,6 +502,12 @@ static void handle_api_request(
             response,
             sizeof(response)
         );
+        send_http_response(client_fd, 200, "OK", "application/json", response);
+        return;
+    }
+
+    if (strcmp(method, "GET") == 0 && strcmp(path, "/api/logs") == 0) {
+        espclaw_log_buffer_render_json(query_u32_or_default(query, "bytes", 4096), response, sizeof(response));
         send_http_response(client_fd, 200, "OK", "application/json", response);
         return;
     }
@@ -1785,6 +1792,7 @@ int main(int argc, char **argv)
     bool self_test = false;
     int index;
 
+    espclaw_log_buffer_init();
     snprintf(config.workspace_root, sizeof(config.workspace_root), ".espclaw-sim-workspace");
     s_sim_wifi_ready = false;
     s_sim_wifi_provisioning_active = true;
