@@ -27,8 +27,11 @@ endif()
 
 enable_testing()
 
-find_package(Threads REQUIRED)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
+if(NOT EMSCRIPTEN)
+  find_package(Threads REQUIRED)
+endif()
 
 add_library(
   espclaw_core
@@ -80,7 +83,11 @@ if(TARGET espclaw_host_lua)
   target_link_libraries(espclaw_core PUBLIC espclaw_host_lua m)
 endif()
 
-target_link_libraries(espclaw_core PUBLIC Threads::Threads)
+if(EMSCRIPTEN)
+  target_compile_definitions(espclaw_core PUBLIC ESPCLAW_WASM=1)
+else()
+  target_link_libraries(espclaw_core PUBLIC Threads::Threads)
+endif()
 
 add_executable(
   espclaw_tests
@@ -107,6 +114,43 @@ add_executable(
 )
 
 target_link_libraries(espclaw_simulator PRIVATE espclaw_core)
+
+if(EMSCRIPTEN)
+  add_executable(
+    espclaw_browser_runtime
+    wasm/espclaw_browser_runtime.c
+  )
+
+  target_compile_definitions(
+    espclaw_browser_runtime
+    PRIVATE
+      ESPCLAW_WASM=1
+  )
+
+  target_link_libraries(espclaw_browser_runtime PRIVATE espclaw_core)
+  target_link_options(
+    espclaw_browser_runtime
+    PRIVATE
+      "-sALLOW_MEMORY_GROWTH=1"
+      "-sENVIRONMENT=web,worker"
+      "-sEXPORT_ES6=1"
+      "-sEXPORT_NAME=ESPClawBrowserModule"
+      "-sFILESYSTEM=1"
+      "-sGL_ENABLE_GET_PROC_ADDRESS=0"
+      "-sINITIAL_MEMORY=134217728"
+      "-sMODULARIZE=1"
+      "-sNO_EXIT_RUNTIME=1"
+      "-sWASM=1"
+      "-sEXPORTED_FUNCTIONS=['_malloc','_free','_espclaw_wasm_reset','_espclaw_wasm_status_json','_espclaw_wasm_logs_json','_espclaw_wasm_execute_tool']"
+      "-sEXPORTED_RUNTIME_METHODS=['FS','UTF8ToString','stringToUTF8','lengthBytesUTF8']"
+  )
+  set_target_properties(
+    espclaw_browser_runtime
+    PROPERTIES
+      OUTPUT_NAME "espclaw-browser-runtime"
+      SUFFIX ".js"
+    )
+endif()
 
 add_test(NAME espclaw_simulator_self_test COMMAND $<TARGET_FILE:espclaw_simulator> --self-test)
 add_test(

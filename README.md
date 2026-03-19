@@ -22,7 +22,7 @@ The goal is simple: make an embedded board feel more like a programmable agent s
 
 ## Flash It
 
-- Browser flasher: [espclaw.dev](https://espclaw.dev/)
+- Browser landing page, flasher, and WebAssembly browser lab: [espclaw.dev](https://espclaw.dev/)
 - Latest binaries: [GitHub Releases](https://github.com/atiti/espclaw/releases/latest)
 - Manual flashing and OTA notes: [docs/ota.md](docs/ota.md)
 

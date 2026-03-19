@@ -1,5 +1,6 @@
 .deps/
 build/
+build-wasm/
 firmware/build/
 firmware/build-*/
 firmware/screenlog.*
@@ -7,6 +8,10 @@ firmware/sdkconfig
 firmware/sdkconfig.old
 firmware/managed_components/
 .DS_Store
+.playwright-cli/
 .espclaw-sim-workspace/
+opt/
+site/wasm/
+wasm/cache/
 __pycache__/
 *.pyc

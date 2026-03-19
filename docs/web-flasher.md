@@ -1,17 +1,16 @@
 # Web Flasher
 
-ESPClaw ships a browser-based flasher at `https://espclaw.dev/`.
+ESPClaw ships a browser-based landing page and flasher at `https://espclaw.dev/`.
 
-It is designed for the boring, high-value path:
+It is designed to do three things well:
 
-- discover the latest GitHub release
-- pick the right board family
-- flash with Web Serial
-- fall back to a downloadable bundle if browser flashing is unavailable
+- explain what ESPClaw is and what it is for
+- let users flash the latest firmware from a browser
+- let users try the real ESPClaw runtime in the browser before touching hardware
 
 ## How It Works
 
-The flasher page is a static GitHub Pages site.
+The site is a static GitHub Pages app.
 
 At runtime it:
 
@@ -21,6 +20,7 @@ At runtime it:
    - `esp32`
    - `esp32s3`
 4. links the corresponding release zip bundle for manual flashing
+5. exposes an experimental browser lab that runs the real ESPClaw C runtime compiled to WebAssembly and can use WebLLM or an OpenAI-compatible endpoint for the agent surface
 
 The release workflow publishes:
 
@@ -39,6 +39,11 @@ Use a Chromium-class browser with Web Serial support:
 
 Safari and Firefox are not sufficient for browser flashing here.
 
+For the browser lab:
+
+- local WebLLM use additionally depends on browser WebGPU support
+- if WebGPU is unavailable, the page can still target an OpenAI-compatible endpoint
+
 ## First Flash
 
 For most boards, the first wired flash gets ESPClaw onto the device.
@@ -49,3 +54,16 @@ See [OTA](ota.md) for the current migration and partition-layout caveats.
 ## Manual Fallback
 
 Every tagged release also publishes raw firmware assets and a zipped bundle per target, so users can still flash with `esptool.py` if browser flashing is unavailable or if their board needs a more manual bring-up path.
+
+## Browser Lab Scope
+
+The browser lab is intentionally an experimental operator-facing surface, but it is no longer a fake JavaScript kernel. It executes the real `espclaw_core` runtime in WebAssembly and is useful for making the ESPClaw mental model legible before touching a board:
+
+- components
+- apps
+- tasks
+- behaviors
+- events
+- system logs
+
+It is useful for demos, prompt iteration, tool-path debugging, and explaining how the runtime is expected to structure work before users flash a board.

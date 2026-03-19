@@ -49,6 +49,26 @@ class ReleaseManifestTests(unittest.TestCase):
         self.assertIn('window.location.hostname === "www.espclaw.dev"', html)
         self.assertIn('window.location.replace(next);', html)
 
+    def test_site_includes_browser_lab_and_project_surfaces(self) -> None:
+        html = (ROOT / "site" / "index.html").read_text(encoding="utf-8")
+        app_js = (ROOT / "site" / "app.js").read_text(encoding="utf-8")
+        simulator_js = (ROOT / "site" / "simulator.js").read_text(encoding="utf-8")
+        pages_yml = (ROOT / ".github" / "workflows" / "pages.yml").read_text(encoding="utf-8")
+        build_script = (ROOT / "scripts" / "build_site_wasm.sh").read_text(encoding="utf-8")
+
+        self.assertIn("Try ESPClaw in the browser before you ever flash a board.", html)
+        self.assertIn("Browser Lab", html)
+        self.assertIn("github.com/atiti/espclaw", html)
+        self.assertIn('import { BrowserLab } from "./simulator.js";', app_js)
+        self.assertIn("OpenAI-compatible", simulator_js)
+        self.assertIn("WebLLM", simulator_js)
+        self.assertIn("system.logs", simulator_js)
+        self.assertIn('import("./wasm/espclaw-browser-runtime.js")', simulator_js)
+        self.assertIn("real ESPClaw C runtime compiled to WebAssembly", html)
+        self.assertIn("setup-emsdk", pages_yml)
+        self.assertIn("./scripts/build_site_wasm.sh", pages_yml)
+        self.assertIn("espclaw-browser-runtime.wasm", build_script)
+
 
 if __name__ == "__main__":
     unittest.main()

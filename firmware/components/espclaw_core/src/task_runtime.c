@@ -7,6 +7,7 @@
 #ifdef ESP_PLATFORM
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#elif defined(ESPCLAW_WASM)
 #else
 #include <pthread.h>
 #endif
@@ -26,6 +27,7 @@ typedef struct {
 #ifdef ESP_PLATFORM
     TaskHandle_t task;
     portMUX_TYPE lock;
+#elif defined(ESPCLAW_WASM)
 #else
     pthread_t thread;
     pthread_mutex_t lock;
@@ -52,6 +54,7 @@ static int task_lock_init(espclaw_task_slot_t *slot)
 
 #ifdef ESP_PLATFORM
     portMUX_INITIALIZE(&slot->lock);
+#elif defined(ESPCLAW_WASM)
 #else
     if (pthread_mutex_init(&slot->lock, NULL) != 0) {
         return -1;
@@ -72,6 +75,7 @@ static void task_lock(espclaw_task_slot_t *slot)
     }
 #ifdef ESP_PLATFORM
     taskENTER_CRITICAL(&slot->lock);
+#elif defined(ESPCLAW_WASM)
 #else
     pthread_mutex_lock(&slot->lock);
 #endif
@@ -84,6 +88,7 @@ static void task_unlock(espclaw_task_slot_t *slot)
     }
 #ifdef ESP_PLATFORM
     taskEXIT_CRITICAL(&slot->lock);
+#elif defined(ESPCLAW_WASM)
 #else
     pthread_mutex_unlock(&slot->lock);
 #endif
@@ -190,6 +195,7 @@ static void notify_task_worker(espclaw_task_slot_t *slot)
     if (slot->task != NULL) {
         xTaskNotifyGive(slot->task);
     }
+#elif defined(ESPCLAW_WASM)
 #else
     pthread_cond_signal(&slot->condition);
 #endif
@@ -259,6 +265,11 @@ static void run_task_worker(espclaw_task_slot_t *slot)
                 task_unlock(slot);
 #ifdef ESP_PLATFORM
                 ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+#elif defined(ESPCLAW_WASM)
+                task_lock(slot);
+                stop_requested = true;
+                should_run = false;
+                break;
 #else
                 pthread_mutex_lock(&slot->lock);
                 while (!slot->status.stop_requested && slot->pending_count == 0) {
@@ -331,6 +342,61 @@ static void run_task_worker(espclaw_task_slot_t *slot)
     espclaw_app_vm_close(vm);
     mark_task_finished(slot, slot->status.last_status, slot->status.last_result);
 }
+
+#ifdef ESPCLAW_WASM
+static int run_task_step_once_wasm(espclaw_task_slot_t *slot, const char *payload, bool keep_active)
+{
+    espclaw_app_vm_t *vm = NULL;
+    char result[ESPCLAW_TASK_RESULT_MAX];
+    int open_status;
+    int step_status;
+
+    if (slot == NULL) {
+        return -1;
+    }
+
+    open_status = espclaw_app_vm_open(
+        slot->workspace_root,
+        slot->status.app_id,
+        &vm,
+        result,
+        sizeof(result)
+    );
+    if (open_status != 0) {
+        mark_task_finished(slot, -1, result);
+        return -1;
+    }
+
+    task_lock(slot);
+    slot->status.last_started_ms = espclaw_hw_ticks_ms();
+    task_unlock(slot);
+
+    step_status = espclaw_app_vm_step(
+        vm,
+        slot->status.trigger,
+        payload != NULL ? payload : "",
+        result,
+        sizeof(result)
+    );
+    espclaw_app_vm_close(vm);
+
+    task_lock(slot);
+    slot->status.iterations_completed++;
+    if (schedule_is_event(slot->status.schedule)) {
+        slot->status.events_received++;
+    }
+    slot->status.last_status = step_status;
+    slot->status.last_finished_ms = espclaw_hw_ticks_ms();
+    snprintf(slot->status.last_result, sizeof(slot->status.last_result), "%s", result);
+    if (!keep_active || step_status != 0) {
+        slot->status.active = false;
+        slot->status.completed = true;
+    }
+    task_unlock(slot);
+
+    return step_status;
+}
+#endif
 
 #ifdef ESP_PLATFORM
 static void task_runtime_worker(void *argument)
@@ -474,6 +540,20 @@ int espclaw_task_start_with_schedule(
             return -1;
         }
     }
+#elif defined(ESPCLAW_WASM)
+    if (event_schedule) {
+        if (buffer != NULL && buffer_size > 0) {
+            snprintf(buffer, buffer_size, "task %s armed for event trigger %s", task_id, trigger);
+        }
+        return 0;
+    }
+
+    if (run_task_step_once_wasm(slot, slot->payload, false) != 0) {
+        if (buffer != NULL && buffer_size > 0) {
+            snprintf(buffer, buffer_size, "task %s failed", task_id);
+        }
+        return -1;
+    }
 #else
     if (pthread_create(&slot->thread, NULL, task_runtime_thread, slot) != 0) {
         task_lock(slot);
@@ -540,6 +620,7 @@ int espclaw_task_emit_event(
 
     for (index = 0; index < ESPCLAW_TASK_RUNTIME_MAX; ++index) {
         espclaw_task_slot_t *slot = &s_tasks[index];
+        char payload_copy[ESPCLAW_TASK_PAYLOAD_MAX];
 
         if (!slot->status.active || !schedule_is_event(slot->status.schedule) ||
             strcmp(slot->status.trigger, event_name) != 0) {
@@ -556,8 +637,21 @@ int espclaw_task_emit_event(
 
             snprintf(slot->pending_payloads[overwrite_index], sizeof(slot->pending_payloads[overwrite_index]), "%s", payload != NULL ? payload : "");
         }
+#ifdef ESPCLAW_WASM
+        payload_copy[0] = '\0';
+        if (slot->pending_count > 0) {
+            snprintf(payload_copy, sizeof(payload_copy), "%s", slot->pending_payloads[slot->pending_head]);
+            slot->pending_payloads[slot->pending_head][0] = '\0';
+            slot->pending_head = (slot->pending_head + 1U) % 4U;
+            slot->pending_count--;
+        }
+#endif
         task_unlock(slot);
+#ifdef ESPCLAW_WASM
+        (void)run_task_step_once_wasm(slot, payload_copy, true);
+#else
         notify_task_worker(slot);
+#endif
         delivered++;
     }
 

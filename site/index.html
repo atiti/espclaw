@@ -3,15 +3,31 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>ESPClaw Flash Console</title>
+    <title>ESPClaw | Embedded agent runtime for ESP32 boards</title>
     <meta
       name="description"
-      content="Flash ESPClaw firmware directly from the browser onto supported ESP32 boards."
+      content="ESPClaw is an ESP32-native AI agent runtime with browser flashing, reusable Lua components, on-device apps, and a browser lab backed by the real C runtime in WebAssembly."
     />
+    <meta property="og:title" content="ESPClaw" />
+    <meta
+      property="og:description"
+      content="Remote reasoning, local side effects. Flash firmware, inspect the runtime, and try the real ESPClaw runtime in your browser via WebAssembly."
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://espclaw.dev/" />
     <link rel="canonical" href="https://espclaw.dev/" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23081216'/%3E%3Cpath d='M20 18h24v8H28v10h13v8H28v12h-8z' fill='%236de3ff'/%3E%3C/svg%3E"
+    />
     <link rel="stylesheet" href="./styles.css" />
     <script>
-      // Keep a single canonical host even if Cloudflare serves the site on www.
       if (window.location.hostname === "www.espclaw.dev") {
         const next =
           "https://espclaw.dev" + window.location.pathname + window.location.search + window.location.hash;
@@ -22,96 +38,414 @@
     <script type="module" src="./app.js"></script>
   </head>
   <body>
-    <div class="noise"></div>
-    <main class="shell">
-      <header class="hero">
+    <div class="page-noise" aria-hidden="true"></div>
+    <div class="page-grid" aria-hidden="true"></div>
+    <header class="topbar">
+      <a class="brand" href="#hero">
+        <span class="brand-mark">E</span>
+        <span class="brand-copy">
+          <strong>ESPClaw</strong>
+          <span>Embedded agent runtime</span>
+        </span>
+      </a>
+      <nav class="topnav">
+        <a href="#overview">Overview</a>
+        <a href="#lab">Browser Lab</a>
+        <a href="#flash">Flash</a>
+        <a href="#docs">Docs</a>
+      </nav>
+      <a class="button button-ghost" href="https://github.com/atiti/espclaw">GitHub</a>
+    </header>
+
+    <main class="page-shell">
+      <section class="hero" id="hero">
         <div class="hero-copy">
-          <p class="eyebrow">ESPCLAW // FIRMWARE CONSOLE</p>
-          <h1>Flash ESPClaw from your browser.</h1>
-          <p class="lede">
-            No IDE. No local build. Grab the latest release, talk over Web Serial, and put a real
-            agent runtime onto a real board.
+          <p class="eyebrow">ESPCLAW // EMBEDDED AGENTS FOR REAL HARDWARE</p>
+          <h1>Put a programmable agent runtime on a board that actually has to behave.</h1>
+          <p class="hero-lede">
+            ESPClaw turns ESP32-class boards into inspectable, OTA-updatable agent systems with
+            reusable Lua components, persistent tasks and behaviors, a local admin UI, and real
+            hardware tool calls.
           </p>
           <div class="hero-actions">
-            <a class="button primary" href="https://github.com/atiti/espclaw/releases/latest">Latest Release</a>
-            <a class="button secondary" href="https://github.com/atiti/espclaw">Source</a>
+            <a class="button button-primary" href="#flash">Flash a board</a>
+            <a class="button button-secondary" href="#lab">Launch browser lab</a>
+            <a class="button button-ghost" href="https://github.com/atiti/espclaw/releases/latest">Download release</a>
+          </div>
+          <div class="hero-signal-strip">
+            <div class="signal-chip">
+              <span>Boards</span>
+              <strong>ESP32 · ESP32-CAM · ESP32-S3</strong>
+            </div>
+            <div class="signal-chip">
+              <span>Channels</span>
+              <strong>Web · UART · Telegram · Simulator</strong>
+            </div>
+            <div class="signal-chip">
+              <span>Runtime</span>
+              <strong>Apps · Components · Tasks · Behaviors · Events</strong>
+            </div>
           </div>
         </div>
-        <aside class="hero-meta">
-          <div class="meta-card">
-            <span class="meta-label">Repo</span>
-            <code>atiti/espclaw</code>
+
+        <aside class="hero-panel">
+          <div class="terminal-card">
+            <div class="terminal-head">
+              <span class="terminal-dot"></span>
+              <span class="terminal-dot"></span>
+              <span class="terminal-dot"></span>
+              <strong>espclaw://runtime</strong>
+            </div>
+            <div class="terminal-body">
+              <div class="terminal-row">
+                <span class="terminal-label">goal</span>
+                <span>remote reasoning, local side effects</span>
+              </div>
+              <div class="terminal-row">
+                <span class="terminal-label">stack</span>
+                <span>tool loop + workspace + Lua runtime + OTA</span>
+              </div>
+              <div class="terminal-row">
+                <span class="terminal-label">artifact</span>
+                <span>component → app → task / behavior → event</span>
+              </div>
+              <div class="terminal-divider"></div>
+              <pre class="terminal-code">user: create an ms5611 component and a weather app
+assistant: component.install_from_manifest(ms5611)
+assistant: app.install(weather_station)
+assistant: task.start(weather_station_sampler)</pre>
+            </div>
           </div>
-          <div class="meta-card">
-            <span class="meta-label">Transport</span>
-            <code>Web Serial + esp-web-tools</code>
-          </div>
-          <div class="meta-card">
-            <span class="meta-label">Boards</span>
-            <code>ESP32 / ESP32-S3</code>
+          <div class="hero-metrics" id="release-strip">
+            <article class="metric-card">
+              <span class="metric-label">Latest release</span>
+              <strong id="release-tag-hero">Loading…</strong>
+            </article>
+            <article class="metric-card">
+              <span class="metric-label">Published</span>
+              <strong id="release-date-hero">—</strong>
+            </article>
+            <article class="metric-card">
+              <span class="metric-label">Browser flash</span>
+              <strong>esp-web-tools</strong>
+            </article>
           </div>
         </aside>
-      </header>
+      </section>
 
-      <section class="status-panel" id="release-panel">
-        <div>
-          <p class="eyebrow">LATEST BUILD</p>
-          <h2 id="release-title">Looking up release metadata…</h2>
-          <p id="release-summary">The flasher page pulls firmware artifacts from GitHub Releases.</p>
+      <section class="section" id="overview">
+        <div class="section-heading">
+          <p class="eyebrow">PROJECT OVERVIEW</p>
+          <h2>An embedded agent runtime, not just another firmware image.</h2>
+          <p>
+            ESPClaw is built for boards that have real constraints: limited RAM, unstable power,
+            real sensors, flaky radios, and operators who need to understand what the system is
+            doing. The design goal is to keep the stack inspectable while still letting an LLM
+            orchestrate serious local behavior.
+          </p>
         </div>
-        <div class="status-grid">
-          <div>
-            <span class="meta-label">Tag</span>
-            <strong id="release-tag">—</strong>
+        <div class="overview-grid">
+          <article class="feature-card">
+            <p class="eyebrow">GOAL</p>
+            <h3>Shorten the loop between idea and hardware behavior.</h3>
+            <p>
+              Flash once, then iterate with OTA, installable Lua apps, reusable components, and a
+              tool-using agent loop instead of rebuilding for every change.
+            </p>
+          </article>
+          <article class="feature-card">
+            <p class="eyebrow">PHILOSOPHY</p>
+            <h3>Boring architecture, visible state, reversible operations.</h3>
+            <p>
+              Workspace files, logs, tasks, behaviors, and model interactions are exposed as local
+              runtime surfaces instead of disappearing into a cloud-only control plane.
+            </p>
+          </article>
+          <article class="feature-card">
+            <p class="eyebrow">SHAPE</p>
+            <h3>Components for reuse. Apps for features. Behaviors for persistence.</h3>
+            <p>
+              ESPClaw encourages community-shared drivers and modules while keeping end-user
+              features as explicit installable artifacts.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section" id="capabilities">
+        <div class="section-heading">
+          <p class="eyebrow">CAPABILITIES</p>
+          <h2>What the stack can do today.</h2>
+        </div>
+        <div class="capability-grid">
+          <article class="capability-card">
+            <h3>Hardware runtime</h3>
+            <ul>
+              <li>GPIO, PWM, ADC, I2C, SPI, UART, BLE scan</li>
+              <li>Camera capture on ESP32-CAM class boards</li>
+              <li>Board profiles and named pins/buses</li>
+            </ul>
+          </article>
+          <article class="capability-card">
+            <h3>Agent surfaces</h3>
+            <ul>
+              <li>Web admin chat, UART shell, Telegram, simulator</li>
+              <li>Tool-calling loop with execution-choice guidance</li>
+              <li>Shared global YOLO operator policy</li>
+            </ul>
+          </article>
+          <article class="capability-card">
+            <h3>Programmability</h3>
+            <ul>
+              <li>Installable Lua apps and shareable components</li>
+              <li>Tasks, behaviors, events, and event watches</li>
+              <li>Chunked uploads and install-from-file / URL / manifest</li>
+            </ul>
+          </article>
+          <article class="capability-card">
+            <h3>Operator ergonomics</h3>
+            <ul>
+              <li>Browser flashing and OTA update paths</li>
+              <li>Workspace file APIs and context chunking</li>
+              <li>New in-memory `/api/logs` and `system.logs` tail</li>
+            </ul>
+          </article>
+        </div>
+      </section>
+
+      <section class="section architecture-section">
+        <div class="section-heading">
+          <p class="eyebrow">RUNTIME MAP</p>
+          <h2>How ESPClaw is structured.</h2>
+        </div>
+        <div class="architecture-grid">
+          <div class="architecture-diagram">
+            <div class="arch-node arch-node-accent">Channels</div>
+            <div class="arch-node">Web · UART · Telegram · Browser Lab</div>
+            <div class="arch-link"></div>
+            <div class="arch-node arch-node-accent">Agent loop</div>
+            <div class="arch-node">Prompt contract · tool calls · retries · safety</div>
+            <div class="arch-link"></div>
+            <div class="arch-split">
+              <div class="arch-column">
+                <div class="arch-node arch-node-accent">Workspace</div>
+                <div class="arch-node">apps / components / sessions / blobs / memory</div>
+              </div>
+              <div class="arch-column">
+                <div class="arch-node arch-node-accent">Runtime</div>
+                <div class="arch-node">hardware / network / OTA / tasks / behaviors / events</div>
+              </div>
+            </div>
           </div>
-          <div>
-            <span class="meta-label">Published</span>
+          <div class="runtime-primitives">
+            <article>
+              <span class="primitive-label">component</span>
+              <p>Reusable Lua module or driver you can share with the community.</p>
+            </article>
+            <article>
+              <span class="primitive-label">app</span>
+              <p>Installable feature bundle built from components and local logic.</p>
+            </article>
+            <article>
+              <span class="primitive-label">task</span>
+              <p>Live running instance of an app for “run this now” automation.</p>
+            </article>
+            <article>
+              <span class="primitive-label">behavior</span>
+              <p>Persisted task definition that survives reboot and can autostart.</p>
+            </article>
+            <article>
+              <span class="primitive-label">event</span>
+              <p>Decoupled local signal for waking event-driven tasks and pipelines.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="section lab-section" id="lab">
+        <div class="section-heading">
+          <p class="eyebrow">BROWSER LAB</p>
+          <h2>Try ESPClaw in the browser before you ever flash a board.</h2>
+          <p>
+            This lab runs the real ESPClaw C runtime compiled to WebAssembly: workspace bootstrap,
+            tool execution, components, apps, tasks, behaviors, events, and the in-memory log
+            ring all come from the same runtime core the firmware and host simulator use. WebLLM
+            can drive the agent loop locally in-browser, or you can point the page at an
+            OpenAI-compatible endpoint.
+          </p>
+        </div>
+
+        <div class="lab-layout">
+          <form class="lab-sidebar" id="lab-provider-form">
+            <div class="control-card">
+              <p class="eyebrow">MODEL</p>
+              <h3>Agent provider</h3>
+              <div class="segmented" role="tablist" aria-label="Simulator provider">
+                <button class="segmented__button is-active" data-provider="webllm" type="button">WebLLM</button>
+                <button class="segmented__button" data-provider="openai" type="button">OpenAI-compatible</button>
+              </div>
+              <label class="field">
+                <span>Model</span>
+                <select id="lab-model-select"></select>
+              </label>
+              <label class="field field-provider field-provider-openai hidden">
+                <span>Base URL</span>
+                <input id="lab-openai-base-url" type="url" autocomplete="url" placeholder="https://api.openai.com/v1" />
+              </label>
+              <input
+                class="sr-only field-provider field-provider-openai hidden"
+                id="lab-openai-username"
+                type="text"
+                autocomplete="username"
+                aria-hidden="true"
+                tabindex="-1"
+              />
+              <label class="field field-provider field-provider-openai hidden">
+                <span>API key</span>
+                <input
+                  id="lab-openai-api-key"
+                  type="password"
+                  autocomplete="current-password"
+                  placeholder="Optional if endpoint is open"
+                />
+              </label>
+              <div class="control-actions">
+                <button class="button button-primary" id="lab-init-button" type="button">Initialize model</button>
+                <button class="button button-ghost" id="lab-reset-button" type="button">Reset lab</button>
+              </div>
+              <p class="status-pill" id="lab-engine-status">Idle. Pick a model and initialize the browser lab.</p>
+              <div class="progress-rail" aria-hidden="true">
+                <div class="progress-rail__fill" id="lab-engine-progress"></div>
+              </div>
+            </div>
+
+            <div class="control-card">
+              <p class="eyebrow">SCENARIOS</p>
+              <h3>Seed prompts</h3>
+              <div class="scenario-list">
+                <button class="scenario-chip" type="button" onclick="window.__espclawBrowserLabSeed?.(this.dataset.seed)" data-seed="Create an ms5611 component, then make a weather_station app that uses it and runs once per second.">MS5611 driver + weather app</button>
+                <button class="scenario-chip" type="button" onclick="window.__espclawBrowserLabSeed?.(this.dataset.seed)" data-seed="Create a Lua task to blink gpio 4 five times, then run it now.">Blink task and run it</button>
+                <button class="scenario-chip" type="button" onclick="window.__espclawBrowserLabSeed?.(this.dataset.seed)" data-seed="Make a persistent behavior that watches an event and writes the payload into logs/events.txt.">Persistent event behavior</button>
+                <button class="scenario-chip" type="button" onclick="window.__espclawBrowserLabSeed?.(this.dataset.seed)" data-seed="Show me system.logs and explain what the simulated board is doing.">Inspect log tail</button>
+              </div>
+            </div>
+
+            <div class="control-card">
+              <p class="eyebrow">BROWSER RUNTIME</p>
+              <h3>WASM runtime snapshot</h3>
+              <div class="mini-stats" id="lab-runtime-stats"></div>
+            </div>
+          </form>
+
+          <div class="lab-main">
+            <div class="lab-chat-shell">
+              <div class="lab-chat-head">
+                <div>
+                  <p class="eyebrow">CHAT</p>
+                  <h3>ESPClaw browser runtime</h3>
+                </div>
+                <span class="lab-badge" id="lab-turn-badge">Local-first</span>
+              </div>
+              <div class="lab-transcript" id="lab-transcript" aria-live="polite"></div>
+              <form class="lab-composer" id="lab-composer">
+                <label class="sr-only" for="lab-input">Chat with the ESPClaw browser runtime</label>
+                <textarea
+                  id="lab-input"
+                  rows="4"
+                  placeholder="Ask the runtime to install a component, create an app, run a task, inspect system.logs, or explain the architecture."
+                ></textarea>
+                <div class="lab-composer-actions">
+                  <p class="composer-note">This tab is exercising the real ESPClaw runtime in WASM, not a fake demo kernel.</p>
+                  <button class="button button-primary" id="lab-send-button" type="submit">Run turn</button>
+                </div>
+              </form>
+            </div>
+
+            <div class="lab-sidepanels">
+              <section class="trace-card">
+                <div class="trace-head">
+                  <div>
+                    <p class="eyebrow">TOOL TRACE</p>
+                    <h3>Executed calls</h3>
+                  </div>
+                  <button class="button button-ghost button-small" id="lab-clear-trace" type="button">Clear</button>
+                </div>
+                <div class="trace-list" id="lab-trace"></div>
+              </section>
+
+              <section class="trace-card">
+                <div class="trace-head">
+                  <div>
+                    <p class="eyebrow">LOG TAIL</p>
+                    <h3>`system.logs` surface</h3>
+                  </div>
+                  <button class="button button-ghost button-small" id="lab-refresh-logs" type="button">Refresh</button>
+                </div>
+                <pre class="log-console" id="lab-log-console"></pre>
+              </section>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section flash-section" id="flash">
+        <div class="section-heading">
+          <p class="eyebrow">FLASHER</p>
+          <h2>Browser flashing for the current release.</h2>
+          <p id="release-summary">
+            The page pulls firmware artifacts and esp-web-tools manifests from GitHub Releases.
+          </p>
+        </div>
+        <div class="release-banner">
+          <article class="release-card">
+            <span class="metric-label">Release</span>
+            <strong id="release-tag">Loading…</strong>
+          </article>
+          <article class="release-card">
+            <span class="metric-label">Published</span>
             <strong id="release-date">—</strong>
-          </div>
-          <div>
-            <span class="meta-label">Install path</span>
-            <strong>Browser flash</strong>
-          </div>
-          <div>
-            <span class="meta-label">Fallback</span>
-            <strong>Download .zip</strong>
-          </div>
+          </article>
+          <article class="release-card">
+            <span class="metric-label">Fallback</span>
+            <strong>Downloadable bundles</strong>
+          </article>
+        </div>
+        <div class="board-grid" id="board-grid">
+          <article class="board-card board-card--loading">
+            <p class="eyebrow">DISCOVERY</p>
+            <h3>Loading release assets…</h3>
+            <p>The page is querying the latest GitHub release and matching flash manifests.</p>
+          </article>
         </div>
       </section>
 
-      <section class="board-grid" id="board-grid">
-        <article class="board-card board-card--loading">
-          <p class="eyebrow">DISCOVERY</p>
-          <h3>Loading release assets…</h3>
-          <p>The page is querying the latest GitHub release and matching its flash manifests.</p>
-        </article>
-      </section>
-
-      <section class="notes-grid">
-        <article class="info-card">
-          <p class="eyebrow">BROWSER REQUIREMENTS</p>
-          <h3>Use a Chromium browser.</h3>
-          <p>
-            Web Serial works in current Chrome, Edge, and Chromium-based Brave. Safari and Firefox
-            are not enough here.
-          </p>
-        </article>
-        <article class="info-card">
-          <p class="eyebrow">FIRST FLASH</p>
-          <h3>Serial cable, then OTA forever.</h3>
-          <p>
-            Most boards only need one wired flash. After that, ESPClaw’s admin UI can take OTA
-            firmware updates directly.
-          </p>
-        </article>
-        <article class="info-card">
-          <p class="eyebrow">MANUAL MODE</p>
-          <h3>Raw binaries are still published.</h3>
-          <p>
-            Every release also ships bootloader, partition table, app image, OTA data, checksums,
-            and a convenient bundle zip for manual flashing.
-          </p>
-        </article>
+      <section class="section docs-section" id="docs">
+        <div class="section-heading">
+          <p class="eyebrow">OPEN SOURCE</p>
+          <h2>Project goals, capabilities, and where to go next.</h2>
+        </div>
+        <div class="docs-grid">
+          <a class="docs-card" href="https://github.com/atiti/espclaw">
+            <span class="docs-label">Repository</span>
+            <strong>GitHub</strong>
+            <p>Source, issues, releases, CI, and project history.</p>
+          </a>
+          <a class="docs-card" href="https://github.com/atiti/espclaw#readme">
+            <span class="docs-label">Docs map</span>
+            <strong>README</strong>
+            <p>Architecture, quick start, support matrix, and release notes.</p>
+          </a>
+          <a class="docs-card" href="https://github.com/atiti/espclaw/blob/main/docs/components.md">
+            <span class="docs-label">Reuse model</span>
+            <strong>Components</strong>
+            <p>Shareable drivers, manifests, and install-from-url flows.</p>
+          </a>
+          <a class="docs-card" href="https://github.com/atiti/espclaw/blob/main/docs/simulator.md">
+            <span class="docs-label">Runtime testing</span>
+            <strong>Simulator</strong>
+            <p>Host and simulator flows for testing without touching hardware.</p>
+          </a>
+        </div>
       </section>
     </main>
   </body>

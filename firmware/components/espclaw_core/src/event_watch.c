@@ -8,6 +8,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#elif defined(ESPCLAW_WASM)
 #else
 #include <pthread.h>
 #endif
@@ -20,6 +21,7 @@ typedef struct {
     espclaw_event_watch_status_t status;
 #ifdef ESP_PLATFORM
     SemaphoreHandle_t lock;
+#elif defined(ESPCLAW_WASM)
 #else
     pthread_mutex_t lock;
 #endif
@@ -32,6 +34,7 @@ static bool s_stop_requested;
 
 #ifdef ESP_PLATFORM
 static TaskHandle_t s_watch_task;
+#elif defined(ESPCLAW_WASM)
 #else
 static pthread_t s_watch_thread;
 #endif
@@ -49,6 +52,7 @@ static int watch_lock_init(espclaw_event_watch_slot_t *slot)
     if (slot->lock == NULL) {
         return -1;
     }
+#elif defined(ESPCLAW_WASM)
 #else
     if (pthread_mutex_init(&slot->lock, NULL) != 0) {
         return -1;
@@ -65,6 +69,7 @@ static void watch_lock(espclaw_event_watch_slot_t *slot)
     }
 #ifdef ESP_PLATFORM
     xSemaphoreTake(slot->lock, portMAX_DELAY);
+#elif defined(ESPCLAW_WASM)
 #else
     pthread_mutex_lock(&slot->lock);
 #endif
@@ -77,6 +82,7 @@ static void watch_unlock(espclaw_event_watch_slot_t *slot)
     }
 #ifdef ESP_PLATFORM
     xSemaphoreGive(slot->lock);
+#elif defined(ESPCLAW_WASM)
 #else
     pthread_mutex_unlock(&slot->lock);
 #endif
@@ -296,6 +302,7 @@ static void event_watch_worker(void *argument)
     s_watch_task = NULL;
     vTaskDelete(NULL);
 }
+#elif defined(ESPCLAW_WASM)
 #else
 static void *event_watch_thread(void *argument)
 {
@@ -331,6 +338,9 @@ int espclaw_event_watch_runtime_start(void)
             return -1;
         }
     }
+#elif defined(ESPCLAW_WASM)
+    s_runtime_started = true;
+    return 0;
 #else
     if (pthread_create(&s_watch_thread, NULL, event_watch_thread, NULL) != 0) {
         return -1;

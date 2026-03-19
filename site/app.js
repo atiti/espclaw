@@ -1,3 +1,5 @@
+import { BrowserLab } from "./simulator.js";
+
 const REPO = "atiti/espclaw";
 const RELEASE_API = `https://api.github.com/repos/${REPO}/releases/latest`;
 
@@ -5,21 +7,23 @@ const TARGETS = [
   {
     id: "esp32",
     title: "ESP32 / ESP32-CAM",
-    subtitle: "Camera-first compatibility profile",
+    subtitle: "Camera-first profile for compact boards and cheap experimentation.",
     chip: "ESP32",
     notes: [
       "Best fit for AI Thinker ESP32-CAM and similar PSRAM-equipped ESP32 boards.",
-      "Includes OTA-ready partition layout and browser-flash manifest.",
+      "Ships with OTA-ready partitions and a browser manifest for first flash.",
+      "Great low-cost entry point for camera, GPIO, and Telegram-driven flows.",
     ],
   },
   {
     id: "esp32s3",
     title: "ESP32-S3",
-    subtitle: "Primary full-agent profile",
+    subtitle: "Full-headroom profile for the broadest feature margin.",
     chip: "ESP32-S3",
     notes: [
-      "Recommended for the fullest ESPClaw experience and headroom.",
-      "Best option if you want the broadest feature margin for apps, tools, and chat.",
+      "Recommended if you want the fullest ESPClaw experience and memory headroom.",
+      "Best option for heavier local tooling, larger apps, and broader experimentation.",
+      "Uses the same release and browser-flash path as the ESP32 target.",
     ],
   },
 ];
@@ -36,6 +40,18 @@ function formatDate(value) {
   }).format(new Date(value));
 }
 
+function firstReleaseLine(body) {
+  if (!body) {
+    return "Fresh firmware artifacts are available from GitHub Releases.";
+  }
+  return (
+    body
+      .split("\n")
+      .map((line) => line.trim())
+      .find((line) => line && !line.startsWith("#")) || "Fresh firmware artifacts are available from GitHub Releases."
+  );
+}
+
 function renderBoardCard(target, assets, release) {
   const manifest = assets.get(`esp-web-tools-manifest-${target.id}.json`);
   const bundle = [...assets.values()].find(
@@ -44,15 +60,6 @@ function renderBoardCard(target, assets, release) {
 
   const article = document.createElement("article");
   article.className = "board-card";
-
-  const install = manifest
-    ? `<esp-web-install-button manifest="${manifest.browser_download_url}"></esp-web-install-button>`
-    : `<p class="error">No install manifest published for this target in the latest release.</p>`;
-
-  const download = bundle
-    ? `<a class="button tertiary" href="${bundle.browser_download_url}">Download bundle</a>`
-    : `<span class="muted">Bundle missing</span>`;
-
   article.innerHTML = `
     <div class="board-head">
       <div>
@@ -63,22 +70,30 @@ function renderBoardCard(target, assets, release) {
       <span class="pill">${target.id}</span>
     </div>
     <div class="board-actions">
-      ${install}
-      ${download}
+      ${
+        manifest
+          ? `<esp-web-install-button manifest="${manifest.browser_download_url}"></esp-web-install-button>`
+          : `<span class="error">Install manifest missing</span>`
+      }
+      ${
+        bundle
+          ? `<a class="button button-ghost" href="${bundle.browser_download_url}">Download bundle</a>`
+          : `<span class="error">Bundle missing</span>`
+      }
     </div>
-    <ul class="board-notes">
+    <ul>
       ${target.notes.map((note) => `<li>${note}</li>`).join("")}
     </ul>
   `;
-
   return article;
 }
 
 async function loadRelease() {
-  const panelTitle = document.getElementById("release-title");
-  const panelSummary = document.getElementById("release-summary");
-  const panelTag = document.getElementById("release-tag");
-  const panelDate = document.getElementById("release-date");
+  const heroTag = document.getElementById("release-tag-hero");
+  const heroDate = document.getElementById("release-date-hero");
+  const summary = document.getElementById("release-summary");
+  const releaseTag = document.getElementById("release-tag");
+  const releaseDate = document.getElementById("release-date");
   const boardGrid = document.getElementById("board-grid");
 
   try {
@@ -93,31 +108,36 @@ async function loadRelease() {
     const release = await response.json();
     const assets = assetMap(release.assets || []);
 
-    panelTitle.textContent = release.name || `Latest release ${release.tag_name}`;
-    panelSummary.textContent = release.body
-      ? release.body.split("\n").find((line) => line.trim()) || "Fresh firmware artifacts are available."
-      : "Fresh firmware artifacts are available.";
-    panelTag.textContent = release.tag_name;
-    panelDate.textContent = formatDate(release.published_at);
+    heroTag.textContent = release.tag_name;
+    heroDate.textContent = formatDate(release.published_at);
+    summary.textContent = firstReleaseLine(release.body);
+    releaseTag.textContent = release.tag_name;
+    releaseDate.textContent = formatDate(release.published_at);
 
     boardGrid.innerHTML = "";
     for (const target of TARGETS) {
       boardGrid.appendChild(renderBoardCard(target, assets, release));
     }
   } catch (error) {
-    panelTitle.textContent = "Release lookup failed";
-    panelSummary.textContent = "The flasher page could not read the latest GitHub release metadata.";
-    panelTag.textContent = "error";
-    panelDate.textContent = "—";
+    heroTag.textContent = "unavailable";
+    heroDate.textContent = "—";
+    summary.textContent = "The page could not read the latest GitHub release metadata.";
+    releaseTag.textContent = "error";
+    releaseDate.textContent = "—";
     boardGrid.innerHTML = `
       <article class="board-card board-card--error">
         <p class="eyebrow">RELEASE API</p>
         <h3>Could not load the latest release.</h3>
         <p>${error.message}</p>
-        <a class="button tertiary" href="https://github.com/${REPO}/releases/latest">Open GitHub Releases</a>
+        <a class="button button-ghost" href="https://github.com/${REPO}/releases/latest">Open GitHub Releases</a>
       </article>
     `;
   }
 }
 
-loadRelease();
+function boot() {
+  new BrowserLab(document);
+  void loadRelease();
+}
+
+boot();

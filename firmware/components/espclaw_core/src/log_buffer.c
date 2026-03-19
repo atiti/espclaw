@@ -25,6 +25,9 @@ static vprintf_like_t s_previous_logger = NULL;
 static portMUX_TYPE s_log_ring_mux = portMUX_INITIALIZER_UNLOCKED;
 #define ESPCLAW_LOG_BUFFER_LOCK() portENTER_CRITICAL(&s_log_ring_mux)
 #define ESPCLAW_LOG_BUFFER_UNLOCK() portEXIT_CRITICAL(&s_log_ring_mux)
+#elif defined(ESPCLAW_WASM)
+#define ESPCLAW_LOG_BUFFER_LOCK() ((void)0)
+#define ESPCLAW_LOG_BUFFER_UNLOCK() ((void)0)
 #else
 #include <pthread.h>
 static pthread_mutex_t s_log_ring_mutex = PTHREAD_MUTEX_INITIALIZER;
