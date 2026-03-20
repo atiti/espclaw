@@ -7,22 +7,22 @@ const TARGETS = [
   {
     id: "esp32",
     title: "ESP32 / ESP32-CAM",
-    subtitle: "Camera-first profile for compact boards and cheap experimentation.",
+    subtitle: "Camera-first profile for compact boards and low-cost experimentation.",
     chip: "ESP32",
     notes: [
       "Best fit for AI Thinker ESP32-CAM and similar PSRAM-equipped ESP32 boards.",
       "Ships with OTA-ready partitions and a browser manifest for first flash.",
-      "Great low-cost entry point for camera, GPIO, and Telegram-driven flows.",
+      "Good low-cost starting point for camera, GPIO, and Telegram-driven flows.",
     ],
   },
   {
     id: "esp32s3",
     title: "ESP32-S3",
-    subtitle: "Full-headroom profile for the broadest feature margin.",
+    subtitle: "Higher-headroom profile for broader experimentation and larger apps.",
     chip: "ESP32-S3",
     notes: [
-      "Recommended if you want the fullest ESPClaw experience and memory headroom.",
-      "Best option for heavier local tooling, larger apps, and broader experimentation.",
+      "Recommended if you want the fullest ESPClaw feature margin and memory headroom.",
+      "Best option for heavier local tooling, more ambitious apps, and broader debugging.",
       "Uses the same release and browser-flash path as the ESP32 target.",
     ],
   },
@@ -88,13 +88,22 @@ function renderBoardCard(target, assets, release) {
   return article;
 }
 
+function markActiveNav() {
+  const page = document.body.dataset.page;
+  document.querySelectorAll("[data-nav]").forEach((link) => {
+    link.classList.toggle("is-active", link.dataset.nav === page);
+  });
+}
+
 async function loadRelease() {
-  const heroTag = document.getElementById("release-tag-hero");
-  const heroDate = document.getElementById("release-date-hero");
-  const summary = document.getElementById("release-summary");
+  const boardGrid = document.getElementById("board-grid");
+  const releaseSummary = document.getElementById("release-summary");
   const releaseTag = document.getElementById("release-tag");
   const releaseDate = document.getElementById("release-date");
-  const boardGrid = document.getElementById("board-grid");
+
+  if (!boardGrid) {
+    return;
+  }
 
   try {
     const response = await fetch(RELEASE_API, {
@@ -108,22 +117,30 @@ async function loadRelease() {
     const release = await response.json();
     const assets = assetMap(release.assets || []);
 
-    heroTag.textContent = release.tag_name;
-    heroDate.textContent = formatDate(release.published_at);
-    summary.textContent = firstReleaseLine(release.body);
-    releaseTag.textContent = release.tag_name;
-    releaseDate.textContent = formatDate(release.published_at);
+    if (releaseTag) {
+      releaseTag.textContent = release.tag_name;
+    }
+    if (releaseDate) {
+      releaseDate.textContent = formatDate(release.published_at);
+    }
+    if (releaseSummary) {
+      releaseSummary.textContent = firstReleaseLine(release.body);
+    }
 
     boardGrid.innerHTML = "";
     for (const target of TARGETS) {
       boardGrid.appendChild(renderBoardCard(target, assets, release));
     }
   } catch (error) {
-    heroTag.textContent = "unavailable";
-    heroDate.textContent = "—";
-    summary.textContent = "The page could not read the latest GitHub release metadata.";
-    releaseTag.textContent = "error";
-    releaseDate.textContent = "—";
+    if (releaseTag) {
+      releaseTag.textContent = "error";
+    }
+    if (releaseDate) {
+      releaseDate.textContent = "—";
+    }
+    if (releaseSummary) {
+      releaseSummary.textContent = "The page could not read the latest GitHub release metadata.";
+    }
     boardGrid.innerHTML = `
       <article class="board-card board-card--error">
         <p class="eyebrow">RELEASE API</p>
@@ -135,8 +152,16 @@ async function loadRelease() {
   }
 }
 
-function boot() {
+function bootLab() {
+  if (document.body.dataset.page !== "lab") {
+    return;
+  }
   new BrowserLab(document);
+}
+
+function boot() {
+  markActiveNav();
+  bootLab();
   void loadRelease();
 }
 

@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Flash ESPClaw | Browser installer and release bundles</title>
+    <meta
+      name="description"
+      content="Install ESPClaw from the browser, download release bundles, and understand the first-flash path for supported ESP32 boards."
+    />
+    <link rel="canonical" href="https://espclaw.dev/flash.html" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+    <script>
+      if (window.location.hostname === "www.espclaw.dev") {
+        const next =
+          "https://espclaw.dev" + window.location.pathname + window.location.search + window.location.hash;
+        window.location.replace(next);
+      }
+    </script>
+    <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+    <script type="module" src="./app.js"></script>
+  </head>
+  <body data-page="flash">
+    <div class="page-aura" aria-hidden="true"></div>
+    <header class="site-header">
+      <div class="shell shell-header">
+        <a class="brand" href="./index.html">
+          <span class="brand-mark">E</span>
+          <span class="brand-copy">
+            <strong>ESPClaw</strong>
+            <span>Embedded agent runtime</span>
+          </span>
+        </a>
+        <nav class="site-nav" aria-label="Primary">
+          <a data-nav="home" href="./index.html">Overview</a>
+          <a data-nav="flash" href="./flash.html">Flash</a>
+          <a data-nav="lab" href="./lab.html">Browser Lab</a>
+          <a data-nav="docs" href="./docs.html">Docs</a>
+        </nav>
+        <a class="button button-ghost" href="https://github.com/atiti/espclaw/releases/latest">Releases</a>
+      </div>
+    </header>
+
+    <main class="shell page-stack">
+      <section class="page-hero">
+        <p class="eyebrow">FLASH ESPCLAW</p>
+        <h1>Use the browser for the first flash. Use OTA for most upgrades after that.</h1>
+        <p class="hero-lede narrow">
+          This page reads the latest GitHub release, renders install buttons for supported targets,
+          and exposes downloadable bundles if your board needs a more manual path.
+        </p>
+      </section>
+
+      <section class="release-strip">
+        <article class="metric-card">
+          <span>Latest release</span>
+          <strong id="release-tag">Loading…</strong>
+        </article>
+        <article class="metric-card">
+          <span>Published</span>
+          <strong id="release-date">—</strong>
+        </article>
+        <article class="metric-card">
+          <span>Fallback</span>
+          <strong>Downloadable ZIP bundles</strong>
+        </article>
+      </section>
+
+      <section class="panel-card">
+        <p class="eyebrow">RELEASE NOTES</p>
+        <h2>Current browser-flash build</h2>
+        <p id="release-summary">
+          The page pulls firmware artifacts and esp-web-tools manifests from GitHub Releases.
+        </p>
+      </section>
+
+      <section class="board-grid" id="board-grid">
+        <article class="board-card board-card--loading">
+          <p class="eyebrow">DISCOVERY</p>
+          <h3>Loading release assets…</h3>
+          <p>The page is querying the latest GitHub release and matching flash manifests.</p>
+        </article>
+      </section>
+
+      <section class="section-grid section-grid-3">
+        <article class="feature-card">
+          <p class="eyebrow">1. FIRST FLASH</p>
+          <h2>Use a Chromium-class browser with Web Serial.</h2>
+          <p>Chrome, Edge, and Brave work well here. Safari and Firefox do not support this path.</p>
+        </article>
+        <article class="feature-card">
+          <p class="eyebrow">2. AFTER BOOT</p>
+          <h2>Use the admin UI for OTA and runtime iteration.</h2>
+          <p>
+            Once the board is up, most upgrades should go through the admin UI or OTA manager
+            rather than repeated wired flashes.
+          </p>
+        </article>
+        <article class="feature-card">
+          <p class="eyebrow">3. MANUAL PATH</p>
+          <h2>Every release still publishes raw artifacts.</h2>
+          <p>
+            Bootloader, partition table, OTA data, app image, bundle zips, and `flasher_args.json`
+            are published for manual bring-up or debugging.
+          </p>
+        </article>
+      </section>
+    </main>
+  </body>
+</html>

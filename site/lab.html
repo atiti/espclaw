@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ESPClaw Browser Lab | Real runtime in WebAssembly</title>
+    <meta
+      name="description"
+      content="Run the real ESPClaw C runtime in the browser via WebAssembly, inspect logs, install components, and test apps before flashing hardware."
+    />
+    <link rel="canonical" href="https://espclaw.dev/lab.html" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+    <script>
+      if (window.location.hostname === "www.espclaw.dev") {
+        const next =
+          "https://espclaw.dev" + window.location.pathname + window.location.search + window.location.hash;
+        window.location.replace(next);
+      }
+    </script>
+    <script type="module" src="./app.js"></script>
+  </head>
+  <body data-page="lab">
+    <div class="page-aura" aria-hidden="true"></div>
+    <header class="site-header">
+      <div class="shell shell-header">
+        <a class="brand" href="./index.html">
+          <span class="brand-mark">E</span>
+          <span class="brand-copy">
+            <strong>ESPClaw</strong>
+            <span>Embedded agent runtime</span>
+          </span>
+        </a>
+        <nav class="site-nav" aria-label="Primary">
+          <a data-nav="home" href="./index.html">Overview</a>
+          <a data-nav="flash" href="./flash.html">Flash</a>
+          <a data-nav="lab" href="./lab.html">Browser Lab</a>
+          <a data-nav="docs" href="./docs.html">Docs</a>
+        </nav>
+        <a class="button button-ghost" href="https://github.com/atiti/espclaw">GitHub</a>
+      </div>
+    </header>
+
+    <main class="shell page-stack">
+      <section class="page-hero">
+        <p class="eyebrow">BROWSER LAB</p>
+        <h1>Try the real ESPClaw runtime in your browser before touching hardware.</h1>
+        <p class="hero-lede narrow">
+          This lab runs the real ESPClaw C runtime compiled to WebAssembly. Workspace bootstrap,
+          tools, components, apps, tasks, behaviors, events, and the in-memory log ring all come
+          from the same runtime core used by firmware and the host simulator.
+        </p>
+      </section>
+
+      <section class="lab-layout">
+        <form class="lab-sidebar" id="lab-provider-form">
+          <div class="control-card">
+            <p class="eyebrow">MODEL</p>
+            <h3>Agent provider</h3>
+            <div class="segmented" role="tablist" aria-label="Browser lab provider">
+              <button class="segmented__button is-active" data-provider="webllm" type="button">WebLLM</button>
+              <button class="segmented__button" data-provider="openai" type="button">OpenAI-compatible</button>
+            </div>
+            <label class="field">
+              <span>Model</span>
+              <select id="lab-model-select"></select>
+            </label>
+            <label class="field field-provider field-provider-openai hidden">
+              <span>Base URL</span>
+              <input id="lab-openai-base-url" type="url" autocomplete="url" placeholder="https://api.openai.com/v1" />
+            </label>
+            <input
+              class="sr-only field-provider field-provider-openai hidden"
+              id="lab-openai-username"
+              type="text"
+              autocomplete="username"
+              aria-hidden="true"
+              tabindex="-1"
+            />
+            <label class="field field-provider field-provider-openai hidden">
+              <span>API key</span>
+              <input
+                id="lab-openai-api-key"
+                type="password"
+                autocomplete="current-password"
+                placeholder="Optional if endpoint is open"
+              />
+            </label>
+            <div class="control-actions">
+              <button class="button button-primary" id="lab-init-button" type="button">Initialize model</button>
+              <button class="button button-ghost" id="lab-reset-button" type="button">Reset lab</button>
+            </div>
+            <p class="status-pill" id="lab-engine-status">Idle. Pick a model and initialize the browser lab.</p>
+            <div class="progress-rail" aria-hidden="true">
+              <div class="progress-rail__fill" id="lab-engine-progress"></div>
+            </div>
+          </div>
+
+          <div class="control-card">
+            <p class="eyebrow">SEED SCENARIOS</p>
+            <h3>Prompt starters</h3>
+            <div class="scenario-list">
+              <button class="scenario-chip" type="button" onclick="window.__espclawBrowserLabSeed?.(this.dataset.seed)" data-seed="Create an ms5611 component, then make a weather_station app that uses it and runs once per second.">MS5611 driver + weather app</button>
+              <button class="scenario-chip" type="button" onclick="window.__espclawBrowserLabSeed?.(this.dataset.seed)" data-seed="Create a Lua task to blink gpio 4 five times, then run it now.">Blink task and run it</button>
+              <button class="scenario-chip" type="button" onclick="window.__espclawBrowserLabSeed?.(this.dataset.seed)" data-seed="Make a persistent behavior that watches an event and writes the payload into logs/events.txt.">Persistent event behavior</button>
+              <button class="scenario-chip" type="button" onclick="window.__espclawBrowserLabSeed?.(this.dataset.seed)" data-seed="Show me system.logs and explain what the simulated board is doing.">Inspect log tail</button>
+            </div>
+          </div>
+
+          <div class="control-card">
+            <p class="eyebrow">RUNTIME SNAPSHOT</p>
+            <h3>WASM status</h3>
+            <div class="mini-stats" id="lab-runtime-stats"></div>
+          </div>
+        </form>
+
+        <div class="lab-main">
+          <div class="lab-chat-shell">
+            <div class="lab-chat-head">
+              <div>
+                <p class="eyebrow">CHAT</p>
+                <h3>ESPClaw browser runtime</h3>
+              </div>
+              <span class="lab-badge" id="lab-turn-badge">Local-first</span>
+            </div>
+            <div class="lab-transcript" id="lab-transcript" aria-live="polite"></div>
+            <form class="lab-composer" id="lab-composer">
+              <label class="sr-only" for="lab-input">Chat with the ESPClaw browser runtime</label>
+              <textarea
+                id="lab-input"
+                rows="4"
+                placeholder="Ask the runtime to install a component, create an app, run a task, inspect system.logs, or explain the architecture."
+              ></textarea>
+              <div class="lab-composer-actions">
+                <p class="composer-note">This page is exercising the real ESPClaw runtime in WASM, not a mock demo.</p>
+                <button class="button button-primary" id="lab-send-button" type="submit">Run turn</button>
+              </div>
+            </form>
+          </div>
+
+          <div class="lab-sidepanels">
+            <section class="trace-card">
+              <div class="trace-head">
+                <div>
+                  <p class="eyebrow">TOOL TRACE</p>
+                  <h3>Executed calls</h3>
+                </div>
+                <button class="button button-ghost button-small" id="lab-clear-trace" type="button">Clear</button>
+              </div>
+              <div class="trace-list" id="lab-trace"></div>
+            </section>
+
+            <section class="trace-card">
+              <div class="trace-head">
+                <div>
+                  <p class="eyebrow">LOG TAIL</p>
+                  <h3>`system.logs`</h3>
+                </div>
+                <button class="button button-ghost button-small" id="lab-refresh-logs" type="button">Refresh</button>
+              </div>
+              <pre class="log-console" id="lab-log-console"></pre>
+            </section>
+          </div>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ESPClaw Docs | Architecture, primitives, and contribution map</title>
+    <meta
+      name="description"
+      content="Understand the ESPClaw architecture, runtime primitives, project goals, and where to go next as a user or contributor."
+    />
+    <link rel="canonical" href="https://espclaw.dev/docs.html" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+    <script>
+      if (window.location.hostname === "www.espclaw.dev") {
+        const next =
+          "https://espclaw.dev" + window.location.pathname + window.location.search + window.location.hash;
+        window.location.replace(next);
+      }
+    </script>
+    <script type="module" src="./app.js"></script>
+  </head>
+  <body data-page="docs">
+    <div class="page-aura" aria-hidden="true"></div>
+    <header class="site-header">
+      <div class="shell shell-header">
+        <a class="brand" href="./index.html">
+          <span class="brand-mark">E</span>
+          <span class="brand-copy">
+            <strong>ESPClaw</strong>
+            <span>Embedded agent runtime</span>
+          </span>
+        </a>
+        <nav class="site-nav" aria-label="Primary">
+          <a data-nav="home" href="./index.html">Overview</a>
+          <a data-nav="flash" href="./flash.html">Flash</a>
+          <a data-nav="lab" href="./lab.html">Browser Lab</a>
+          <a data-nav="docs" href="./docs.html">Docs</a>
+        </nav>
+        <a class="button button-ghost" href="https://github.com/atiti/espclaw">GitHub</a>
+      </div>
+    </header>
+
+    <main class="shell page-stack">
+      <section class="page-hero">
+        <p class="eyebrow">DOCS & PROJECT MAP</p>
+        <h1>Understand the runtime model before you extend it.</h1>
+        <p class="hero-lede narrow">
+          ESPClaw is easiest to work with once the primitives are clear: components for reuse, apps
+          for features, tasks for live execution, behaviors for persistence, and events for
+          decoupling.
+        </p>
+      </section>
+
+      <section class="section-grid section-grid-2">
+        <article class="panel-card">
+          <p class="eyebrow">RUNTIME PRIMITIVES</p>
+          <h2>The shortest reliable mental model</h2>
+          <div class="primitive-stack">
+            <div><strong>component</strong><span>Reusable driver, helper, or shared module</span></div>
+            <div><strong>app</strong><span>Installable feature bundle built from logic and components</span></div>
+            <div><strong>task</strong><span>Live running instance of an app</span></div>
+            <div><strong>behavior</strong><span>Persisted task definition that can autostart</span></div>
+            <div><strong>event</strong><span>Named local signal for decoupled coordination</span></div>
+          </div>
+        </article>
+        <article class="panel-card">
+          <p class="eyebrow">GOOD DEFAULTS</p>
+          <h2>How the stack should usually be composed</h2>
+          <ul class="feature-list">
+            <li>Use a <strong>component</strong> for a shared sensor driver like MS5611.</li>
+            <li>Use an <strong>app</strong> for the weather station or vario feature itself.</li>
+            <li>Use a <strong>task</strong> when the user says “run it now”.</li>
+            <li>Use a <strong>behavior</strong> when it should survive reboot.</li>
+            <li>Use <strong>events</strong> only when multiple consumers need decoupled delivery.</li>
+          </ul>
+        </article>
+      </section>
+
+      <section class="docs-grid">
+        <a class="docs-card" href="https://github.com/atiti/espclaw">
+          <span class="docs-label">Repository</span>
+          <strong>GitHub</strong>
+          <p>Source, issues, releases, and contribution workflow.</p>
+        </a>
+        <a class="docs-card" href="https://github.com/atiti/espclaw/blob/main/README.md">
+          <span class="docs-label">Start here</span>
+          <strong>README</strong>
+          <p>Project framing, quick start, and the high-level architecture.</p>
+        </a>
+        <a class="docs-card" href="https://github.com/atiti/espclaw/blob/main/docs/components.md">
+          <span class="docs-label">Reuse</span>
+          <strong>Components</strong>
+          <p>How shared drivers and modules are packaged and installed.</p>
+        </a>
+        <a class="docs-card" href="https://github.com/atiti/espclaw/blob/main/docs/apps.md">
+          <span class="docs-label">Programmability</span>
+          <strong>Apps</strong>
+          <p>Installable Lua bundles, permissions, and runtime behavior.</p>
+        </a>
+        <a class="docs-card" href="https://github.com/atiti/espclaw/blob/main/docs/blob-transfer.md">
+          <span class="docs-label">Large artifacts</span>
+          <strong>Blob transfer</strong>
+          <p>Chunked uploads, install-from-file, install-from-blob, and large context flows.</p>
+        </a>
+        <a class="docs-card" href="https://github.com/atiti/espclaw/blob/main/docs/web-flasher.md">
+          <span class="docs-label">Public site</span>
+          <strong>Web flasher</strong>
+          <p>How the browser flasher and WebAssembly lab are built and deployed.</p>
+        </a>
+      </section>
+
+      <section class="section-grid section-grid-3">
+        <article class="feature-card">
+          <p class="eyebrow">GOAL</p>
+          <h2>Make embedded experimentation feel less like firmware surgery.</h2>
+          <p>Browser flashing, OTA, apps, components, and logs should reduce iteration friction.</p>
+        </article>
+        <article class="feature-card">
+          <p class="eyebrow">QUALITY BAR</p>
+          <h2>Keep the stack inspectable and operator-visible.</h2>
+          <p>Debuggability matters as much as raw capability on small hardware.</p>
+        </article>
+        <article class="feature-card">
+          <p class="eyebrow">OPEN SOURCE</p>
+          <h2>Useful contributions are reusable components and good examples.</h2>
+          <p>Drivers, board definitions, example apps, and reproducible bug reports all help.</p>
+        </article>
+      </section>
+    </main>
+  </body>
+</html>
