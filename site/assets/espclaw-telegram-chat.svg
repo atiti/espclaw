@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 1200" role="img" aria-label="ESPClaw Telegram chat illustration">
+  <rect width="900" height="1200" fill="#efe8db"/>
+  <rect x="220" y="54" width="460" height="1090" rx="58" fill="#10191e"/>
+  <rect x="246" y="108" width="408" height="986" rx="34" fill="#dbe8da"/>
+  <rect x="246" y="108" width="408" height="88" rx="34" fill="#eef4ef"/>
+  <text x="308" y="162" font-family="IBM Plex Sans, sans-serif" font-size="34" font-weight="600" fill="#132026">EspClaw</text>
+  <rect x="282" y="236" width="268" height="146" rx="26" fill="#ffffff"/>
+  <text x="306" y="280" font-family="IBM Plex Sans, sans-serif" font-size="24" fill="#132026">I can do that.</text>
+  <text x="306" y="318" font-family="IBM Plex Sans, sans-serif" font-size="22" fill="#55656d">Tell me the pin or ask for</text>
+  <text x="306" y="350" font-family="IBM Plex Sans, sans-serif" font-size="22" fill="#55656d">a task / component directly.</text>
+  <rect x="360" y="434" width="240" height="82" rx="24" fill="#d2efcf"/>
+  <text x="388" y="484" font-family="IBM Plex Sans, sans-serif" font-size="24" fill="#132026">set gpio 4 low</text>
+  <rect x="282" y="560" width="304" height="178" rx="26" fill="#ffffff"/>
+  <text x="306" y="608" font-family="IBM Plex Sans, sans-serif" font-size="24" font-weight="600" fill="#132026">Done.</text>
+  <text x="306" y="646" font-family="IBM Plex Sans, sans-serif" font-size="22" fill="#55656d">GPIO 4 is now LOW.</text>
+  <text x="306" y="684" font-family="IBM Plex Sans, sans-serif" font-size="22" fill="#55656d">I can also make this a</text>
+  <text x="306" y="716" font-family="IBM Plex Sans, sans-serif" font-size="22" fill="#55656d">task or persistent behavior.</text>
+  <rect x="360" y="788" width="206" height="82" rx="24" fill="#d2efcf"/>
+  <text x="390" y="838" font-family="IBM Plex Sans, sans-serif" font-size="24" fill="#132026">/camera</text>
+  <rect x="282" y="914" width="304" height="126" rx="26" fill="#ffffff"/>
+  <text x="306" y="962" font-family="IBM Plex Sans, sans-serif" font-size="24" font-weight="600" fill="#132026">Sending photo…</text>
+  <text x="306" y="1000" font-family="IBM Plex Sans, sans-serif" font-size="22" fill="#55656d">camera.capture → JPEG</text>
+  <rect x="246" y="1064" width="408" height="30" rx="15" fill="#eef4ef"/>
+</svg>

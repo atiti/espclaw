@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" role="img" aria-label="ESPClaw robot rig illustration">
+  <rect width="1200" height="760" fill="#f6f0e7"/>
+  <rect x="96" y="84" width="1008" height="592" rx="42" fill="#fffaf2" stroke="#ddd2c3"/>
+  <rect x="220" y="458" width="456" height="120" rx="28" fill="#132026"/>
+  <circle cx="290" cy="600" r="44" fill="#0f766e"/>
+  <circle cx="610" cy="600" r="44" fill="#0f766e"/>
+  <circle cx="290" cy="600" r="20" fill="#e9f1ef"/>
+  <circle cx="610" cy="600" r="20" fill="#e9f1ef"/>
+  <rect x="314" y="364" width="280" height="108" rx="24" fill="#0f766e"/>
+  <rect x="414" y="194" width="76" height="182" rx="18" fill="#132026"/>
+  <rect x="392" y="148" width="120" height="62" rx="18" fill="#fffdf8" stroke="#d8cec0"/>
+  <circle cx="452" cy="178" r="18" fill="#132026"/>
+  <path d="M530 210h122l58 72" fill="none" stroke="#b5653c" stroke-width="14" stroke-linecap="round"/>
+  <rect x="742" y="172" width="220" height="120" rx="24" fill="#fffdf8" stroke="#d8cec0"/>
+  <text x="770" y="218" font-family="IBM Plex Mono, monospace" font-size="18" letter-spacing="2" fill="#0f766e">component</text>
+  <text x="770" y="254" font-family="IBM Plex Sans, sans-serif" font-size="28" fill="#132026">sensor / control driver</text>
+  <rect x="740" y="346" width="250" height="158" rx="28" fill="#102126"/>
+  <text x="770" y="394" font-family="IBM Plex Mono, monospace" font-size="16" letter-spacing="2" fill="#8fd1c8">behavior</text>
+  <text x="770" y="436" font-family="IBM Plex Sans, sans-serif" font-size="30" fill="#fff7ea">persistent field loop</text>
+  <text x="770" y="474" font-family="IBM Plex Sans, sans-serif" font-size="22" fill="#bfd0d5">events → task → actuator</text>
+</svg>

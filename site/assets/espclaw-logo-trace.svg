@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="ESPClaw logo trace variant">
+  <rect width="512" height="512" rx="104" fill="#0b1317"/>
+  <path d="M138 122h228v48H192v58h128v46H192v68h174v48H138z" fill="#fff7ea"/>
+  <path d="M330 122h38v268h-38z" fill="#0f766e"/>
+  <circle cx="349" cy="122" r="16" fill="#0f766e"/>
+  <circle cx="349" cy="390" r="16" fill="#0f766e"/>
+  <path d="M368 174c30 4 54 30 54 62s-24 58-54 62" fill="none" stroke="#0f766e" stroke-width="18" stroke-linecap="round"/>
+  <path d="M144 416h224" stroke="#b5653c" stroke-width="16" stroke-linecap="round" opacity="0.9"/>
+</svg>

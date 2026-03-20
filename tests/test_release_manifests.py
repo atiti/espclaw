@@ -65,6 +65,8 @@ class ReleaseManifestTests(unittest.TestCase):
         self.assertIn('rel="canonical" href="https://espclaw.dev/"', html)
         self.assertIn('window.location.hostname === "www.espclaw.dev"', html)
         self.assertIn('window.location.replace(next);', html)
+        self.assertIn('og:image" content="https://espclaw.dev/assets/espclaw-social-card.svg"', html)
+        self.assertIn('href="./assets/espclaw-logo-trace.svg"', html)
 
     def test_site_includes_browser_lab_and_project_surfaces(self) -> None:
         home_html = (ROOT / "site" / "index.html").read_text(encoding="utf-8")
@@ -76,22 +78,41 @@ class ReleaseManifestTests(unittest.TestCase):
         pages_yml = (ROOT / ".github" / "workflows" / "pages.yml").read_text(encoding="utf-8")
         build_script = (ROOT / "scripts" / "build_site_wasm.sh").read_text(encoding="utf-8")
 
-        self.assertIn("Put a programmable runtime on the board", home_html)
+        self.assertIn("Put a programmable runtime at the hardware boundary", home_html)
         self.assertIn("Flash ESPClaw", flash_html)
         self.assertIn("Browser Lab", lab_html)
         self.assertIn("github.com/atiti/espclaw", docs_html)
         self.assertIn('href="./flash.html"', home_html)
         self.assertIn('href="./lab.html"', home_html)
         self.assertIn('href="./docs.html"', home_html)
+        self.assertIn("./assets/espclaw-hardware-hero.svg", home_html)
+        self.assertIn("./assets/espclaw-telegram-chat.svg", home_html)
+        self.assertIn("./assets/espclaw-robot-rig.svg", flash_html)
         self.assertIn('import { BrowserLab } from "./simulator.js";', app_js)
         self.assertIn("OpenAI-compatible", simulator_js)
         self.assertIn("WebLLM", simulator_js)
         self.assertIn("system.logs", simulator_js)
         self.assertIn('import("./wasm/espclaw-browser-runtime.js")', simulator_js)
         self.assertIn("real ESPClaw C runtime compiled to WebAssembly", lab_html)
+        self.assertIn('https://espclaw.dev/flash', flash_html)
+        self.assertIn('https://espclaw.dev/lab', lab_html)
+        self.assertIn('https://espclaw.dev/docs', docs_html)
         self.assertIn("setup-emsdk", pages_yml)
         self.assertIn("./scripts/build_site_wasm.sh", pages_yml)
         self.assertIn("espclaw-browser-runtime.wasm", build_script)
+
+    def test_site_brand_assets_exist(self) -> None:
+        for asset_name in (
+            "espclaw-logo-trace.svg",
+            "espclaw-logo-signal.svg",
+            "espclaw-logo-terminal.svg",
+            "espclaw-social-card.svg",
+            "espclaw-hardware-hero.svg",
+            "espclaw-telegram-chat.svg",
+            "espclaw-robot-rig.svg",
+        ):
+            asset_path = ROOT / "site" / "assets" / asset_name
+            self.assertTrue(asset_path.exists(), f"missing asset: {asset_name}")
 
 
 if __name__ == "__main__":

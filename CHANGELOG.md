@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Refined the public launch messaging around the core hardware-boundary thesis, refreshed the README and site copy, and added a first set of reusable brand assets including SVG logos, hero illustrations, Telegram mock art, and a social preview card.
 - Rebuilt `espclaw.dev` into a proper public landing page with project framing, capabilities, release-aware browser flashing, docs links, and a browser lab backed by the real ESPClaw C runtime compiled to WebAssembly.
 - Added an Emscripten-backed browser-runtime build plus a Pages workflow step that compiles `espclaw_core` into `site/wasm/espclaw-browser-runtime.{js,wasm}` before deployment, so the web lab exercises the real runtime/tool stack instead of a fake JavaScript kernel.
 - Clarified that the public `espclaw.dev` site is served through Cloudflare Pages, while the repo `pages.yml` workflow is used to build and validate the static site + WebAssembly bundle.

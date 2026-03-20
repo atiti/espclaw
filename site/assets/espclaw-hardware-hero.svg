@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" role="img" aria-label="ESPClaw hardware hero illustration">
+  <rect width="1200" height="760" fill="#f5efe5"/>
+  <rect x="70" y="74" width="1060" height="612" rx="36" fill="#fffaf2" stroke="#ddd2c3"/>
+  <rect x="162" y="164" width="520" height="330" rx="28" fill="#112127"/>
+  <rect x="210" y="214" width="424" height="230" rx="20" fill="#0f766e"/>
+  <rect x="462" y="248" width="118" height="90" rx="16" fill="#d9d0c2"/>
+  <circle cx="522" cy="294" r="28" fill="#16282f"/>
+  <rect x="244" y="246" width="78" height="38" rx="10" fill="#d6a35d"/>
+  <rect x="244" y="302" width="110" height="20" rx="10" fill="#dbe6e3" opacity="0.85"/>
+  <rect x="244" y="336" width="166" height="20" rx="10" fill="#dbe6e3" opacity="0.55"/>
+  <rect x="244" y="370" width="196" height="20" rx="10" fill="#dbe6e3" opacity="0.38"/>
+  <path d="M680 296C780 296 830 232 920 232" fill="none" stroke="#b5653c" stroke-width="14" stroke-linecap="round"/>
+  <path d="M682 336C790 336 852 430 936 430" fill="none" stroke="#0f766e" stroke-width="14" stroke-linecap="round"/>
+  <rect x="882" y="176" width="158" height="118" rx="22" fill="#fffdf8" stroke="#d8cec0"/>
+  <rect x="870" y="372" width="182" height="168" rx="26" fill="#102126"/>
+  <text x="896" y="226" font-family="IBM Plex Mono, monospace" font-size="18" letter-spacing="2" fill="#0f766e">MS5611</text>
+  <text x="896" y="254" font-family="IBM Plex Sans, sans-serif" font-size="24" fill="#132026">pressure / temp</text>
+  <text x="900" y="428" font-family="IBM Plex Mono, monospace" font-size="16" letter-spacing="2" fill="#8fd1c8">espclaw://runtime</text>
+  <text x="900" y="474" font-family="Space Grotesk, sans-serif" font-size="28" font-weight="700" fill="#fff7ea">close to the hardware</text>
+  <text x="900" y="514" font-family="IBM Plex Sans, sans-serif" font-size="20" fill="#bfd0d5">components, apps, tasks, behaviors</text>
+  <circle cx="230" cy="542" r="22" fill="#b5653c"/>
+  <circle cx="288" cy="542" r="22" fill="#0f766e"/>
+  <circle cx="346" cy="542" r="22" fill="#132026"/>
+</svg>

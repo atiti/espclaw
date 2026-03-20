@@ -8,13 +8,24 @@
       name="description"
       content="Run the real ESPClaw C runtime in the browser via WebAssembly, inspect logs, install components, and test apps before flashing hardware."
     />
-    <link rel="canonical" href="https://espclaw.dev/lab.html" />
+    <meta property="og:title" content="ESPClaw Browser Lab | Real runtime in WebAssembly" />
+    <meta
+      property="og:description"
+      content="Use the real ESPClaw runtime in WebAssembly, inspect logs, install components, and test apps before flashing hardware."
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://espclaw.dev/lab" />
+    <meta property="og:image" content="https://espclaw.dev/assets/espclaw-social-card.svg" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:image" content="https://espclaw.dev/assets/espclaw-social-card.svg" />
+    <link rel="canonical" href="https://espclaw.dev/lab" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;700&display=swap"
       rel="stylesheet"
     />
+    <link rel="icon" href="./assets/espclaw-logo-trace.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="./styles.css" />
     <script>
       if (window.location.hostname === "www.espclaw.dev") {
@@ -30,10 +41,12 @@
     <header class="site-header">
       <div class="shell shell-header">
         <a class="brand" href="./index.html">
-          <span class="brand-mark">E</span>
+          <span class="brand-mark">
+            <img src="./assets/espclaw-logo-trace.svg" alt="" />
+          </span>
           <span class="brand-copy">
             <strong>ESPClaw</strong>
-            <span>Embedded agent runtime</span>
+            <span>Runtime for boards with real hardware</span>
           </span>
         </a>
         <nav class="site-nav" aria-label="Primary">

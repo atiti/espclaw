@@ -7,9 +7,9 @@
 [![ESP-IDF](https://img.shields.io/badge/ESP--IDF-5.5.2-ef4444.svg)](https://github.com/espressif/esp-idf)
 [![Boards](https://img.shields.io/badge/boards-ESP32%20%7C%20ESP32--S3-38bdf8.svg)](docs/support-matrix.md)
 
-> Remote reasoning. Local side effects. MCU-class hardware.
+> Bring the agent closer to the hardware.
 
-ESPClaw is an ESP32-native AI agent runtime for boards with real sensors, real I/O, and real constraints.
+ESPClaw is an ESP32-native agent runtime for boards with real sensors, real I/O, and real constraints.
 It combines:
 
 - an iterative LLM tool loop
@@ -18,7 +18,7 @@ It combines:
 - persistent tasks, behaviors, and events
 - OTA-capable firmware for supported boards
 
-The goal is simple: make an embedded board feel more like a programmable agent system than a fixed-function firmware image.
+The goal is simple: make an embedded board feel more like a programmable runtime at the hardware boundary than a fixed-function firmware image.
 
 ## Flash It
 

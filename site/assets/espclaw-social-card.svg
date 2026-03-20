@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" role="img" aria-label="ESPClaw social preview card">
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#f8f3ea"/>
+      <stop offset="100%" stop-color="#efe6d9"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#f7efe2"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <circle cx="1020" cy="110" r="180" fill="#0f766e" opacity="0.08"/>
+  <circle cx="170" cy="540" r="170" fill="#b5653c" opacity="0.08"/>
+  <rect x="64" y="64" width="1072" height="502" rx="38" fill="url(#panel)" stroke="#d9d0c2"/>
+  <rect x="90" y="92" width="420" height="446" rx="28" fill="#0f171b"/>
+  <text x="126" y="136" font-family="IBM Plex Mono, monospace" font-size="18" letter-spacing="3" fill="#8fd1c8">ESPCLAW // HARDWARE-BOUNDARY AGENTS</text>
+  <text x="126" y="214" font-family="Space Grotesk, sans-serif" font-size="64" font-weight="700" fill="#fff7ea">Bring the</text>
+  <text x="126" y="286" font-family="Space Grotesk, sans-serif" font-size="64" font-weight="700" fill="#fff7ea">agent closer</text>
+  <text x="126" y="358" font-family="Space Grotesk, sans-serif" font-size="64" font-weight="700" fill="#fff7ea">to hardware.</text>
+  <text x="126" y="432" font-family="IBM Plex Sans, sans-serif" font-size="24" fill="#b7c5c9">components · apps · tasks · behaviors · OTA · WASM lab</text>
+  <g transform="translate(610 118)">
+    <rect width="458" height="170" rx="24" fill="#fffaf2" stroke="#d8cec0"/>
+    <text x="28" y="50" font-family="IBM Plex Mono, monospace" font-size="16" letter-spacing="2" fill="#0f766e">RUNTIME MODEL</text>
+    <text x="28" y="95" font-family="Space Grotesk, sans-serif" font-size="34" font-weight="700" fill="#132026">component → app → task / behavior → event</text>
+    <text x="28" y="132" font-family="IBM Plex Sans, sans-serif" font-size="22" fill="#55656d">Inspectable state, direct peripherals, reusable hardware logic.</text>
+  </g>
+  <g transform="translate(610 320)">
+    <rect width="458" height="170" rx="24" fill="#102126"/>
+    <text x="28" y="50" font-family="IBM Plex Mono, monospace" font-size="16" letter-spacing="2" fill="#8fd1c8">SURFACES</text>
+    <text x="28" y="95" font-family="IBM Plex Sans, sans-serif" font-size="26" fill="#fff7ea">Web admin · UART · Telegram · Browser Lab</text>
+    <text x="28" y="134" font-family="IBM Plex Sans, sans-serif" font-size="22" fill="#c6d7db">Real ESPClaw C runtime in WebAssembly on espclaw.dev</text>
+  </g>
+  <text x="92" y="600" font-family="IBM Plex Sans, sans-serif" font-size="24" fill="#55656d">github.com/atiti/espclaw</text>
+</svg>

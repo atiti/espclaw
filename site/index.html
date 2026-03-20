@@ -8,13 +8,21 @@
       name="description"
       content="ESPClaw is an ESP32-native agent runtime with installable components, Lua apps, browser flashing, OTA, and a real WebAssembly browser lab."
     />
-    <meta property="og:title" content="ESPClaw" />
+    <meta property="og:title" content="ESPClaw | Bring the agent closer to the hardware" />
     <meta
       property="og:description"
-      content="Remote reasoning, local side effects. Flash firmware, inspect the runtime, and try the real ESPClaw runtime in your browser via WebAssembly."
+      content="ESPClaw puts a programmable runtime at the hardware boundary with reusable components, installable apps, OTA, browser flashing, and a real WASM lab."
     />
     <meta property="og:type" content="website" />
     <meta property="og:url" content="https://espclaw.dev/" />
+    <meta property="og:image" content="https://espclaw.dev/assets/espclaw-social-card.svg" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="ESPClaw | Bring the agent closer to the hardware" />
+    <meta
+      name="twitter:description"
+      content="A programmable runtime for ESP32-class boards with components, apps, tasks, behaviors, and a real WASM browser lab."
+    />
+    <meta name="twitter:image" content="https://espclaw.dev/assets/espclaw-social-card.svg" />
     <link rel="canonical" href="https://espclaw.dev/" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -22,10 +30,7 @@
       href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;700&display=swap"
       rel="stylesheet"
     />
-    <link
-      rel="icon"
-      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230b1317'/%3E%3Cpath d='M20 18h24v8H28v10h13v8H28v12h-8z' fill='%230f766e'/%3E%3C/svg%3E"
-    />
+    <link rel="icon" href="./assets/espclaw-logo-trace.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="./styles.css" />
     <script>
       if (window.location.hostname === "www.espclaw.dev") {
@@ -41,10 +46,12 @@
     <header class="site-header">
       <div class="shell shell-header">
         <a class="brand" href="./index.html">
-          <span class="brand-mark">E</span>
+          <span class="brand-mark">
+            <img src="./assets/espclaw-logo-trace.svg" alt="" />
+          </span>
           <span class="brand-copy">
             <strong>ESPClaw</strong>
-            <span>Embedded agent runtime</span>
+            <span>Runtime for boards with real hardware</span>
           </span>
         </a>
         <nav class="site-nav" aria-label="Primary">
@@ -60,8 +67,8 @@
     <main class="shell page-stack">
       <section class="hero-card">
         <div class="hero-copy">
-          <p class="eyebrow">ESPCLAW // AGENTS THAT TOUCH REAL HARDWARE</p>
-          <h1>Put a programmable runtime on the board, not just a fixed firmware image.</h1>
+          <p class="eyebrow">ESPCLAW // BRING THE AGENT CLOSER TO THE HARDWARE</p>
+          <h1>Put a programmable runtime at the hardware boundary, not just a fixed firmware image.</h1>
           <p class="hero-lede">
             ESPClaw turns ESP32-class boards into inspectable agent systems with reusable
             components, installable Lua apps, persistent behaviors, operator-visible logs, and
@@ -73,17 +80,21 @@
           </div>
         </div>
         <aside class="hero-panel">
-          <div class="hero-terminal">
-            <div class="terminal-head">
-              <span class="terminal-dot"></span>
-              <span class="terminal-dot"></span>
-              <span class="terminal-dot"></span>
-              <strong>espclaw://runtime</strong>
-            </div>
-            <pre class="terminal-code">user   create an ms5611 component
-agent  component.install_from_manifest(ms5611)
-agent  app.install(weather_station)
-agent  task.start(weather_station_sampler)</pre>
+          <div class="hero-showcase">
+            <article class="art-card art-card-primary">
+              <img src="./assets/espclaw-hardware-hero.svg" alt="ESPClaw hardware concept illustration" />
+              <div class="art-card-copy">
+                <p class="eyebrow">HARDWARE-NATIVE</p>
+                <strong>Components, buses, sensors, and operator-visible state.</strong>
+              </div>
+            </article>
+            <article class="art-card art-card-secondary">
+              <img src="./assets/espclaw-telegram-chat.svg" alt="Telegram control channel illustration" />
+              <div class="art-card-copy">
+                <p class="eyebrow">OPERATOR SURFACES</p>
+                <strong>Web, UART, Telegram, simulator, and a real WASM browser lab.</strong>
+              </div>
+            </article>
           </div>
           <div class="hero-metrics">
             <article class="metric-card">
