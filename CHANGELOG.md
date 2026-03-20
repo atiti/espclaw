@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Rebalanced the public site hero layout by reducing the desktop headline clamp and tightening the two-column grid, so the landing page no longer looks blown out at wider browser widths.
 - Refined the public launch messaging around the core hardware-boundary thesis, refreshed the README and site copy, and added a first set of reusable brand assets including SVG logos, hero illustrations, Telegram mock art, and a social preview card.
 - Rebuilt `espclaw.dev` into a proper public landing page with project framing, capabilities, release-aware browser flashing, docs links, and a browser lab backed by the real ESPClaw C runtime compiled to WebAssembly.
 - Added an Emscripten-backed browser-runtime build plus a Pages workflow step that compiles `espclaw_core` into `site/wasm/espclaw-browser-runtime.{js,wasm}` before deployment, so the web lab exercises the real runtime/tool stack instead of a fake JavaScript kernel.

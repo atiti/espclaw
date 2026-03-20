@@ -257,9 +257,10 @@ textarea {
 
 .hero-card {
   display: grid;
-  grid-template-columns: minmax(0, 1.2fr) minmax(360px, 0.9fr);
-  gap: 28px;
-  padding: 40px;
+  align-items: start;
+  grid-template-columns: minmax(0, 1.02fr) minmax(340px, 0.98fr);
+  gap: 24px;
+  padding: 36px;
 }
 
 .page-hero {
@@ -292,9 +293,10 @@ textarea {
 
 .hero-copy h1,
 .page-hero h1 {
-  max-width: 12ch;
-  font-size: clamp(2.8rem, 6vw, 5.4rem);
-  line-height: 0.95;
+  max-width: 10.8ch;
+  font-size: clamp(2.45rem, 4.45vw, 4.35rem);
+  line-height: 0.98;
+  text-wrap: balance;
 }
 
 .hero-lede,
@@ -312,7 +314,7 @@ textarea {
 .hero-lede {
   max-width: 62ch;
   margin: 18px 0 0;
-  font-size: 1.08rem;
+  font-size: 1.02rem;
 }
 
 .hero-lede.narrow {
@@ -887,6 +889,11 @@ textarea {
   .cta-grid,
   .lab-sidepanels {
     grid-template-columns: 1fr;
+  }
+
+  .hero-copy h1,
+  .page-hero h1 {
+    max-width: 11.5ch;
   }
 
   .site-nav {
