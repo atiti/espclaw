@@ -4551,7 +4551,7 @@ static void test_console_chat_and_web_tools(void)
     assert_string_contains(transcript, "load_operator_config_from_nvs(&s_operator_yolo_mode);", "runtime loads persisted yolo policy");
     assert_string_contains(transcript, "s_operator_yolo_mode = true;", "runtime defaults yolo mode to enabled");
     assert_string_contains(transcript, "ESPCLAW_OPERATOR_REQUEST_TELEGRAM_AGENT", "runtime routes Telegram agent turns through the shared operator worker");
-    assert_string_contains(transcript, "#define ESPCLAW_TELEGRAM_STACK_BYTES 4096", "esp32cam telegram task stack budget is reduced to fit fragmented internal heap");
+    assert_string_contains(transcript, "#define ESPCLAW_TELEGRAM_STACK_BYTES 8192", "esp32cam telegram task stack budget stays at the proven-safe floor for OTA candidate boots");
     assert_string_contains(transcript, "#define ESPCLAW_TELEGRAM_STACK_BYTES 16384", "other targets keep the larger telegram task stack budget");
     assert_string_contains(transcript, "#define ESPCLAW_OPERATOR_AGENT_STACK_BYTES 20480", "esp32cam operator worker keeps the larger shared agent stack");
     assert_string_contains(transcript, "#define ESPCLAW_OPERATOR_AGENT_STACK_BYTES 32768", "other targets keep the larger operator worker stack");
