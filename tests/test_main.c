@@ -4717,6 +4717,8 @@ static void test_runtime_defers_operator_surfaces_until_after_admin_start(void)
     assert_string_contains(main_source, "Deferring OTA confirmation because admin server is unavailable", "main leaves pending OTA images unconfirmed when admin never starts");
     assert_string_not_contains(main_source, "espclaw_ota_manager_confirm_running(ota_message, sizeof(ota_message))", "main no longer confirms OTA images immediately during boot");
     assert_string_contains(ota_source, "esp_err_t espclaw_ota_manager_schedule_confirm(uint32_t delay_ms, char *message, size_t message_size)", "ota manager exposes delayed confirmation scheduling");
+    assert_string_contains(ota_source, "static StackType_t s_confirm_task_stack[(3072U + sizeof(StackType_t) - 1U) / sizeof(StackType_t)];", "ota manager reserves a static confirmation task stack");
+    assert_string_contains(ota_source, "xTaskCreateStaticPinnedToCore(", "ota manager uses static FreeRTOS task creation for delayed confirmation");
     assert_string_contains(ota_source, "Scheduled OTA confirmation in %u ms.", "ota manager records delayed confirmation scheduling");
     assert_string_contains(admin_source, "httpd_start failed err=0x%x", "admin server logs exact httpd_start errors");
 }

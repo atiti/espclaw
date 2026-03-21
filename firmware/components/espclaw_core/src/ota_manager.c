@@ -10,6 +10,7 @@
 #include "esp_partition.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/idf_additions.h"
 #include "freertos/task.h"
 #endif
 
@@ -20,6 +21,8 @@ static esp_ota_handle_t s_ota_handle;
 static const esp_partition_t *s_update_partition;
 static bool s_ota_handle_active;
 static bool s_confirm_task_scheduled;
+static StaticTask_t s_confirm_task_buffer;
+static StackType_t s_confirm_task_stack[(3072U + sizeof(StackType_t) - 1U) / sizeof(StackType_t)];
 #endif
 
 static void set_message(const char *message)
@@ -190,7 +193,16 @@ esp_err_t espclaw_ota_manager_schedule_confirm(uint32_t delay_ms, char *message,
         copy_message(message, message_size, s_ota_snapshot.last_message);
         return ESP_OK;
     }
-    if (xTaskCreate(confirm_task, "espclaw_ota_confirm", 3072, (void *)(uintptr_t)delay_ms, 5, NULL) != pdPASS) {
+    if (xTaskCreateStaticPinnedToCore(
+            confirm_task,
+            "espclaw_ota_confirm",
+            3072,
+            (void *)(uintptr_t)delay_ms,
+            5,
+            s_confirm_task_stack,
+            &s_confirm_task_buffer,
+            tskNO_AFFINITY
+        ) == NULL) {
         set_message("Failed to schedule OTA confirmation.");
         copy_message(message, message_size, s_ota_snapshot.last_message);
         return ESP_FAIL;
