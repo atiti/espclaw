@@ -21,6 +21,7 @@ static const char *RULES[] = {
     "If the user asks for reusable logic, create an app instead of narrating a direct hardware step.",
     "If the user asks to run that reusable logic now in the background, call task.start after app.install.",
     "If the user asks for persistence, autostart, or reboot survival, call behavior.register after app.install.",
+    "When the user specifies counts, durations, or pin assignments, preserve those exact values in the generated tool sequence or Lua source instead of falling back to a generic hello or echo app.",
     "If Lua source already exists in the workspace, prefer app.install_from_file or component.install_from_file over large inline source strings.",
     "If the large source was uploaded through the chunked blob store, prefer app.install_from_blob or component.install_from_blob.",
     "If installing a community-shared raw source URL directly, prefer app.install_from_url or component.install_from_url.",
@@ -31,7 +32,7 @@ static const char *RULES[] = {
 
 static const char *EXECUTION_EXAMPLES[] = {
     "\"flash gpio 4 five times now\" -> direct gpio writes with delays for the full sequence, not one write",
-    "\"create a Lua task to blink ten times, then run it\" -> app.install, then task.start",
+    "\"create a Lua task to blink ten times with 1 second on and 2 seconds off, then run it\" -> app.install with the requested timing in Lua, then task.start",
     "\"make that blink app survive reboot\" -> app.install, then behavior.register",
     "\"share an MS5611 driver across weather_station and vario\" -> component.install_from_manifest or component.install_from_url, then separate apps require it",
 };

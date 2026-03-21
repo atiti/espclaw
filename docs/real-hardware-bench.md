@@ -16,6 +16,14 @@ The intent is to move from simple reachability toward live tool inventory, model
 
 Additional stress and audit stages are available:
 
+- `operator_surfaces`
+  - exercises the exact operator-facing turn paths for `web`, `uart`, and `telegram`
+  - uses the new `/api/bench/operator-turn` harness endpoint so surface routing can be tested without a serial cable or live Telegram delivery timing
+  - records per-surface memory telemetry (`free_internal` and `largest_internal` before/after the turn) to catch allocation regressions on constrained boards
+- `semantic_blink_task`
+  - asks the live model for a concrete hardware behavior: build a blink task with explicit pin/count/timing and run it
+  - validates the stored app source and task state instead of trusting the assistant prose
+  - is intended to catch exactly the “installed a hello app instead of the requested hardware logic” failure mode
 - `tool_matrix_full`
   - runs many smaller, audited prompts instead of one giant sweep
   - checks which tool names the model actually requested in the transcript
@@ -66,6 +74,13 @@ python3 scripts/real_device_bench.py --stages preflight,hello,tool_reasoning
 
 # Run the explicit per-tool matrix with YOLO mode enabled
 python3 scripts/real_device_bench.py \
+  --stages operator_surfaces,semantic_blink_task \
+  --session-prefix bench_surfaces \
+  --yolo \
+  --continue-on-failure
+
+# Run the explicit per-tool matrix with YOLO mode enabled
+python3 scripts/real_device_bench.py \
   --stages tool_matrix_full \
   --session-prefix bench_matrix \
   --yolo \
@@ -111,6 +126,14 @@ python3 scripts/real_device_bench.py \
   - each case audits the stored transcript and compares the requested tool names with the expected set
   - this is intended to catch catalog-vs-executor gaps, not just generic chat success
   - cases are intentionally separated so the model cannot satisfy a grouped prompt by only calling the first tool successfully
+- `operator_surfaces`
+  - the bench runs the same prompt through the `web`, `uart`, and `telegram` operator turn paths
+  - each run records memory telemetry and confirms the path still supports a tool-using LLM turn
+  - this is intended to catch regressions where one surface overflows or allocates differently than the others
+- `semantic_blink_task`
+  - the bench asks for a specific hardware behavior with explicit pin/count/timing
+  - it validates that `app.install` and `task.start` were both used
+  - it then checks the installed app source and running tasks instead of trusting the assistant reply text
 - `large_lua_app`
   - the bench asks the live model to install progressively larger Lua apps
   - each threshold validates the saved source length plus a real `app.run` result

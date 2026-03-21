@@ -1,6 +1,12 @@
 import unittest
 
-from scripts.real_device_bench import HELLO_MARKER, collect_requested_tools, normalize_base_url, parse_json_body, run_stages
+from scripts.real_device_bench import (
+    HELLO_MARKER,
+    collect_requested_tools,
+    normalize_base_url,
+    parse_json_body,
+    run_stages,
+)
 
 
 class FakeClient:
@@ -37,6 +43,14 @@ class FakeClient:
         from scripts.real_device_bench import require_json
 
         return require_json(self.get_json(f"/api/chat/session?session_id={session_id}"), "/api/chat/session")
+
+    def operator_turn(self, surface, session_id, prompt):
+        from scripts.real_device_bench import require_json
+
+        path = f"/api/bench/operator-turn?surface={surface}&session_id={session_id}"
+        if self.yolo_mode:
+            path += "&yolo=1"
+        return require_json(self.post_text(path, prompt), "/api/bench/operator-turn")
 
 
 class HttpResult:
@@ -315,6 +329,143 @@ class RealDeviceBenchTests(unittest.TestCase):
 
         result = run_stages(FakeClient(responses), "bench", ["vision"], continue_on_failure=False)
         self.assertTrue(result["stages"][0]["ok"])
+
+    def test_operator_surfaces_stage_passes(self):
+        responses = {
+            (
+                "POST",
+                "/api/bench/operator-turn?surface=web&session_id=bench_surface_web&yolo=1",
+                "List out all the available tools to you. Call tool.list exactly once, then briefly summarize the tool surface.",
+            ): HttpResult(
+                200,
+                "",
+                {
+                    "ok": True,
+                    "surface": "web",
+                    "used_tools": True,
+                    "iterations": 1,
+                    "final_text": "Web surface inspected the tool catalog.",
+                    "memory": {
+                        "free_internal_before": 54000,
+                        "largest_internal_before": 32000,
+                        "free_internal_after": 53400,
+                        "largest_internal_after": 31600,
+                    },
+                },
+            ),
+            (
+                "POST",
+                "/api/bench/operator-turn?surface=uart&session_id=bench_surface_uart&yolo=1",
+                "List out all the available tools to you. Call tool.list exactly once, then briefly summarize the tool surface.",
+            ): HttpResult(
+                200,
+                "",
+                {
+                    "ok": True,
+                    "surface": "uart",
+                    "used_tools": True,
+                    "iterations": 1,
+                    "final_text": "UART surface inspected the tool catalog.",
+                    "memory": {
+                        "free_internal_before": 53000,
+                        "largest_internal_before": 30000,
+                        "free_internal_after": 52400,
+                        "largest_internal_after": 29500,
+                    },
+                },
+            ),
+            (
+                "POST",
+                "/api/bench/operator-turn?surface=telegram&session_id=bench_surface_telegram&yolo=1",
+                "List out all the available tools to you. Call tool.list exactly once, then briefly summarize the tool surface.",
+            ): HttpResult(
+                200,
+                "",
+                {
+                    "ok": True,
+                    "surface": "telegram",
+                    "used_tools": True,
+                    "iterations": 1,
+                    "final_text": "Telegram surface inspected the tool catalog.",
+                    "memory": {
+                        "free_internal_before": 52000,
+                        "largest_internal_before": 28000,
+                        "free_internal_after": 51500,
+                        "largest_internal_after": 27600,
+                    },
+                },
+            ),
+            "/api/chat/session?session_id=bench_surface_web": HttpResult(
+                200,
+                "",
+                {"transcript": "{\"role\":\"assistant\",\"content\":\"Requested tools: tool.list\"}\n"},
+            ),
+            "/api/chat/session?session_id=bench_surface_uart": HttpResult(
+                200,
+                "",
+                {"transcript": "{\"role\":\"assistant\",\"content\":\"Requested tools: tool.list\"}\n"},
+            ),
+        }
+
+        result = run_stages(FakeClient(responses), "bench", ["operator_surfaces"], continue_on_failure=False)
+        self.assertTrue(result["stages"][0]["ok"])
+        self.assertEqual(len(result["stages"][0]["details"]["surfaces"]), 3)
+
+    def test_semantic_blink_task_stage_passes(self):
+        responses = {
+            (
+                "POST",
+                "/api/chat/run?session_id=bench_semantic_blink&yolo=1",
+                "Create a Lua app named bench_blink_app that toggles GPIO 4 exactly 10 times, with 1000 ms on and 2000 ms off, then start a background task named bench_blink_task that runs it now. Preserve those exact timing values and pin assignment.",
+            ): HttpResult(
+                200,
+                "",
+                {"ok": True, "used_tools": True, "final_text": "Installed bench_blink_app and started bench_blink_task."},
+            ),
+            "/api/chat/session?session_id=bench_semantic_blink": HttpResult(
+                200,
+                "",
+                {
+                    "transcript": (
+                        "{\"role\":\"assistant\",\"content\":\"Requested tools: app.install, task.start\"}\n"
+                    )
+                },
+            ),
+            "/api/apps/detail?app_id=bench_blink_app": HttpResult(
+                200,
+                "",
+                {
+                    "app": {
+                        "id": "bench_blink_app",
+                        "source": (
+                            "function handle(trigger, payload)\n"
+                            "  for i = 1, 10 do\n"
+                            "    espclaw.gpio.write(4, 1)\n"
+                            "    espclaw.sleep_ms(1000)\n"
+                            "    espclaw.gpio.write(4, 0)\n"
+                            "    espclaw.sleep_ms(2000)\n"
+                            "  end\n"
+                            "  return 'done'\n"
+                            "end\n"
+                        ),
+                    }
+                },
+            ),
+            "/api/tasks": HttpResult(
+                200,
+                "",
+                {"tasks": [{"task_id": "bench_blink_task", "app_id": "bench_blink_app", "active": True}]},
+            ),
+            "/api/logs?bytes=2048": HttpResult(
+                200,
+                "",
+                {"ok": True, "tail": "I (...) espclaw_agent: tool call source=model name=task.start"},
+            ),
+        }
+
+        result = run_stages(FakeClient(responses), "bench", ["semantic_blink_task"], continue_on_failure=False)
+        self.assertTrue(result["stages"][0]["ok"])
+        self.assertEqual(result["stages"][0]["details"]["app_id"], "bench_blink_app")
 
     def test_tool_sweep_stage_collects_requested_tools(self):
         responses = {

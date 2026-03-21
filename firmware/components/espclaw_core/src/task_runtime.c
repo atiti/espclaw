@@ -5,8 +5,10 @@
 #include <string.h>
 
 #ifdef ESP_PLATFORM
+#include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_heap_caps.h"
 #elif defined(ESPCLAW_WASM)
 #else
 #include <pthread.h>
@@ -15,6 +17,8 @@
 #include "espclaw/app_runtime.h"
 #include "espclaw/hardware.h"
 #include "espclaw/task_policy.h"
+
+static const char *TAG = "espclaw_task";
 
 typedef struct {
     espclaw_task_status_t status;
@@ -40,7 +44,11 @@ typedef struct {
 static espclaw_task_slot_t s_tasks[ESPCLAW_TASK_RUNTIME_MAX];
 
 #ifdef ESP_PLATFORM
+#if CONFIG_ESPCLAW_BOARD_PROFILE_ESP32CAM
+#define ESPCLAW_TASK_RUNTIME_STACK_WORDS 8192
+#else
 #define ESPCLAW_TASK_RUNTIME_STACK_WORDS 16384
+#endif
 #endif
 
 static int task_lock_init(espclaw_task_slot_t *slot)
@@ -459,6 +467,7 @@ int espclaw_task_start_with_schedule(
 )
 {
     espclaw_task_slot_t *slot = NULL;
+    espclaw_app_manifest_t manifest;
     bool event_schedule = schedule_is_event(schedule);
     int index;
 
@@ -469,6 +478,12 @@ int espclaw_task_start_with_schedule(
         trigger[0] == '\0' || (event_schedule ? false : period_ms == 0)) {
         if (buffer != NULL && buffer_size > 0) {
             snprintf(buffer, buffer_size, "invalid task arguments");
+        }
+        return -1;
+    }
+    if (espclaw_app_load_manifest(workspace_root, app_id, &manifest) != 0) {
+        if (buffer != NULL && buffer_size > 0) {
+            snprintf(buffer, buffer_size, "app %s not found", app_id);
         }
         return -1;
     }
@@ -522,6 +537,8 @@ int espclaw_task_start_with_schedule(
 #ifdef ESP_PLATFORM
     {
         int core = espclaw_task_policy_core_for(ESPCLAW_TASK_KIND_CONTROL_LOOP);
+        size_t free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        size_t largest_internal = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 
         if (xTaskCreatePinnedToCore(
                 task_runtime_worker,
@@ -531,11 +548,28 @@ int espclaw_task_start_with_schedule(
                 5,
                 &slot->task,
                 core >= 0 ? core : tskNO_AFFINITY) != pdPASS) {
+            ESP_LOGE(
+                TAG,
+                "Failed to start task worker task_id=%s app_id=%s stack=%u free_internal=%u largest_internal=%u",
+                task_id,
+                app_id,
+                (unsigned int)ESPCLAW_TASK_RUNTIME_STACK_WORDS,
+                (unsigned int)free_internal,
+                (unsigned int)largest_internal
+            );
             task_lock(slot);
-            slot->status.active = false;
+            memset(&slot->status, 0, sizeof(slot->status));
+            slot->payload[0] = '\0';
             task_unlock(slot);
             if (buffer != NULL && buffer_size > 0) {
-                snprintf(buffer, buffer_size, "failed to create task worker");
+                snprintf(
+                    buffer,
+                    buffer_size,
+                    "failed to create task worker stack=%u free_internal=%u largest_internal=%u",
+                    (unsigned int)ESPCLAW_TASK_RUNTIME_STACK_WORDS,
+                    (unsigned int)free_internal,
+                    (unsigned int)largest_internal
+                );
             }
             return -1;
         }

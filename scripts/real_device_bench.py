@@ -110,6 +110,15 @@ class BenchClient:
             "/api/chat/session",
         )
 
+    def operator_turn(self, surface: str, session_id: str, prompt: str) -> Dict:
+        path = (
+            f"/api/bench/operator-turn?surface={urllib.parse.quote(surface)}"
+            f"&session_id={urllib.parse.quote(session_id)}"
+        )
+        if self.yolo_mode:
+            path += "&yolo=1"
+        return require_json(self.post_text(path, prompt), "/api/bench/operator-turn")
+
     def _request_json(
         self,
         method: str,
@@ -471,6 +480,101 @@ def stage_vision(client: BenchClient, session_prefix: str) -> StageResult:
     )
 
 
+def stage_operator_surfaces(client: BenchClient, session_prefix: str) -> StageResult:
+    prompt = "List out all the available tools to you. Call tool.list exactly once, then briefly summarize the tool surface."
+    surfaces = []
+    ok = True
+
+    for surface in ("web", "uart", "telegram"):
+        session_id = f"{session_prefix}_surface_{surface}"
+        result = client.operator_turn(surface, session_id, prompt)
+        detail = {
+            "surface": surface,
+            "session_id": session_id,
+            "prompt": prompt,
+            "result": result,
+        }
+
+        if surface in ("web", "uart"):
+            transcript = client.chat_session(session_id)
+            detail["transcript"] = transcript
+            detail["called_tools"] = collect_requested_tools(transcript.get("transcript", ""))
+            if "tool.list" not in set(detail["called_tools"]):
+                ok = False
+
+        memory = result.get("memory", {}) if isinstance(result.get("memory", {}), dict) else {}
+        memory_ok = all(
+            key in memory
+            for key in (
+                "free_internal_before",
+                "largest_internal_before",
+                "free_internal_after",
+                "largest_internal_after",
+            )
+        )
+        surface_ok = bool(result.get("ok")) and bool(result.get("used_tools")) and memory_ok
+        detail["ok"] = surface_ok
+        ok = ok and surface_ok
+        surfaces.append(detail)
+
+    return StageResult(
+        name="operator_surfaces",
+        ok=ok,
+        summary="web, uart, and telegram operator surfaces exercised through the bench harness"
+        if ok
+        else "one or more operator surfaces failed the bench harness",
+        details={"surfaces": surfaces},
+    )
+
+
+def stage_semantic_blink_task(client: BenchClient, session_prefix: str) -> StageResult:
+    app_id = f"{session_prefix}_blink_app"
+    task_id = f"{session_prefix}_blink_task"
+    session_id = f"{session_prefix}_semantic_blink"
+    prompt = (
+        f"Create a Lua app named {app_id} that toggles GPIO 4 exactly 10 times, with 1000 ms on and 2000 ms off, "
+        f"then start a background task named {task_id} that runs it now. Preserve those exact timing values and pin assignment."
+    )
+    result = client.chat_run(session_id, prompt)
+    transcript = client.chat_session(session_id)
+    detail = require_json(client.get_json(f"/api/apps/detail?app_id={urllib.parse.quote(app_id)}"), "/api/apps/detail")
+    tasks = require_json(client.get_json("/api/tasks"), "/api/tasks")
+    logs = require_json(client.get_json("/api/logs?bytes=2048"), "/api/logs")
+    transcript_text = str(transcript.get("transcript", ""))
+    source = str(detail.get("app", {}).get("source", ""))
+    task_rows = tasks.get("tasks", []) if isinstance(tasks.get("tasks", []), list) else []
+    task_found = any(isinstance(item, dict) and str(item.get("task_id", "")) == task_id for item in task_rows)
+
+    ok = (
+        bool(result.get("ok"))
+        and "app.install" in transcript_text
+        and "task.start" in transcript_text
+        and detail.get("app", {}).get("id") == app_id
+        and "10" in source
+        and "1000" in source
+        and "2000" in source
+        and ("gpio" in source.lower() or "flash_led" in source.lower() or "(4" in source)
+        and task_found
+    )
+
+    return StageResult(
+        name="semantic_blink_task",
+        ok=ok,
+        summary="explicit blink-task prompt preserved concrete hardware semantics" if ok else "semantic blink-task generation drifted or did not start",
+        details={
+            "session_id": session_id,
+            "app_id": app_id,
+            "task_id": task_id,
+            "prompt": prompt,
+            "result": result,
+            "transcript": transcript,
+            "detail": detail,
+            "tasks": tasks,
+            "logs": logs,
+        },
+    )
+
+
 def stage_tool_sweep(client: BenchClient, session_prefix: str) -> StageResult:
     session_id_a = f"{session_prefix}_tool_sweep_a"
     session_id_b = f"{session_prefix}_tool_sweep_b"
@@ -702,6 +806,8 @@ STAGES: Dict[str, Callable[[BenchClient, str], StageResult]] = {
     "generate_echo_app": stage_generate_echo_app,
     "task_event_runtime": stage_task_event_runtime,
     "vision": stage_vision,
+    "operator_surfaces": stage_operator_surfaces,
+    "semantic_blink_task": stage_semantic_blink_task,
     "tool_sweep": stage_tool_sweep,
     "tool_matrix_full": stage_tool_matrix_full,
     "large_lua_app": stage_large_lua_app,

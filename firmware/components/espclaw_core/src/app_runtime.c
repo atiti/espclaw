@@ -1333,11 +1333,11 @@ static int lua_espclaw_write_file(lua_State *state)
 static int lua_espclaw_list_apps(lua_State *state)
 {
     espclaw_lua_context_t *context = lua_get_context(state);
-    char ids[8][ESPCLAW_APP_ID_MAX + 1];
+    char ids[32][ESPCLAW_APP_ID_MAX + 1];
     size_t count = 0;
     size_t index;
 
-    if (context == NULL || espclaw_app_collect_ids(context->workspace_root, ids, 8, &count) != 0) {
+    if (context == NULL || espclaw_app_collect_ids(context->workspace_root, ids, 32, &count) != 0) {
         lua_newtable(state);
         return 1;
     }
@@ -2988,7 +2988,7 @@ int espclaw_app_run_boot_apps(
     size_t buffer_size
 )
 {
-    char ids[8][ESPCLAW_APP_ID_MAX + 1];
+    char ids[32][ESPCLAW_APP_ID_MAX + 1];
     char run_result[256];
     size_t count = 0;
     size_t index;
@@ -2999,7 +2999,7 @@ int espclaw_app_run_boot_apps(
     }
 
     buffer[0] = '\0';
-    if (espclaw_app_collect_ids(workspace_root, ids, 8, &count) != 0) {
+    if (espclaw_app_collect_ids(workspace_root, ids, 32, &count) != 0) {
         return -1;
     }
 

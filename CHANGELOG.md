@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Fixed app/task generation debugging by validating that `task.start` targets a real installed app, surfacing internal-heap diagnostics when task worker creation fails on constrained boards, and clearing stale task slots after startup failure.
+- Expanded app listings from 8 to 32 entries across the admin/API/runtime surfaces so installed apps no longer disappear from operator and model-visible listings once a workspace grows beyond a tiny demo set.
+- Tightened the execution-choice prompt guidance so concrete hardware requests with specific pins, counts, and timings no longer drift toward placeholder `hello`/`echo` apps.
+- Added a bench harness for `web`, `uart`, and `telegram` operator turns with per-surface memory telemetry, plus a semantic blink-task validation stage so the real-device bench can catch both allocation regressions and “installed the wrong app” LLM drift.
+- Fixed the live Telegram no-reply regression on `esp32cam` by routing Telegram agent turns and UART chat through one shared high-stack operator worker, then shrinking the remaining Telegram poller task back to a thin 4 KB frontend so both UART and Telegram can still start within the fragmented internal heap budget after Wi‑Fi and admin are up.
 - Fixed the deferred operator-surface regression on `esp32cam` by keeping UART and Telegram task stacks on internal FreeRTOS memory, which is what this ESP32 build requires, and added explicit internal-heap startup diagnostics so console bring-up failures can be debugged from `/api/logs` without serial access.
 - Reduced the `esp32cam` UART console stack budget to fit the fragmented internal heap available after Wi‑Fi and admin startup, while keeping the larger stack on less constrained targets.
 - Reduced the `esp32cam` Telegram task stack budget to fit the fragmented internal heap left after Wi‑Fi and UART startup, while keeping the larger stack on less constrained targets.

@@ -35,6 +35,7 @@
 #include "espclaw/log_buffer.h"
 #include "espclaw/ota_state.h"
 #include "espclaw/provisioning.h"
+#include "espclaw/runtime.h"
 #include "espclaw/system_monitor.h"
 #include "espclaw/task_policy.h"
 #include "espclaw/task_runtime.h"
@@ -376,6 +377,26 @@ static uint32_t query_u32_or_default(const char *query, const char *key, uint32_
     }
 
     return fallback;
+}
+
+static bool parse_operator_surface_value(const char *value, espclaw_operator_surface_t *surface_out)
+{
+    if (value == NULL || surface_out == NULL) {
+        return false;
+    }
+    if (strcmp(value, "web") == 0) {
+        *surface_out = ESPCLAW_OPERATOR_SURFACE_WEB;
+        return true;
+    }
+    if (strcmp(value, "uart") == 0) {
+        *surface_out = ESPCLAW_OPERATOR_SURFACE_UART;
+        return true;
+    }
+    if (strcmp(value, "telegram") == 0) {
+        *surface_out = ESPCLAW_OPERATOR_SURFACE_TELEGRAM;
+        return true;
+    }
+    return false;
 }
 
 static void copy_text(char *buffer, size_t buffer_size, const char *value)
@@ -1460,6 +1481,64 @@ static void handle_api_request(
             strncat(response, "}", sizeof(response) - strlen(response) - 1);
             send_http_response(client_fd, 200, "OK", "application/json", response);
         }
+        return;
+    }
+
+    if (strcmp(method, "POST") == 0 && strcmp(path, "/api/bench/operator-turn") == 0) {
+        char session_id[ESPCLAW_AGENT_SESSION_ID_MAX + 1];
+        char surface_value[16];
+        espclaw_agent_run_result_t result;
+        espclaw_operator_surface_t surface;
+        bool yolo_mode = false;
+        int status = -1;
+
+        if (!espclaw_admin_query_value(query, "surface", surface_value, sizeof(surface_value)) ||
+            !parse_operator_surface_value(surface_value, &surface)) {
+            send_http_response(client_fd, 400, "Bad Request", "application/json", "{\"ok\":false,\"message\":\"missing or invalid surface\"}");
+            return;
+        }
+        if (!espclaw_admin_query_value(query, "session_id", session_id, sizeof(session_id))) {
+            copy_text(session_id, sizeof(session_id), "bench");
+        }
+        yolo_mode = query_u32_or_default(query, "yolo", 0) != 0;
+        memset(&result, 0, sizeof(result));
+
+        switch (surface) {
+        case ESPCLAW_OPERATOR_SURFACE_WEB:
+        case ESPCLAW_OPERATOR_SURFACE_UART:
+            status = espclaw_console_run(config->workspace_root, session_id, body != NULL ? body : "", true, yolo_mode, &result);
+            break;
+        case ESPCLAW_OPERATOR_SURFACE_TELEGRAM:
+            status = espclaw_agent_loop_run_stateless_with_history(
+                config->workspace_root,
+                session_id,
+                body != NULL ? body : "",
+                true,
+                yolo_mode,
+                NULL,
+                0U,
+                &result
+            );
+            break;
+        default:
+            status = -1;
+            break;
+        }
+
+        snprintf(
+            response,
+            sizeof(response),
+            "{\"ok\":%s,\"surface\":\"%s\",\"session_id\":\"%s\",\"iterations\":%u,\"used_tools\":%s,\"response_id\":\"%s\",\"final_text\":",
+            (status == 0 || result.ok) ? "true" : "false",
+            surface_value,
+            session_id,
+            result.iterations,
+            result.used_tools ? "true" : "false",
+            result.response_id
+        );
+        append_escaped_json(response, sizeof(response), strlen(response), result.final_text);
+        strncat(response, ",\"memory\":{\"free_internal_before\":0,\"largest_internal_before\":0,\"free_internal_after\":0,\"largest_internal_after\":0}}", sizeof(response) - strlen(response) - 1);
+        send_http_response(client_fd, (status == 0 || result.ok) ? 200 : 500, (status == 0 || result.ok) ? "OK" : "Internal Server Error", "application/json", response);
         return;
     }
 

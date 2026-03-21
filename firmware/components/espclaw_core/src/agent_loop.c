@@ -1664,6 +1664,7 @@ static int load_system_prompt(
         "Use app.install_from_url or component.install_from_manifest for community-shared artifacts instead of pasting large inline code.\n"
         "Use context.search, context.select, context.summarize, and context.load for large workspace docs instead of trying to stuff an entire file into one prompt turn.\n"
         "Choose the execution shape semantically: one-shot action now => direct tool calls; repeated or timed behavior requested now => execute the full sequence; reusable logic => app.install; run reusable logic now in the background => task.start after app.install; persist or autostart reusable logic => behavior.register after app.install.\n"
+        "When the user specifies exact pins, counts, timings, or hardware behavior, preserve those concrete details in the tool calls or generated Lua source. Do not substitute a generic hello, echo, or placeholder app.\n"
         "Do not collapse a repeated or timed request into a single hardware write, and do not answer with hardware narration when the user asked you to create runnable logic.\n"
         "If the operator explicitly tells you to run a tool by name, call that tool in this turn instead of asking them to paste its output.\n"
         "If your previous reply said a named tool still needs to be run, or described a concrete next tool step like emit an event or check task.list, and the next operator turn is an approval like yes/ok/do it/do that/try that/go ahead, treat that as approval to call the missing tool immediately.\n"

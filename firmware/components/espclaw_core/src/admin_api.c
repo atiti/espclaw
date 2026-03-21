@@ -16,6 +16,8 @@
 #include "espclaw/tool_catalog.h"
 #include "espclaw/workspace.h"
 
+enum { ESPCLAW_ADMIN_APP_LIST_MAX = 32 };
+
 static const char *ota_status_label(espclaw_ota_status_t status)
 {
     switch (status) {
@@ -270,7 +272,7 @@ size_t espclaw_render_apps_json(
     size_t buffer_size
 )
 {
-    char ids[8][ESPCLAW_APP_ID_MAX + 1];
+    char ids[ESPCLAW_ADMIN_APP_LIST_MAX][ESPCLAW_APP_ID_MAX + 1];
     size_t count = 0;
     size_t used = 0;
     size_t index;
@@ -280,7 +282,7 @@ size_t espclaw_render_apps_json(
     }
 
     used = append_json_chunk(buffer, buffer_size, used, "{\"apps\":[");
-    if (workspace_root != NULL && espclaw_app_collect_ids(workspace_root, ids, 8, &count) == 0) {
+    if (workspace_root != NULL && espclaw_app_collect_ids(workspace_root, ids, ESPCLAW_ADMIN_APP_LIST_MAX, &count) == 0) {
         for (index = 0; index < count; ++index) {
             espclaw_app_manifest_t manifest;
 

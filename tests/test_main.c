@@ -431,7 +431,8 @@ static int app_install_http_adapter(
     assert_string_contains(body, "# Lua App Contract", "app install prompt injects lua app contract");
     assert_string_contains(body, "# Execution Choice Examples", "app install prompt injects execution choice examples");
     assert_string_contains(body, "flash gpio 4 five times now", "app install prompt includes flash example");
-    assert_string_contains(body, "create a Lua task to blink ten times, then run it", "app install prompt includes task example");
+    assert_string_contains(body, "create a Lua task to blink ten times with 1 second on and 2 seconds off, then run it", "app install prompt includes timed task example");
+    assert_string_contains(body, "Do not substitute a generic hello, echo, or placeholder app.", "app install prompt forbids placeholder apps for specific hardware behavior");
     assert_string_contains(body, "espclaw.pwm.setup", "app install prompt includes lua api snapshot");
     assert_string_contains(body, "function handle(trigger, payload)", "app install prompt includes handler contract");
 
@@ -1977,8 +1978,11 @@ static void test_task_runtime_uses_portmux_locking(void)
     assert_string_contains(contents, "taskENTER_CRITICAL(&slot->lock);", "task runtime enters critical sections");
     assert_string_contains(contents, "taskEXIT_CRITICAL(&slot->lock);", "task runtime exits critical sections");
     assert_true(strstr(contents, "xSemaphoreCreateMutex") == NULL, "task runtime no longer uses queue-backed mutexes");
-    assert_string_contains(contents, "#define ESPCLAW_TASK_RUNTIME_STACK_WORDS 16384", "task runtime uses a larger worker stack");
+    assert_string_contains(contents, "#define ESPCLAW_TASK_RUNTIME_STACK_WORDS 8192", "esp32cam task runtime uses a reduced worker stack");
+    assert_string_contains(contents, "#define ESPCLAW_TASK_RUNTIME_STACK_WORDS 16384", "other targets keep the larger task worker stack");
     assert_string_contains(contents, "ESPCLAW_TASK_RUNTIME_STACK_WORDS", "task runtime worker creation uses the configured stack macro");
+    assert_string_contains(contents, "heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)", "task runtime reports internal heap diagnostics for worker creation");
+    assert_string_contains(contents, "app %s not found", "task runtime validates app existence before scheduling worker creation");
 }
 
 static void test_runtime_skips_boot_automation_after_crash_reset(void)
@@ -1998,9 +2002,9 @@ static void test_runtime_skips_boot_automation_after_crash_reset(void)
     assert_string_contains(contents, "delayed_behavior_autostart_task", "runtime defines delayed behavior autostart task");
     assert_string_contains(contents, "#define ESPCLAW_BEHAVIOR_AUTOSTART_DELAY_MS 8000", "runtime delays autostart behaviors after boot");
     assert_string_contains(contents, "Running delayed behavior autostart", "runtime logs when delayed autostart actually begins");
-    assert_string_contains(contents, "reply = calloc(1, ESPCLAW_AGENT_TEXT_MAX + 64U);", "uart console allocates reply buffer off the task stack");
     assert_string_contains(contents, "result = calloc(1, sizeof(*result));", "uart console allocates the agent result off the task stack");
     assert_true(strstr(contents, "espclaw_agent_run_result_t result;") == NULL, "uart console no longer keeps the full agent result on the task stack");
+    assert_string_contains(contents, "submit_operator_request(", "operator surfaces funnel heavy agent turns through a shared worker");
 }
 
 static void test_behavior_runtime_caches_specs_for_embedded_autostart(void)
@@ -2103,9 +2107,12 @@ static void test_runtime_uses_larger_uart_console_stack(void)
 
     snprintf(path, sizeof(path), "%s/firmware/components/espclaw_core/src/runtime.c", ESPCLAW_SOURCE_DIR);
     read_text_file(path, contents, sizeof(contents));
-    assert_string_contains(contents, "#define ESPCLAW_UART_CONSOLE_STACK_BYTES 20480", "esp32cam uses a reduced UART console stack to fit fragmented internal heap");
-    assert_string_contains(contents, "#define ESPCLAW_UART_CONSOLE_STACK_BYTES 32768", "other targets keep the larger UART console stack");
-    assert_string_contains(contents, "create_runtime_task(\n        uart_console_task,\n        \"espclaw_uart\",\n        ESPCLAW_UART_CONSOLE_STACK_BYTES,", "uart console task uses the dedicated larger stack");
+    assert_string_contains(contents, "#define ESPCLAW_UART_CONSOLE_STACK_BYTES 6144", "esp32cam uses a thin UART console frontend stack");
+    assert_string_contains(contents, "#define ESPCLAW_UART_CONSOLE_STACK_BYTES 8192", "other targets keep the thin UART console frontend stack");
+    assert_string_contains(contents, "#define ESPCLAW_OPERATOR_AGENT_STACK_BYTES 20480", "esp32cam keeps the larger shared operator-worker stack");
+    assert_string_contains(contents, "#define ESPCLAW_OPERATOR_AGENT_STACK_BYTES 32768", "other targets keep the larger shared operator-worker stack");
+    assert_string_contains(contents, "create_runtime_task(\n        uart_console_task,\n        \"espclaw_uart\",\n        ESPCLAW_UART_CONSOLE_STACK_BYTES,", "uart console task uses the dedicated frontend stack");
+    assert_string_contains(contents, "create_runtime_task(\n        operator_worker_task,\n        \"espclaw_op\",\n        ESPCLAW_OPERATOR_AGENT_STACK_BYTES,", "operator worker owns the larger shared stack");
 }
 
 static void test_embedded_console_and_agent_paths_heap_allocate_auth_profiles(void)
@@ -2643,6 +2650,23 @@ static void test_admin_api_json(void)
     );
     assert_string_contains(apps_json, "\"id\":\"admin_demo\"", "app id listed");
     assert_string_contains(apps_json, "\"triggers\":[\"boot\",\"telegram\",\"manual\"]", "app triggers listed");
+
+    for (int app_index = 0; app_index < 9; ++app_index) {
+        char app_id[32];
+        char title[32];
+
+        snprintf(app_id, sizeof(app_id), "admin_demo_%d", app_index);
+        snprintf(title, sizeof(title), "Admin Demo %d", app_index);
+        assert_true(
+            espclaw_app_scaffold_lua(temp_dir, app_id, title, "fs.read", "manual") == 0,
+            "additional admin api app scaffolded"
+        );
+    }
+    assert_true(
+        espclaw_render_apps_json(temp_dir, apps_json, sizeof(apps_json)) > 0,
+        "apps json rendered after many apps"
+    );
+    assert_string_contains(apps_json, "\"id\":\"admin_demo_8\"", "apps json is not capped at eight entries");
 
     assert_true(
         espclaw_render_tools_json(tools_json, sizeof(tools_json)) > 0,
@@ -3500,6 +3524,20 @@ static void test_task_runtime(void)
 #else
     assert_true(true, "task runtime test is host-only");
 #endif
+}
+
+static void test_task_runtime_requires_existing_app(void)
+{
+    char temp_dir[128];
+    char output[256];
+
+    make_temp_dir(temp_dir, sizeof(temp_dir));
+
+    assert_true(
+        espclaw_task_start("missing_app_task", temp_dir, "missing_app", "manual", "", 1000, 1, output, sizeof(output)) != 0,
+        "task start fails for a missing app"
+    );
+    assert_string_contains(output, "app missing_app not found", "task start reports the missing app");
 }
 
 static void test_event_watch_runtime(void)
@@ -4512,13 +4550,19 @@ static void test_console_chat_and_web_tools(void)
     assert_string_contains(transcript, "espclaw_runtime_set_yolo_mode", "runtime exposes yolo setter");
     assert_string_contains(transcript, "load_operator_config_from_nvs(&s_operator_yolo_mode);", "runtime loads persisted yolo policy");
     assert_string_contains(transcript, "s_operator_yolo_mode = true;", "runtime defaults yolo mode to enabled");
-    assert_string_contains(transcript, "update.text,\n                                   s_operator_yolo_mode,\n                                   s_operator_yolo_mode,", "telegram agent loop uses global yolo mode for both mutation gating and prompt policy");
-    assert_string_contains(transcript, "#define ESPCLAW_TELEGRAM_STACK_BYTES 8192", "esp32cam telegram task stack budget is reduced to fit fragmented internal heap");
+    assert_string_contains(transcript, "ESPCLAW_OPERATOR_REQUEST_TELEGRAM_AGENT", "runtime routes Telegram agent turns through the shared operator worker");
+    assert_string_contains(transcript, "#define ESPCLAW_TELEGRAM_STACK_BYTES 4096", "esp32cam telegram task stack budget is reduced to fit fragmented internal heap");
     assert_string_contains(transcript, "#define ESPCLAW_TELEGRAM_STACK_BYTES 16384", "other targets keep the larger telegram task stack budget");
+    assert_string_contains(transcript, "#define ESPCLAW_OPERATOR_AGENT_STACK_BYTES 20480", "esp32cam operator worker keeps the larger shared agent stack");
+    assert_string_contains(transcript, "#define ESPCLAW_OPERATOR_AGENT_STACK_BYTES 32768", "other targets keep the larger operator worker stack");
+    assert_string_contains(transcript, "#define ESPCLAW_UART_CONSOLE_STACK_BYTES 6144", "esp32cam uart console is reduced to a thin frontend stack");
+    assert_string_contains(transcript, "#define ESPCLAW_UART_CONSOLE_STACK_BYTES 8192", "other targets keep the thin uart frontend stack budget");
     assert_string_contains(transcript, "runtime_external_malloc(ESPCLAW_TELEGRAM_RESPONSE_BYTES)", "telegram response buffer prefers PSRAM");
     assert_string_contains(transcript, "run_result = runtime_external_calloc(1, sizeof(*run_result));", "telegram agent result prefers PSRAM");
     assert_string_contains(transcript, "runtime_external_malloc(1024)", "telegram photo upload scratch buffer prefers PSRAM");
     assert_string_contains(transcript, "create_runtime_task(\n        telegram_polling_task,\n        \"espclaw_tg\",\n        ESPCLAW_TELEGRAM_STACK_BYTES,", "telegram task uses named stack budget");
+    assert_string_contains(transcript, "create_runtime_task(\n        operator_worker_task,\n        \"espclaw_op\",\n        ESPCLAW_OPERATOR_AGENT_STACK_BYTES,", "runtime starts a shared operator worker with the larger stack budget");
+    assert_string_contains(transcript, "submit_operator_request(\n                                ESPCLAW_OPERATOR_REQUEST_UART_CONSOLE,", "uart console submits commands through the shared operator worker");
     assert_string_contains(transcript, "config.crt_bundle_attach = esp_crt_bundle_attach;", "telegram send message attaches cert bundle");
     assert_string_contains(transcript, "client_config.crt_bundle_attach = esp_crt_bundle_attach;", "telegram get updates attaches cert bundle");
     assert_string_contains(transcript, "telegram_send_chat_action(config.bot_token, update.chat_id, \"typing\")", "telegram sends typing indicator before processing");
@@ -4568,6 +4612,8 @@ static void test_console_chat_and_web_tools(void)
     );
     assert_string_contains(transcript, "telegram_config_get_handler", "admin server exposes telegram config get handler");
     assert_string_contains(transcript, "telegram_config_post_handler", "admin server exposes telegram config post handler");
+    assert_string_contains(transcript, "/api/bench/operator-turn", "admin server exposes operator bench endpoint");
+    assert_string_contains(transcript, "bench_operator_turn_post_handler", "admin server defines operator bench handler");
 
     read_text_file(
         ESPCLAW_SOURCE_DIR "/firmware/components/espclaw_core/src/agent_loop.c",
@@ -4583,6 +4629,7 @@ static void test_console_chat_and_web_tools(void)
     assert_string_contains(transcript, "parser->headers_done = true;", "http client codex parser marks headers complete before body reduction");
     assert_string_contains(transcript, "parser->status_code = status_code;", "http client codex parser preserves fetched status code");
     assert_string_contains(transcript, "Choose the execution shape semantically", "agent loop includes execution choice contract");
+    assert_string_contains(transcript, "Do not substitute a generic hello, echo, or placeholder app.", "agent loop forbids placeholder apps for specific hardware behavior");
     assert_string_contains(transcript, "build_execution_choice_retry_request_body", "agent loop includes execution choice retry builder");
 
     memset(&result, 0, sizeof(result));
@@ -4642,12 +4689,19 @@ static void test_runtime_defers_operator_surfaces_until_after_admin_start(void)
     assert_string_contains(runtime_source, "esp_err_t espclaw_runtime_start_operator_surfaces(void)", "runtime exposes deferred operator surface startup");
     assert_string_contains(runtime_source, "Failed to start operator surfaces after provisioning", "provisioning path logs deferred operator surface startup failures");
     assert_string_not_contains(runtime_source, "xTaskCreatePinnedToCoreWithCaps", "runtime avoids PSRAM-backed task stacks on esp32 because external task stacks are disabled");
+    assert_string_contains(runtime_source, "Operator worker startup failed err=0x%x", "runtime logs operator worker startup error code");
+    assert_string_contains(runtime_source, "Starting operator worker stack=%u core=%d free_internal=%u largest_internal=%u", "runtime logs internal heap before starting operator worker");
+    assert_string_contains(runtime_source, "Failed to start operator worker stack=%u core=%d free_internal=%u largest_internal=%u", "runtime logs detailed operator worker startup failures");
     assert_string_contains(runtime_source, "Starting uart console task stack=%u core=%d free_internal=%u largest_internal=%u", "runtime logs internal heap before starting uart surface");
     assert_string_contains(runtime_source, "Starting telegram task stack=%u core=%d free_internal=%u largest_internal=%u", "runtime logs internal heap before starting telegram surface");
     assert_string_contains(runtime_source, "Failed to start uart console task stack=%u core=%d free_internal=%u largest_internal=%u", "runtime logs detailed uart surface startup failures");
     assert_string_contains(runtime_source, "Failed to start telegram task stack=%u core=%d free_internal=%u largest_internal=%u", "runtime logs detailed telegram surface startup failures");
     assert_string_contains(runtime_source, "UART operator surface startup failed err=0x%x", "runtime logs uart operator startup error code");
     assert_string_contains(runtime_source, "Telegram operator surface startup failed err=0x%x", "runtime logs telegram operator startup error code");
+    assert_string_contains(runtime_source, "err = maybe_start_operator_worker();", "runtime starts the shared operator worker before surface-specific tasks");
+    assert_string_contains(runtime_source, "esp_err_t espclaw_runtime_bench_operator_turn(", "runtime exposes a bench helper for operator surfaces");
+    assert_string_contains(runtime_source, "capture_operator_bench_metrics_before(metrics);", "runtime captures memory telemetry before bench operator turns");
+    assert_string_contains(runtime_source, "capture_operator_bench_metrics_after(metrics);", "runtime captures memory telemetry after bench operator turns");
     assert_string_not_contains(runtime_source, "ESP_ERROR_CHECK(maybe_start_telegram());\n                ESP_ERROR_CHECK(maybe_start_uart_console());", "runtime no longer starts operator surfaces inside safe-start branch");
     assert_string_not_contains(runtime_source, "ESP_ERROR_CHECK(maybe_start_telegram());\n        ESP_ERROR_CHECK(maybe_start_uart_console());", "runtime no longer starts operator surfaces directly in normal startup");
     assert_string_contains(main_source, "if (espclaw_runtime_start_operator_surfaces() != ESP_OK) {", "main starts operator surfaces after admin startup attempt");
@@ -4760,6 +4814,7 @@ int main(void)
     test_app_runtime_vehicle_bindings();
     test_app_vm_and_control_loops();
     test_task_runtime();
+    test_task_runtime_requires_existing_app();
     test_event_watch_runtime();
     test_behavior_runtime();
     test_lua_module_require_paths();

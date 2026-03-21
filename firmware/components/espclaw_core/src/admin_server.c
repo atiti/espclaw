@@ -1159,6 +1159,102 @@ static esp_err_t chat_run_post_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+static bool parse_operator_surface(const char *value, espclaw_operator_surface_t *surface_out)
+{
+    if (value == NULL || surface_out == NULL) {
+        return false;
+    }
+    if (strcmp(value, "web") == 0) {
+        *surface_out = ESPCLAW_OPERATOR_SURFACE_WEB;
+        return true;
+    }
+    if (strcmp(value, "uart") == 0) {
+        *surface_out = ESPCLAW_OPERATOR_SURFACE_UART;
+        return true;
+    }
+    if (strcmp(value, "telegram") == 0) {
+        *surface_out = ESPCLAW_OPERATOR_SURFACE_TELEGRAM;
+        return true;
+    }
+    return false;
+}
+
+static esp_err_t bench_operator_turn_post_handler(httpd_req_t *req)
+{
+    char session_id[ESPCLAW_AGENT_SESSION_ID_MAX + 1];
+    char surface_value[16];
+    char yolo_value[8];
+    char *response = NULL;
+    char *body = NULL;
+    espclaw_agent_run_result_t *result = NULL;
+    espclaw_operator_bench_metrics_t metrics;
+    espclaw_operator_surface_t surface;
+    bool yolo_mode = false;
+    esp_err_t err;
+
+    response = (char *)calloc(1, 12288);
+    body = (char *)calloc(1, 2048);
+    result = (espclaw_agent_run_result_t *)calloc(1, sizeof(*result));
+    if (response == NULL || body == NULL || result == NULL) {
+        free(result);
+        free(body);
+        free(response);
+        return send_json_status(req, "{\"ok\":false,\"message\":\"out of memory\"}", 500, "Internal Server Error");
+    }
+    if (!load_query_value(req, "surface", surface_value, sizeof(surface_value)) ||
+        !parse_operator_surface(surface_value, &surface)) {
+        free(result);
+        free(body);
+        free(response);
+        return send_json_status(req, "{\"ok\":false,\"message\":\"missing or invalid surface\"}", 400, "Bad Request");
+    }
+    if (!load_query_value(req, "session_id", session_id, sizeof(session_id))) {
+        copy_text(session_id, sizeof(session_id), "bench");
+    }
+    if (load_query_value(req, "yolo", yolo_value, sizeof(yolo_value))) {
+        yolo_mode = strtoul(yolo_value, NULL, 10) != 0U;
+    } else {
+        yolo_mode = espclaw_runtime_get_yolo_mode();
+    }
+    if (req->content_len <= 0 || read_request_body(req, body, 2048) != ESP_OK) {
+        free(result);
+        free(body);
+        free(response);
+        return send_json_status(req, "{\"ok\":false,\"message\":\"missing bench body\"}", 400, "Bad Request");
+    }
+
+    memset(&metrics, 0, sizeof(metrics));
+    err = espclaw_runtime_bench_operator_turn(surface, session_id, body, true, yolo_mode, result, &metrics);
+    snprintf(
+        response,
+        12288,
+        "{\"ok\":%s,\"surface\":\"%s\",\"session_id\":\"%s\",\"iterations\":%u,\"used_tools\":%s,\"response_id\":\"%s\",\"final_text\":",
+        (err == ESP_OK || result->ok) ? "true" : "false",
+        surface_value,
+        session_id,
+        result->iterations,
+        result->used_tools ? "true" : "false",
+        result->response_id
+    );
+    append_escaped_json(response, 12288, strlen(response), result->final_text);
+    snprintf(
+        response + strlen(response),
+        12288 - strlen(response),
+        ",\"memory\":{\"free_internal_before\":%lu,\"largest_internal_before\":%lu,"
+        "\"free_internal_after\":%lu,\"largest_internal_after\":%lu}}",
+        (unsigned long)metrics.free_internal_before,
+        (unsigned long)metrics.largest_internal_before,
+        (unsigned long)metrics.free_internal_after,
+        (unsigned long)metrics.largest_internal_after
+    );
+
+    send_json_status(req, response, (err == ESP_OK || result->ok) ? 200 : 500, (err == ESP_OK || result->ok) ? "OK" : "Internal Server Error");
+    free(result);
+    free(body);
+    free(response);
+    return ESP_OK;
+}
+
 static esp_err_t chat_session_get_handler(httpd_req_t *req)
 {
     char session_id[ESPCLAW_AGENT_SESSION_ID_MAX + 1];
@@ -2375,6 +2471,7 @@ esp_err_t espclaw_admin_server_start(void)
         {.uri = "/api/apps/install/from-url", .method = HTTP_POST, .handler = app_install_from_url_post_handler, .user_ctx = NULL},
         {.uri = "/api/apps/run", .method = HTTP_POST, .handler = app_run_post_handler, .user_ctx = NULL},
         {.uri = "/api/chat/run", .method = HTTP_POST, .handler = chat_run_post_handler, .user_ctx = NULL},
+        {.uri = "/api/bench/operator-turn", .method = HTTP_POST, .handler = bench_operator_turn_post_handler, .user_ctx = NULL},
         {.uri = "/api/chat/session", .method = HTTP_GET, .handler = chat_session_get_handler, .user_ctx = NULL},
         {.uri = "/api/loops/start", .method = HTTP_POST, .handler = loop_start_post_handler, .user_ctx = NULL},
         {.uri = "/api/loops/stop", .method = HTTP_POST, .handler = loop_stop_post_handler, .user_ctx = NULL},

@@ -13,6 +13,7 @@ typedef int esp_err_t;
 #endif
 #endif
 
+#include "espclaw/agent_loop.h"
 #include "espclaw/board_profile.h"
 #include "espclaw/provisioning.h"
 
@@ -47,6 +48,19 @@ typedef struct {
     char token_hint[24];
 } espclaw_telegram_config_t;
 
+typedef enum {
+    ESPCLAW_OPERATOR_SURFACE_WEB = 0,
+    ESPCLAW_OPERATOR_SURFACE_UART = 1,
+    ESPCLAW_OPERATOR_SURFACE_TELEGRAM = 2,
+} espclaw_operator_surface_t;
+
+typedef struct {
+    size_t free_internal_before;
+    size_t largest_internal_before;
+    size_t free_internal_after;
+    size_t largest_internal_after;
+} espclaw_operator_bench_metrics_t;
+
 esp_err_t espclaw_runtime_start(espclaw_board_profile_id_t profile_id, espclaw_runtime_status_t *status);
 esp_err_t espclaw_runtime_start_operator_surfaces(void);
 const espclaw_runtime_status_t *espclaw_runtime_status(void);
@@ -69,6 +83,15 @@ esp_err_t espclaw_runtime_set_telegram_config(
 );
 bool espclaw_runtime_get_yolo_mode(void);
 esp_err_t espclaw_runtime_set_yolo_mode(bool enabled, char *message, size_t message_size);
+esp_err_t espclaw_runtime_bench_operator_turn(
+    espclaw_operator_surface_t surface,
+    const char *session_id,
+    const char *input,
+    bool allow_mutations,
+    bool yolo_mode,
+    espclaw_agent_run_result_t *result,
+    espclaw_operator_bench_metrics_t *metrics
+);
 esp_err_t espclaw_runtime_get_provisioning_descriptor(espclaw_provisioning_descriptor_t *descriptor);
 bool espclaw_runtime_time_is_sane(void);
 bool espclaw_runtime_wait_for_time_sync(uint32_t timeout_ms);

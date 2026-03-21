@@ -22,6 +22,7 @@
 #include "esp_wifi_default.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "nvs.h"
 #include "nvs_flash.h"
@@ -85,6 +86,9 @@ static EventGroupHandle_t s_runtime_event_group;
 static espclaw_runtime_status_t s_runtime_status;
 static long s_telegram_offset;
 static espclaw_telegram_config_t s_telegram_config;
+static TaskHandle_t s_operator_worker_handle;
+static SemaphoreHandle_t s_operator_request_mutex;
+static bool s_operator_worker_started;
 static bool s_telegram_task_started;
 static bool s_uart_console_started;
 static bool s_softap_onboarding_active;
@@ -95,15 +99,21 @@ static bool s_time_sync_completed;
 static esp_sntp_config_t s_sntp_config;
 static bool s_operator_yolo_mode;
 static esp_err_t maybe_start_telegram(void);
+static esp_err_t maybe_start_operator_worker(void);
 esp_err_t espclaw_runtime_start_operator_surfaces(void);
 
 #ifdef ESP_PLATFORM
 #define ESPCLAW_BEHAVIOR_AUTOSTART_DELAY_MS 8000
 #define ESPCLAW_BEHAVIOR_AUTOSTART_STACK_WORDS 6144
 #if CONFIG_ESPCLAW_BOARD_PROFILE_ESP32CAM
-#define ESPCLAW_TELEGRAM_STACK_BYTES 8192
+#define ESPCLAW_TELEGRAM_STACK_BYTES 4096
 #else
 #define ESPCLAW_TELEGRAM_STACK_BYTES 16384
+#endif
+#if CONFIG_ESPCLAW_BOARD_PROFILE_ESP32CAM
+#define ESPCLAW_OPERATOR_AGENT_STACK_BYTES 20480
+#else
+#define ESPCLAW_OPERATOR_AGENT_STACK_BYTES 32768
 #endif
 #define ESPCLAW_TELEGRAM_URL_BYTES 512
 #define ESPCLAW_TELEGRAM_RESPONSE_BYTES 8192
@@ -111,9 +121,9 @@ esp_err_t espclaw_runtime_start_operator_surfaces(void);
 #define ESPCLAW_TELEGRAM_CONTEXT_SLOTS 4
 #define ESPCLAW_TELEGRAM_CONTEXT_MESSAGES 6
 #if CONFIG_ESPCLAW_BOARD_PROFILE_ESP32CAM
-#define ESPCLAW_UART_CONSOLE_STACK_BYTES 20480
+#define ESPCLAW_UART_CONSOLE_STACK_BYTES 6144
 #else
-#define ESPCLAW_UART_CONSOLE_STACK_BYTES 32768
+#define ESPCLAW_UART_CONSOLE_STACK_BYTES 8192
 #endif
 #endif
 
@@ -125,6 +135,28 @@ typedef struct {
 } espclaw_telegram_chat_context_t;
 
 static espclaw_telegram_chat_context_t s_telegram_contexts[ESPCLAW_TELEGRAM_CONTEXT_SLOTS];
+
+typedef enum {
+    ESPCLAW_OPERATOR_REQUEST_NONE = 0,
+    ESPCLAW_OPERATOR_REQUEST_UART_CONSOLE,
+    ESPCLAW_OPERATOR_REQUEST_TELEGRAM_AGENT
+} espclaw_operator_request_kind_t;
+
+typedef struct {
+    espclaw_operator_request_kind_t kind;
+    const char *workspace_root;
+    const char *session_id;
+    const char *input;
+    bool allow_mutations;
+    bool yolo_mode;
+    espclaw_agent_run_result_t *result;
+    const espclaw_agent_history_message_t *history;
+    size_t history_count;
+    int status;
+    TaskHandle_t requester_task;
+} espclaw_operator_request_t;
+
+static espclaw_operator_request_t s_operator_request;
 
 static BaseType_t create_runtime_task(
     TaskFunction_t task,
@@ -145,6 +177,34 @@ static BaseType_t create_runtime_task(
         handle_out,
         core_id
     );
+}
+
+static void capture_operator_bench_metrics_before(espclaw_operator_bench_metrics_t *metrics)
+{
+    if (metrics == NULL) {
+        return;
+    }
+#ifdef ESP_PLATFORM
+    metrics->free_internal_before = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    metrics->largest_internal_before = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+#else
+    metrics->free_internal_before = 0U;
+    metrics->largest_internal_before = 0U;
+#endif
+}
+
+static void capture_operator_bench_metrics_after(espclaw_operator_bench_metrics_t *metrics)
+{
+    if (metrics == NULL) {
+        return;
+    }
+#ifdef ESP_PLATFORM
+    metrics->free_internal_after = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    metrics->largest_internal_after = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+#else
+    metrics->free_internal_after = 0U;
+    metrics->largest_internal_after = 0U;
+#endif
 }
 
 static void *runtime_external_malloc(size_t size)
@@ -1323,19 +1383,181 @@ static void uart_console_prompt(void)
     uart_console_write_text("\r\nespclaw> ");
 }
 
+static int execute_operator_request(espclaw_operator_request_t *request)
+{
+    if (request == NULL || request->result == NULL) {
+        return -1;
+    }
+
+    switch (request->kind) {
+        case ESPCLAW_OPERATOR_REQUEST_UART_CONSOLE:
+            return espclaw_console_run(
+                request->workspace_root,
+                request->session_id,
+                request->input,
+                request->allow_mutations,
+                request->yolo_mode,
+                request->result
+            );
+        case ESPCLAW_OPERATOR_REQUEST_TELEGRAM_AGENT:
+            return espclaw_agent_loop_run_stateless_with_history(
+                request->workspace_root,
+                request->session_id,
+                request->input,
+                request->allow_mutations,
+                request->yolo_mode,
+                request->history,
+                request->history_count,
+                request->result
+            );
+        case ESPCLAW_OPERATOR_REQUEST_NONE:
+        default:
+            return -1;
+    }
+}
+
+static esp_err_t submit_operator_request(
+    espclaw_operator_request_kind_t kind,
+    const char *workspace_root,
+    const char *session_id,
+    const char *input,
+    bool allow_mutations,
+    bool yolo_mode,
+    const espclaw_agent_history_message_t *history,
+    size_t history_count,
+    espclaw_agent_run_result_t *result
+)
+{
+    if (!s_operator_worker_started || s_operator_worker_handle == NULL || s_operator_request_mutex == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (session_id == NULL || input == NULL || result == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (xSemaphoreTake(s_operator_request_mutex, portMAX_DELAY) != pdTRUE) {
+        return ESP_FAIL;
+    }
+
+    memset(&s_operator_request, 0, sizeof(s_operator_request));
+    s_operator_request.kind = kind;
+    s_operator_request.workspace_root = workspace_root;
+    s_operator_request.session_id = session_id;
+    s_operator_request.input = input;
+    s_operator_request.allow_mutations = allow_mutations;
+    s_operator_request.yolo_mode = yolo_mode;
+    s_operator_request.result = result;
+    s_operator_request.history = history;
+    s_operator_request.history_count = history_count;
+    s_operator_request.requester_task = xTaskGetCurrentTaskHandle();
+    xTaskNotifyGive(s_operator_worker_handle);
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    xSemaphoreGive(s_operator_request_mutex);
+    return s_operator_request.status == 0 ? ESP_OK : ESP_FAIL;
+}
+
+esp_err_t espclaw_runtime_bench_operator_turn(
+    espclaw_operator_surface_t surface,
+    const char *session_id,
+    const char *input,
+    bool allow_mutations,
+    bool yolo_mode,
+    espclaw_agent_run_result_t *result,
+    espclaw_operator_bench_metrics_t *metrics
+)
+{
+    const espclaw_runtime_status_t *status = espclaw_runtime_status();
+    const char *workspace_root = NULL;
+    esp_err_t err = ESP_FAIL;
+
+    if (session_id == NULL || input == NULL || result == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    memset(result, 0, sizeof(*result));
+    if (metrics != NULL) {
+        memset(metrics, 0, sizeof(*metrics));
+    }
+    capture_operator_bench_metrics_before(metrics);
+
+    if (status != NULL && status->storage_ready) {
+        workspace_root = status->workspace_root;
+    }
+
+    switch (surface) {
+        case ESPCLAW_OPERATOR_SURFACE_WEB:
+            err = espclaw_console_run(
+                      workspace_root,
+                      session_id,
+                      input,
+                      allow_mutations,
+                      yolo_mode,
+                      result
+                  ) == 0
+                ? ESP_OK
+                : ESP_FAIL;
+            break;
+        case ESPCLAW_OPERATOR_SURFACE_UART:
+            err = submit_operator_request(
+                ESPCLAW_OPERATOR_REQUEST_UART_CONSOLE,
+                workspace_root,
+                session_id,
+                input,
+                allow_mutations,
+                yolo_mode,
+                NULL,
+                0U,
+                result
+            );
+            break;
+        case ESPCLAW_OPERATOR_SURFACE_TELEGRAM:
+            err = submit_operator_request(
+                ESPCLAW_OPERATOR_REQUEST_TELEGRAM_AGENT,
+                workspace_root,
+                session_id,
+                input,
+                allow_mutations,
+                yolo_mode,
+                NULL,
+                0U,
+                result
+            );
+            break;
+        default:
+            err = ESP_ERR_INVALID_ARG;
+            break;
+    }
+
+    capture_operator_bench_metrics_after(metrics);
+    return err;
+}
+
+static void operator_worker_task(void *arg)
+{
+    (void)arg;
+
+    while (true) {
+        TaskHandle_t requester = NULL;
+
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        requester = s_operator_request.requester_task;
+        s_operator_request.status = execute_operator_request(&s_operator_request);
+        s_operator_request.kind = ESPCLAW_OPERATOR_REQUEST_NONE;
+        if (requester != NULL) {
+            xTaskNotifyGive(requester);
+        }
+    }
+}
+
 static void uart_console_task(void *arg)
 {
     char line[768];
-    char *reply = NULL;
     espclaw_agent_run_result_t *result = NULL;
     size_t line_length = 0;
 
     (void)arg;
-    reply = calloc(1, ESPCLAW_AGENT_TEXT_MAX + 64U);
     result = calloc(1, sizeof(*result));
-    if (reply == NULL || result == NULL) {
+    if (result == NULL) {
         free(result);
-        free(reply);
         uart_console_write_text("\r\nESPClaw serial chat unavailable: out of memory.");
         vTaskDelete(NULL);
         return;
@@ -1361,18 +1583,24 @@ static void uart_console_task(void *arg)
                     if (line[0] != '\0') {
                         uart_console_write_raw("\r\n");
                         memset(result, 0, sizeof(*result));
-                        if (espclaw_console_run(
+                        if (submit_operator_request(
+                                ESPCLAW_OPERATOR_REQUEST_UART_CONSOLE,
                                 s_runtime_status.storage_ready ? s_runtime_status.workspace_root : NULL,
                                 "uart0",
                                 line,
                                 true,
                                 s_operator_yolo_mode,
-                                result) == 0 || result->ok) {
-                            snprintf(reply, ESPCLAW_AGENT_TEXT_MAX + 64U, "\r\n%s", result->final_text);
-                        } else {
-                            snprintf(reply, ESPCLAW_AGENT_TEXT_MAX + 64U, "\r\n%s", result->final_text);
+                                NULL,
+                                0U,
+                                result) != ESP_OK) {
+                            copy_text(
+                                result->final_text,
+                                sizeof(result->final_text),
+                                "Operator worker unavailable."
+                            );
                         }
-                        uart_console_write_text(reply);
+                        uart_console_write_text("\r\n");
+                        uart_console_write_text(result->final_text);
                     }
                     line_length = 0;
                     line[0] = '\0';
@@ -1439,13 +1667,13 @@ static void build_status_reply(char *buffer, size_t buffer_size)
 
 static void build_apps_list_reply(char *buffer, size_t buffer_size)
 {
-    char ids[8][ESPCLAW_APP_ID_MAX + 1];
+    char ids[32][ESPCLAW_APP_ID_MAX + 1];
     size_t count = 0;
     size_t index;
     size_t written;
 
     if (!s_runtime_status.storage_ready ||
-        espclaw_app_collect_ids(s_runtime_status.workspace_root, ids, 8, &count) != 0 ||
+        espclaw_app_collect_ids(s_runtime_status.workspace_root, ids, 32, &count) != 0 ||
         count == 0) {
         snprintf(buffer, buffer_size, "No apps installed.");
         return;
@@ -1729,7 +1957,8 @@ static void telegram_polling_task(void *arg)
                     } else {
                         memset(run_result, 0, sizeof(*run_result));
                     }
-                    if (s_runtime_status.storage_ready && (espclaw_agent_loop_run_stateless_with_history(
+                    if (s_runtime_status.storage_ready && (submit_operator_request(
+                                   ESPCLAW_OPERATOR_REQUEST_TELEGRAM_AGENT,
                                    s_runtime_status.workspace_root,
                                    update.chat_id,
                                    update.text,
@@ -1737,7 +1966,7 @@ static void telegram_polling_task(void *arg)
                                    s_operator_yolo_mode,
                                    chat_context != NULL ? chat_context->messages : NULL,
                                    chat_context != NULL ? chat_context->count : 0U,
-                                   run_result) == 0 || run_result->ok)) {
+                                   run_result) == ESP_OK || run_result->ok)) {
                         copy_text(reply, ESPCLAW_TELEGRAM_REPLY_BYTES, run_result->final_text);
                     } else if (s_runtime_status.storage_ready) {
                         copy_text(reply, ESPCLAW_TELEGRAM_REPLY_BYTES, run_result->final_text);
@@ -1831,6 +2060,58 @@ static esp_err_t maybe_start_telegram(void)
 #endif
 }
 
+static esp_err_t maybe_start_operator_worker(void)
+{
+    int core = espclaw_task_policy_core_for(ESPCLAW_TASK_KIND_CONSOLE);
+    BaseType_t created;
+    size_t free_internal;
+    size_t largest_internal;
+
+    if (s_operator_worker_started) {
+        return ESP_OK;
+    }
+    if (s_operator_request_mutex == NULL) {
+        s_operator_request_mutex = xSemaphoreCreateMutex();
+        if (s_operator_request_mutex == NULL) {
+            ESP_LOGE(TAG, "Failed to allocate operator worker request mutex");
+            return ESP_ERR_NO_MEM;
+        }
+    }
+
+    free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    largest_internal = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    ESP_LOGI(
+        TAG,
+        "Starting operator worker stack=%u core=%d free_internal=%u largest_internal=%u",
+        (unsigned int)ESPCLAW_OPERATOR_AGENT_STACK_BYTES,
+        core,
+        (unsigned int)free_internal,
+        (unsigned int)largest_internal
+    );
+    created = create_runtime_task(
+        operator_worker_task,
+        "espclaw_op",
+        ESPCLAW_OPERATOR_AGENT_STACK_BYTES,
+        NULL,
+        4,
+        &s_operator_worker_handle,
+        core >= 0 ? core : tskNO_AFFINITY
+    );
+    if (created != pdPASS) {
+        ESP_LOGE(
+            TAG,
+            "Failed to start operator worker stack=%u core=%d free_internal=%u largest_internal=%u",
+            (unsigned int)ESPCLAW_OPERATOR_AGENT_STACK_BYTES,
+            core,
+            (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+            (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)
+        );
+        return ESP_FAIL;
+    }
+    s_operator_worker_started = true;
+    return ESP_OK;
+}
+
 static esp_err_t maybe_start_uart_console(void)
 {
     int core = espclaw_task_policy_core_for(ESPCLAW_TASK_KIND_CONSOLE);
@@ -1879,7 +2160,13 @@ static esp_err_t maybe_start_uart_console(void)
 
 esp_err_t espclaw_runtime_start_operator_surfaces(void)
 {
-    esp_err_t err = maybe_start_uart_console();
+    esp_err_t err = maybe_start_operator_worker();
+
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Operator worker startup failed err=0x%x", (unsigned int)err);
+        return err;
+    }
+    err = maybe_start_uart_console();
 
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "UART operator surface startup failed err=0x%x", (unsigned int)err);

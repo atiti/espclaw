@@ -138,7 +138,7 @@ APP_PATTERNS_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/app-patterns")"
 APP_PATTERNS_MD="$(curl -sf "http://127.0.0.1:$PORT/api/app-patterns.md")"
 [[ "$APP_PATTERNS_MD" == *'# App Patterns'* ]]
 [[ "$APP_PATTERNS_MD" == *'## Execution Examples'* ]]
-[[ "$APP_PATTERNS_MD" == *'app.install, then task.start'* ]]
+[[ "$APP_PATTERNS_MD" == *'app.install with the requested timing in Lua, then task.start'* ]]
 
 COMPONENT_INSTALL_JSON="$(curl -sf -X POST "http://127.0.0.1:$PORT/api/components/install" \
   -H 'Content-Type: application/json' \
@@ -297,6 +297,25 @@ CHAT_JSON="$(curl -sf -X POST "http://127.0.0.1:$PORT/api/chat/run?session_id=si
 CHAT_SESSION_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/chat/session?session_id=sim_chat")"
 [[ "$CHAT_SESSION_JSON" == *'"session_id":"sim_chat"'* ]]
 [[ "$CHAT_SESSION_JSON" == *'Requested tools: system.info, app.list'* ]]
+
+BENCH_WEB_JSON="$(curl -sf -X POST "http://127.0.0.1:$PORT/api/bench/operator-turn?surface=web&session_id=sim_bench_web&yolo=1" --data 'List out all the available tools to you. Call tool.list exactly once, then briefly summarize the tool surface.')"
+[[ "$BENCH_WEB_JSON" == *'"ok":true'* ]]
+[[ "$BENCH_WEB_JSON" == *'"surface":"web"'* ]]
+[[ "$BENCH_WEB_JSON" == *'"used_tools":true'* ]]
+[[ "$BENCH_WEB_JSON" == *'"memory":{"free_internal_before":0'* ]]
+
+BENCH_UART_JSON="$(curl -sf -X POST "http://127.0.0.1:$PORT/api/bench/operator-turn?surface=uart&session_id=sim_bench_uart&yolo=1" --data 'List out all the available tools to you. Call tool.list exactly once, then briefly summarize the tool surface.')"
+[[ "$BENCH_UART_JSON" == *'"ok":true'* ]]
+[[ "$BENCH_UART_JSON" == *'"surface":"uart"'* ]]
+[[ "$BENCH_UART_JSON" == *'"used_tools":true'* ]]
+
+BENCH_TELEGRAM_JSON="$(curl -sf -X POST "http://127.0.0.1:$PORT/api/bench/operator-turn?surface=telegram&session_id=sim_bench_telegram&yolo=1" --data 'List out all the available tools to you. Call tool.list exactly once, then briefly summarize the tool surface.')"
+[[ "$BENCH_TELEGRAM_JSON" == *'"ok":true'* ]]
+[[ "$BENCH_TELEGRAM_JSON" == *'"surface":"telegram"'* ]]
+[[ "$BENCH_TELEGRAM_JSON" == *'"used_tools":true'* ]]
+
+BENCH_UART_SESSION_JSON="$(curl -sf "http://127.0.0.1:$PORT/api/chat/session?session_id=sim_bench_uart")"
+[[ "$BENCH_UART_SESSION_JSON" == *'Requested tools: tool.list'* ]]
 
 TOOLS_CHAT_JSON="$(curl -sf -X POST "http://127.0.0.1:$PORT/api/chat/run?session_id=sim_tools" --data 'List out all the available tools to you')"
 [[ "$TOOLS_CHAT_JSON" == *'"ok":true'* ]]
