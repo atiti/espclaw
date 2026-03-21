@@ -164,6 +164,8 @@ static espclaw_operator_request_t s_operator_request;
 #ifdef ESP_PLATFORM
 #if CONFIG_ESPCLAW_BOARD_PROFILE_ESP32CAM
 #define ESPCLAW_STACK_WORDS(bytes) (((bytes) + sizeof(StackType_t) - 1U) / sizeof(StackType_t))
+static DRAM_ATTR StaticTask_t s_operator_worker_task_buffer;
+static DRAM_ATTR StackType_t s_operator_worker_stack[ESPCLAW_STACK_WORDS(ESPCLAW_OPERATOR_AGENT_STACK_BYTES)];
 static DRAM_ATTR StaticTask_t s_uart_console_task_buffer;
 static DRAM_ATTR StackType_t s_uart_console_stack[ESPCLAW_STACK_WORDS(ESPCLAW_UART_CONSOLE_STACK_BYTES)];
 static DRAM_ATTR StaticTask_t s_telegram_task_buffer;
@@ -184,7 +186,10 @@ static espclaw_runtime_task_reservation_t reserve_runtime_task_storage(const cha
 
 #ifdef ESP_PLATFORM
 #if CONFIG_ESPCLAW_BOARD_PROFILE_ESP32CAM
-    if (name != NULL && strcmp(name, "espclaw_uart") == 0) {
+    if (name != NULL && strcmp(name, "espclaw_op") == 0) {
+        reservation.stack_buffer = s_operator_worker_stack;
+        reservation.task_buffer = &s_operator_worker_task_buffer;
+    } else if (name != NULL && strcmp(name, "espclaw_uart") == 0) {
         reservation.stack_buffer = s_uart_console_stack;
         reservation.task_buffer = &s_uart_console_task_buffer;
     } else if (name != NULL && strcmp(name, "espclaw_tg") == 0) {

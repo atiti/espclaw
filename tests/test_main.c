@@ -4696,10 +4696,12 @@ static void test_runtime_defers_operator_surfaces_until_after_admin_start(void)
     assert_string_contains(runtime_source, "Starting telegram task stack=%u core=%d free_internal=%u largest_internal=%u", "runtime logs internal heap before starting telegram surface");
     assert_string_contains(runtime_source, "Failed to start uart console task stack=%u core=%d free_internal=%u largest_internal=%u", "runtime logs detailed uart surface startup failures");
     assert_string_contains(runtime_source, "Failed to start telegram task stack=%u core=%d free_internal=%u largest_internal=%u", "runtime logs detailed telegram surface startup failures");
+    assert_string_contains(runtime_source, "static DRAM_ATTR StackType_t s_operator_worker_stack[ESPCLAW_STACK_WORDS(ESPCLAW_OPERATOR_AGENT_STACK_BYTES)];", "esp32cam reserves the shared operator worker stack in internal bss");
     assert_string_contains(runtime_source, "static DRAM_ATTR StackType_t s_uart_console_stack[ESPCLAW_STACK_WORDS(ESPCLAW_UART_CONSOLE_STACK_BYTES)];", "esp32cam reserves the uart console shim stack in internal bss");
     assert_string_contains(runtime_source, "static DRAM_ATTR StackType_t s_telegram_task_stack[ESPCLAW_STACK_WORDS(ESPCLAW_TELEGRAM_STACK_BYTES)];", "esp32cam reserves the telegram shim stack in internal bss");
     assert_string_contains(runtime_source, "reserve_runtime_task_storage(const char *name)", "runtime maps selected tasks to reserved stack storage");
     assert_string_contains(runtime_source, "xTaskCreateStaticPinnedToCore(", "runtime uses static FreeRTOS task creation for reserved transport shims");
+    assert_string_contains(runtime_source, "strcmp(name, \"espclaw_op\") == 0", "runtime reserves a static stack for the shared operator worker");
     assert_string_contains(runtime_source, "strcmp(name, \"espclaw_uart\") == 0", "runtime reserves a static stack for the uart shim task");
     assert_string_contains(runtime_source, "strcmp(name, \"espclaw_tg\") == 0", "runtime reserves a static stack for the telegram shim task");
     assert_string_contains(runtime_source, "UART operator surface startup failed err=0x%x", "runtime logs uart operator startup error code");
