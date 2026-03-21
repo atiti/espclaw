@@ -22,6 +22,9 @@
 #include "esp_wifi_default.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
+#ifdef ESP_PLATFORM
+#include "freertos/idf_additions.h"
+#endif
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "nvs.h"
@@ -158,6 +161,43 @@ typedef struct {
 
 static espclaw_operator_request_t s_operator_request;
 
+#ifdef ESP_PLATFORM
+#if CONFIG_ESPCLAW_BOARD_PROFILE_ESP32CAM
+#define ESPCLAW_STACK_WORDS(bytes) (((bytes) + sizeof(StackType_t) - 1U) / sizeof(StackType_t))
+static DRAM_ATTR StaticTask_t s_uart_console_task_buffer;
+static DRAM_ATTR StackType_t s_uart_console_stack[ESPCLAW_STACK_WORDS(ESPCLAW_UART_CONSOLE_STACK_BYTES)];
+static DRAM_ATTR StaticTask_t s_telegram_task_buffer;
+static DRAM_ATTR StackType_t s_telegram_task_stack[ESPCLAW_STACK_WORDS(ESPCLAW_TELEGRAM_STACK_BYTES)];
+#endif
+#endif
+
+typedef struct {
+#ifdef ESP_PLATFORM
+    StackType_t *stack_buffer;
+    StaticTask_t *task_buffer;
+#endif
+} espclaw_runtime_task_reservation_t;
+
+static espclaw_runtime_task_reservation_t reserve_runtime_task_storage(const char *name)
+{
+    espclaw_runtime_task_reservation_t reservation = {0};
+
+#ifdef ESP_PLATFORM
+#if CONFIG_ESPCLAW_BOARD_PROFILE_ESP32CAM
+    if (name != NULL && strcmp(name, "espclaw_uart") == 0) {
+        reservation.stack_buffer = s_uart_console_stack;
+        reservation.task_buffer = &s_uart_console_task_buffer;
+    } else if (name != NULL && strcmp(name, "espclaw_tg") == 0) {
+        reservation.stack_buffer = s_telegram_task_stack;
+        reservation.task_buffer = &s_telegram_task_buffer;
+    }
+#endif
+#else
+    (void)name;
+#endif
+    return reservation;
+}
+
 static BaseType_t create_runtime_task(
     TaskFunction_t task,
     const char *name,
@@ -168,6 +208,27 @@ static BaseType_t create_runtime_task(
     BaseType_t core_id
 )
 {
+#ifdef ESP_PLATFORM
+    espclaw_runtime_task_reservation_t reservation = reserve_runtime_task_storage(name);
+
+    if (reservation.stack_buffer != NULL && reservation.task_buffer != NULL) {
+        TaskHandle_t handle = xTaskCreateStaticPinnedToCore(
+            task,
+            name,
+            stack_bytes,
+            parameter,
+            priority,
+            reservation.stack_buffer,
+            reservation.task_buffer,
+            core_id
+        );
+
+        if (handle_out != NULL) {
+            *handle_out = handle;
+        }
+        return handle != NULL ? pdPASS : errCOULD_NOT_ALLOCATE_REQUIRED_MEMORY;
+    }
+#endif
     return xTaskCreatePinnedToCore(
         task,
         name,
