@@ -100,13 +100,21 @@ esp_err_t espclaw_runtime_start_operator_surfaces(void);
 #ifdef ESP_PLATFORM
 #define ESPCLAW_BEHAVIOR_AUTOSTART_DELAY_MS 8000
 #define ESPCLAW_BEHAVIOR_AUTOSTART_STACK_WORDS 6144
+#if CONFIG_ESPCLAW_BOARD_PROFILE_ESP32CAM
+#define ESPCLAW_TELEGRAM_STACK_BYTES 8192
+#else
 #define ESPCLAW_TELEGRAM_STACK_BYTES 16384
+#endif
 #define ESPCLAW_TELEGRAM_URL_BYTES 512
 #define ESPCLAW_TELEGRAM_RESPONSE_BYTES 8192
 #define ESPCLAW_TELEGRAM_REPLY_BYTES 768
 #define ESPCLAW_TELEGRAM_CONTEXT_SLOTS 4
 #define ESPCLAW_TELEGRAM_CONTEXT_MESSAGES 6
+#if CONFIG_ESPCLAW_BOARD_PROFILE_ESP32CAM
+#define ESPCLAW_UART_CONSOLE_STACK_BYTES 20480
+#else
 #define ESPCLAW_UART_CONSOLE_STACK_BYTES 32768
+#endif
 #endif
 
 typedef struct {
@@ -117,6 +125,27 @@ typedef struct {
 } espclaw_telegram_chat_context_t;
 
 static espclaw_telegram_chat_context_t s_telegram_contexts[ESPCLAW_TELEGRAM_CONTEXT_SLOTS];
+
+static BaseType_t create_runtime_task(
+    TaskFunction_t task,
+    const char *name,
+    uint32_t stack_bytes,
+    void *parameter,
+    UBaseType_t priority,
+    TaskHandle_t *handle_out,
+    BaseType_t core_id
+)
+{
+    return xTaskCreatePinnedToCore(
+        task,
+        name,
+        stack_bytes,
+        parameter,
+        priority,
+        handle_out,
+        core_id
+    );
+}
 
 static void *runtime_external_malloc(size_t size)
 {
@@ -1750,6 +1779,9 @@ static esp_err_t maybe_start_telegram(void)
 {
 #if CONFIG_ESPCLAW_ENABLE_TELEGRAM
     int core = espclaw_task_policy_core_for(ESPCLAW_TASK_KIND_TELEGRAM);
+    BaseType_t created;
+    size_t free_internal;
+    size_t largest_internal;
 
     if (s_telegram_task_started) {
         return ESP_OK;
@@ -1762,14 +1794,34 @@ static esp_err_t maybe_start_telegram(void)
         return ESP_OK;
     }
 
-    if (xTaskCreatePinnedToCore(
-            telegram_polling_task,
-            "espclaw_tg",
-            ESPCLAW_TELEGRAM_STACK_BYTES,
-            NULL,
-            5,
-            NULL,
-            core >= 0 ? core : tskNO_AFFINITY) != pdPASS) {
+    free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    largest_internal = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    ESP_LOGI(
+        TAG,
+        "Starting telegram task stack=%u core=%d free_internal=%u largest_internal=%u",
+        (unsigned int)ESPCLAW_TELEGRAM_STACK_BYTES,
+        core,
+        (unsigned int)free_internal,
+        (unsigned int)largest_internal
+    );
+    created = create_runtime_task(
+        telegram_polling_task,
+        "espclaw_tg",
+        ESPCLAW_TELEGRAM_STACK_BYTES,
+        NULL,
+        5,
+        NULL,
+        core >= 0 ? core : tskNO_AFFINITY
+    );
+    if (created != pdPASS) {
+        ESP_LOGE(
+            TAG,
+            "Failed to start telegram task stack=%u core=%d free_internal=%u largest_internal=%u",
+            (unsigned int)ESPCLAW_TELEGRAM_STACK_BYTES,
+            core,
+            (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+            (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)
+        );
         return ESP_FAIL;
     }
     s_telegram_task_started = true;
@@ -1782,20 +1834,43 @@ static esp_err_t maybe_start_telegram(void)
 static esp_err_t maybe_start_uart_console(void)
 {
     int core = espclaw_task_policy_core_for(ESPCLAW_TASK_KIND_CONSOLE);
+    BaseType_t created;
+    size_t free_internal;
+    size_t largest_internal;
 
     if (s_uart_console_started) {
         return ESP_OK;
     }
     esp_log_level_set("wifi", ESP_LOG_WARN);
     esp_log_level_set("esp_netif_handlers", ESP_LOG_WARN);
-    if (xTaskCreatePinnedToCore(
-            uart_console_task,
-            "espclaw_uart",
-            ESPCLAW_UART_CONSOLE_STACK_BYTES,
-            NULL,
-            4,
-            NULL,
-            core >= 0 ? core : tskNO_AFFINITY) != pdPASS) {
+    free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    largest_internal = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    ESP_LOGI(
+        TAG,
+        "Starting uart console task stack=%u core=%d free_internal=%u largest_internal=%u",
+        (unsigned int)ESPCLAW_UART_CONSOLE_STACK_BYTES,
+        core,
+        (unsigned int)free_internal,
+        (unsigned int)largest_internal
+    );
+    created = create_runtime_task(
+        uart_console_task,
+        "espclaw_uart",
+        ESPCLAW_UART_CONSOLE_STACK_BYTES,
+        NULL,
+        4,
+        NULL,
+        core >= 0 ? core : tskNO_AFFINITY
+    );
+    if (created != pdPASS) {
+        ESP_LOGE(
+            TAG,
+            "Failed to start uart console task stack=%u core=%d free_internal=%u largest_internal=%u",
+            (unsigned int)ESPCLAW_UART_CONSOLE_STACK_BYTES,
+            core,
+            (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+            (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)
+        );
         return ESP_FAIL;
     }
     s_uart_console_started = true;
@@ -1807,9 +1882,15 @@ esp_err_t espclaw_runtime_start_operator_surfaces(void)
     esp_err_t err = maybe_start_uart_console();
 
     if (err != ESP_OK) {
+        ESP_LOGE(TAG, "UART operator surface startup failed err=0x%x", (unsigned int)err);
         return err;
     }
-    return maybe_start_telegram();
+    err = maybe_start_telegram();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Telegram operator surface startup failed err=0x%x", (unsigned int)err);
+        return err;
+    }
+    return ESP_OK;
 }
 
 esp_err_t espclaw_runtime_start(espclaw_board_profile_id_t profile_id, espclaw_runtime_status_t *status)

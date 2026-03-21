@@ -1984,7 +1984,7 @@ static void test_task_runtime_uses_portmux_locking(void)
 static void test_runtime_skips_boot_automation_after_crash_reset(void)
 {
     char path[512];
-    char contents[65536];
+    char contents[262144];
 
     snprintf(path, sizeof(path), "%s/firmware/components/espclaw_core/src/runtime.c", ESPCLAW_SOURCE_DIR);
     read_text_file(path, contents, sizeof(contents));
@@ -2099,12 +2099,13 @@ static void test_telegram_agent_turns_use_stateless_loop(void)
 static void test_runtime_uses_larger_uart_console_stack(void)
 {
     char path[512];
-    char contents[65536];
+    char contents[262144];
 
     snprintf(path, sizeof(path), "%s/firmware/components/espclaw_core/src/runtime.c", ESPCLAW_SOURCE_DIR);
     read_text_file(path, contents, sizeof(contents));
-    assert_string_contains(contents, "ESPCLAW_UART_CONSOLE_STACK_BYTES 32768", "runtime defines a larger UART console stack");
-    assert_string_contains(contents, "\"espclaw_uart\",\n            ESPCLAW_UART_CONSOLE_STACK_BYTES,", "uart console task uses the dedicated larger stack");
+    assert_string_contains(contents, "#define ESPCLAW_UART_CONSOLE_STACK_BYTES 20480", "esp32cam uses a reduced UART console stack to fit fragmented internal heap");
+    assert_string_contains(contents, "#define ESPCLAW_UART_CONSOLE_STACK_BYTES 32768", "other targets keep the larger UART console stack");
+    assert_string_contains(contents, "create_runtime_task(\n        uart_console_task,\n        \"espclaw_uart\",\n        ESPCLAW_UART_CONSOLE_STACK_BYTES,", "uart console task uses the dedicated larger stack");
 }
 
 static void test_embedded_console_and_agent_paths_heap_allocate_auth_profiles(void)
@@ -4512,11 +4513,12 @@ static void test_console_chat_and_web_tools(void)
     assert_string_contains(transcript, "load_operator_config_from_nvs(&s_operator_yolo_mode);", "runtime loads persisted yolo policy");
     assert_string_contains(transcript, "s_operator_yolo_mode = true;", "runtime defaults yolo mode to enabled");
     assert_string_contains(transcript, "update.text,\n                                   s_operator_yolo_mode,\n                                   s_operator_yolo_mode,", "telegram agent loop uses global yolo mode for both mutation gating and prompt policy");
-    assert_string_contains(transcript, "#define ESPCLAW_TELEGRAM_STACK_BYTES 16384", "telegram task stack budget is increased");
+    assert_string_contains(transcript, "#define ESPCLAW_TELEGRAM_STACK_BYTES 8192", "esp32cam telegram task stack budget is reduced to fit fragmented internal heap");
+    assert_string_contains(transcript, "#define ESPCLAW_TELEGRAM_STACK_BYTES 16384", "other targets keep the larger telegram task stack budget");
     assert_string_contains(transcript, "runtime_external_malloc(ESPCLAW_TELEGRAM_RESPONSE_BYTES)", "telegram response buffer prefers PSRAM");
     assert_string_contains(transcript, "run_result = runtime_external_calloc(1, sizeof(*run_result));", "telegram agent result prefers PSRAM");
     assert_string_contains(transcript, "runtime_external_malloc(1024)", "telegram photo upload scratch buffer prefers PSRAM");
-    assert_string_contains(transcript, "\"espclaw_tg\",\n            ESPCLAW_TELEGRAM_STACK_BYTES,", "telegram task uses named stack budget");
+    assert_string_contains(transcript, "create_runtime_task(\n        telegram_polling_task,\n        \"espclaw_tg\",\n        ESPCLAW_TELEGRAM_STACK_BYTES,", "telegram task uses named stack budget");
     assert_string_contains(transcript, "config.crt_bundle_attach = esp_crt_bundle_attach;", "telegram send message attaches cert bundle");
     assert_string_contains(transcript, "client_config.crt_bundle_attach = esp_crt_bundle_attach;", "telegram get updates attaches cert bundle");
     assert_string_contains(transcript, "telegram_send_chat_action(config.bot_token, update.chat_id, \"typing\")", "telegram sends typing indicator before processing");
@@ -4613,6 +4615,7 @@ static void test_runtime_defers_operator_surfaces_until_after_admin_start(void)
     char runtime_source[131072];
     char main_source[4096];
     char admin_source[131072];
+    char ota_source[32768];
 
     read_text_file(
         ESPCLAW_SOURCE_DIR "/firmware/components/espclaw_core/src/runtime.c",
@@ -4629,14 +4632,69 @@ static void test_runtime_defers_operator_surfaces_until_after_admin_start(void)
         admin_source,
         sizeof(admin_source)
     );
+    read_text_file(
+        ESPCLAW_SOURCE_DIR "/firmware/components/espclaw_core/src/ota_manager.c",
+        ota_source,
+        sizeof(ota_source)
+    );
 
     assert_string_contains(runtime_source, "static bool s_uart_console_started;", "runtime tracks uart console startup state");
     assert_string_contains(runtime_source, "esp_err_t espclaw_runtime_start_operator_surfaces(void)", "runtime exposes deferred operator surface startup");
     assert_string_contains(runtime_source, "Failed to start operator surfaces after provisioning", "provisioning path logs deferred operator surface startup failures");
+    assert_string_not_contains(runtime_source, "xTaskCreatePinnedToCoreWithCaps", "runtime avoids PSRAM-backed task stacks on esp32 because external task stacks are disabled");
+    assert_string_contains(runtime_source, "Starting uart console task stack=%u core=%d free_internal=%u largest_internal=%u", "runtime logs internal heap before starting uart surface");
+    assert_string_contains(runtime_source, "Starting telegram task stack=%u core=%d free_internal=%u largest_internal=%u", "runtime logs internal heap before starting telegram surface");
+    assert_string_contains(runtime_source, "Failed to start uart console task stack=%u core=%d free_internal=%u largest_internal=%u", "runtime logs detailed uart surface startup failures");
+    assert_string_contains(runtime_source, "Failed to start telegram task stack=%u core=%d free_internal=%u largest_internal=%u", "runtime logs detailed telegram surface startup failures");
+    assert_string_contains(runtime_source, "UART operator surface startup failed err=0x%x", "runtime logs uart operator startup error code");
+    assert_string_contains(runtime_source, "Telegram operator surface startup failed err=0x%x", "runtime logs telegram operator startup error code");
     assert_string_not_contains(runtime_source, "ESP_ERROR_CHECK(maybe_start_telegram());\n                ESP_ERROR_CHECK(maybe_start_uart_console());", "runtime no longer starts operator surfaces inside safe-start branch");
     assert_string_not_contains(runtime_source, "ESP_ERROR_CHECK(maybe_start_telegram());\n        ESP_ERROR_CHECK(maybe_start_uart_console());", "runtime no longer starts operator surfaces directly in normal startup");
     assert_string_contains(main_source, "if (espclaw_runtime_start_operator_surfaces() != ESP_OK) {", "main starts operator surfaces after admin startup attempt");
+    assert_string_contains(main_source, "espclaw_ota_manager_schedule_confirm(ESPCLAW_OTA_CONFIRM_DELAY_MS, ota_message, sizeof(ota_message))", "main delays OTA confirmation until the admin control plane is healthy");
+    assert_string_contains(main_source, "Deferring OTA confirmation because admin server is unavailable", "main leaves pending OTA images unconfirmed when admin never starts");
+    assert_string_not_contains(main_source, "espclaw_ota_manager_confirm_running(ota_message, sizeof(ota_message))", "main no longer confirms OTA images immediately during boot");
+    assert_string_contains(ota_source, "esp_err_t espclaw_ota_manager_schedule_confirm(uint32_t delay_ms, char *message, size_t message_size)", "ota manager exposes delayed confirmation scheduling");
+    assert_string_contains(ota_source, "Scheduled OTA confirmation in %u ms.", "ota manager records delayed confirmation scheduling");
     assert_string_contains(admin_source, "httpd_start failed err=0x%x", "admin server logs exact httpd_start errors");
+}
+
+static void test_admin_server_uri_handler_capacity_tracks_routes(void)
+{
+    char source[196608];
+    const char *cursor;
+    unsigned int route_count = 0;
+
+    read_text_file(
+        ESPCLAW_SOURCE_DIR "/firmware/components/espclaw_core/src/admin_server.c",
+        source,
+        sizeof(source)
+    );
+
+    cursor = source;
+    while ((cursor = strstr(cursor, "{.uri =")) != NULL) {
+        route_count++;
+        cursor += strlen("{.uri =");
+    }
+
+    assert_true(route_count > 64, "admin server now registers more than 64 routes");
+    assert_string_contains(source, "const size_t route_count = sizeof(routes) / sizeof(routes[0]);", "admin server computes route count dynamically");
+    assert_string_contains(source, "ESPCLAW_ADMIN_HTTPD_ROUTE_HEADROOM = 16", "admin server keeps uri handler headroom");
+    assert_string_contains(source, "config.max_uri_handlers = (uint16_t)(route_count + ESPCLAW_ADMIN_HTTPD_ROUTE_HEADROOM);", "admin server sizes uri handler capacity from route count");
+    assert_string_contains(source, "(%u/%u handlers, cap=%d)", "admin server logs uri registration capacity details");
+}
+
+static void test_esp32_defaults_enable_ota_rollback(void)
+{
+    char source[8192];
+
+    read_text_file(
+        ESPCLAW_SOURCE_DIR "/firmware/sdkconfig.defaults.esp32",
+        source,
+        sizeof(source)
+    );
+
+    assert_string_contains(source, "CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y", "esp32 defaults enable bootloader rollback for OTA safety");
 }
 
 static void test_embedded_codex_transport_prefers_http_client_path(void)
@@ -4721,6 +4779,8 @@ int main(void)
     test_agent_loop();
     test_console_chat_and_web_tools();
     test_runtime_defers_operator_surfaces_until_after_admin_start();
+    test_admin_server_uri_handler_capacity_tracks_routes();
+    test_esp32_defaults_enable_ota_rollback();
     test_embedded_codex_transport_prefers_http_client_path();
 
     printf("espclaw core tests passed\n");

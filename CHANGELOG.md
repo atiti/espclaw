@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Fixed the deferred operator-surface regression on `esp32cam` by keeping UART and Telegram task stacks on internal FreeRTOS memory, which is what this ESP32 build requires, and added explicit internal-heap startup diagnostics so console bring-up failures can be debugged from `/api/logs` without serial access.
+- Reduced the `esp32cam` UART console stack budget to fit the fragmented internal heap available after Wi‑Fi and admin startup, while keeping the larger stack on less constrained targets.
+- Reduced the `esp32cam` Telegram task stack budget to fit the fragmented internal heap left after Wi‑Fi and UART startup, while keeping the larger stack on less constrained targets.
+- Delayed OTA image confirmation until the admin control plane survives boot for 15 seconds, so bad OTA images can roll back automatically instead of being permanently confirmed before the board proves it is recoverable.
+- Enabled ESP-IDF bootloader rollback for `esp32cam` builds so unconfirmed OTA images can automatically fall back to the previous partition after a failed boot.
+- Fixed the admin server URI-handler regression on `esp32cam` by sizing `httpd.max_uri_handlers` from the real route table plus headroom, so adding new endpoints no longer silently breaks `/api/chat/session` and the rest of the control plane after flash.
 - Rebalanced the public site hero layout by reducing the desktop headline clamp and tightening the two-column grid, so the landing page no longer looks blown out at wider browser widths.
 - Refined the public launch messaging around the core hardware-boundary thesis, refreshed the README and site copy, and added a first set of reusable brand assets including SVG logos, hero illustrations, Telegram mock art, and a social preview card.
 - Rebuilt `espclaw.dev` into a proper public landing page with project framing, capabilities, release-aware browser flashing, docs links, and a browser lab backed by the real ESPClaw C runtime compiled to WebAssembly.

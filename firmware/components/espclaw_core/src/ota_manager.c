@@ -19,6 +19,7 @@ static espclaw_ota_snapshot_t s_ota_snapshot;
 static esp_ota_handle_t s_ota_handle;
 static const esp_partition_t *s_update_partition;
 static bool s_ota_handle_active;
+static bool s_confirm_task_scheduled;
 #endif
 
 static void set_message(const char *message)
@@ -84,6 +85,21 @@ static void reboot_task(void *arg)
     vTaskDelay(pdMS_TO_TICKS(delay_ms));
     esp_restart();
 }
+
+static void confirm_task(void *arg)
+{
+    uint32_t delay_ms = (uint32_t)(uintptr_t)arg;
+    char message[128];
+
+    vTaskDelay(pdMS_TO_TICKS(delay_ms));
+    if (espclaw_ota_manager_confirm_running(message, sizeof(message)) == ESP_OK) {
+        ESP_LOGI("espclaw_ota", "%s", message);
+    } else {
+        ESP_LOGW("espclaw_ota", "%s", message);
+    }
+    s_confirm_task_scheduled = false;
+    vTaskDelete(NULL);
+}
 #endif
 
 void espclaw_ota_manager_init(void)
@@ -95,6 +111,7 @@ void espclaw_ota_manager_init(void)
 #ifdef ESP_PLATFORM
     s_update_partition = NULL;
     s_ota_handle_active = false;
+    s_confirm_task_scheduled = false;
     refresh_snapshot_partitions();
     if (!s_ota_snapshot.supported) {
         set_message("OTA disabled: no update partition is available.");
@@ -153,6 +170,45 @@ esp_err_t espclaw_ota_manager_confirm_running(char *message, size_t message_size
     }
     copy_message(message, message_size, s_ota_snapshot.last_message);
     return ESP_OK;
+}
+
+esp_err_t espclaw_ota_manager_schedule_confirm(uint32_t delay_ms, char *message, size_t message_size)
+{
+#ifdef ESP_PLATFORM
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    esp_ota_img_states_t image_state = ESP_OTA_IMG_UNDEFINED;
+
+    if (running == NULL ||
+        esp_ota_get_state_partition(running, &image_state) != ESP_OK ||
+        image_state != ESP_OTA_IMG_PENDING_VERIFY) {
+        set_message("Running OTA image is already confirmed.");
+        copy_message(message, message_size, s_ota_snapshot.last_message);
+        return ESP_OK;
+    }
+    if (s_confirm_task_scheduled) {
+        set_message("OTA confirmation is already scheduled.");
+        copy_message(message, message_size, s_ota_snapshot.last_message);
+        return ESP_OK;
+    }
+    if (xTaskCreate(confirm_task, "espclaw_ota_confirm", 3072, (void *)(uintptr_t)delay_ms, 5, NULL) != pdPASS) {
+        set_message("Failed to schedule OTA confirmation.");
+        copy_message(message, message_size, s_ota_snapshot.last_message);
+        return ESP_FAIL;
+    }
+    s_confirm_task_scheduled = true;
+    snprintf(
+        s_ota_snapshot.last_message,
+        sizeof(s_ota_snapshot.last_message),
+        "Scheduled OTA confirmation in %u ms.",
+        (unsigned int)delay_ms
+    );
+    copy_message(message, message_size, s_ota_snapshot.last_message);
+    return ESP_OK;
+#else
+    set_message("Running OTA image is already confirmed.");
+    copy_message(message, message_size, s_ota_snapshot.last_message);
+    return ESP_OK;
+#endif
 }
 
 esp_err_t espclaw_ota_manager_begin(size_t expected_bytes, char *message, size_t message_size)

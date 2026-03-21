@@ -34,6 +34,7 @@ typedef struct {
 void espclaw_ota_manager_init(void);
 void espclaw_ota_manager_snapshot(espclaw_ota_snapshot_t *snapshot);
 esp_err_t espclaw_ota_manager_confirm_running(char *message, size_t message_size);
+esp_err_t espclaw_ota_manager_schedule_confirm(uint32_t delay_ms, char *message, size_t message_size);
 esp_err_t espclaw_ota_manager_begin(size_t expected_bytes, char *message, size_t message_size);
 esp_err_t espclaw_ota_manager_write(const void *data, size_t data_len, char *message, size_t message_size);
 esp_err_t espclaw_ota_manager_finish(bool schedule_reboot, char *message, size_t message_size);

@@ -43,6 +43,7 @@ static httpd_handle_t s_admin_server;
  * afford a larger admin stack to keep real model runs stable.
  */
 static const size_t ESPCLAW_ADMIN_HTTPD_STACK_SIZE = 32768;
+static const size_t ESPCLAW_ADMIN_HTTPD_ROUTE_HEADROOM = 16;
 
 #ifndef CONFIG_ESPCLAW_ADMIN_PORT
 #define CONFIG_ESPCLAW_ADMIN_PORT 8080
@@ -2383,6 +2384,7 @@ esp_err_t espclaw_admin_server_start(void)
         {.uri = "/api/tasks/start", .method = HTTP_POST, .handler = task_start_post_handler, .user_ctx = NULL},
         {.uri = "/api/tasks/stop", .method = HTTP_POST, .handler = task_stop_post_handler, .user_ctx = NULL},
     };
+    const size_t route_count = sizeof(routes) / sizeof(routes[0]);
     size_t index;
 
     if (s_admin_server != NULL) {
@@ -2391,7 +2393,7 @@ esp_err_t espclaw_admin_server_start(void)
 
     config.server_port = CONFIG_ESPCLAW_ADMIN_PORT;
     config.stack_size = ESPCLAW_ADMIN_HTTPD_STACK_SIZE;
-    config.max_uri_handlers = 64;
+    config.max_uri_handlers = (uint16_t)(route_count + ESPCLAW_ADMIN_HTTPD_ROUTE_HEADROOM);
     config.max_open_sockets = 4;
     config.lru_purge_enable = true;
     config.core_id = admin_core >= 0 ? admin_core : tskNO_AFFINITY;
@@ -2417,7 +2419,15 @@ esp_err_t espclaw_admin_server_start(void)
         esp_err_t err = httpd_register_uri_handler(s_admin_server, &routes[index]);
 
         if (err != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to register route %s err=0x%x", routes[index].uri, (unsigned int)err);
+            ESP_LOGE(
+                TAG,
+                "Failed to register route %s err=0x%x (%u/%u handlers, cap=%d)",
+                routes[index].uri,
+                (unsigned int)err,
+                (unsigned int)(index + 1),
+                (unsigned int)route_count,
+                config.max_uri_handlers
+            );
             httpd_stop(s_admin_server);
             s_admin_server = NULL;
             return err;

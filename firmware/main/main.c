@@ -12,12 +12,15 @@
 static const char *TAG = "espclaw";
 static char s_default_config_buffer[2048];
 static char s_status_buffer[512];
+static const uint32_t ESPCLAW_OTA_CONFIRM_DELAY_MS = 15000;
 
 void app_main(void)
 {
     espclaw_runtime_status_t runtime_status;
     espclaw_ota_snapshot_t ota_snapshot;
     char ota_message[128];
+    bool admin_started = false;
+    bool operator_surfaces_started = false;
     espclaw_board_profile_id_t profile_id =
 #if CONFIG_ESPCLAW_BOARD_PROFILE_ESP32CAM
         ESPCLAW_BOARD_PROFILE_ESP32CAM;
@@ -34,14 +37,22 @@ void app_main(void)
     }
     if (espclaw_admin_server_start() != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start admin server");
+    } else {
+        admin_started = true;
     }
     if (espclaw_runtime_start_operator_surfaces() != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start operator surfaces");
-    }
-    if (espclaw_ota_manager_confirm_running(ota_message, sizeof(ota_message)) == ESP_OK) {
-        ESP_LOGI(TAG, "%s", ota_message);
     } else {
-        ESP_LOGW(TAG, "%s", ota_message);
+        operator_surfaces_started = true;
+    }
+    if (admin_started) {
+        if (espclaw_ota_manager_schedule_confirm(ESPCLAW_OTA_CONFIRM_DELAY_MS, ota_message, sizeof(ota_message)) == ESP_OK) {
+            ESP_LOGI(TAG, "%s", ota_message);
+        } else {
+            ESP_LOGW(TAG, "%s", ota_message);
+        }
+    } else {
+        ESP_LOGW(TAG, "Deferring OTA confirmation because admin server is unavailable");
     }
     espclaw_ota_manager_snapshot(&ota_snapshot);
 
@@ -72,6 +83,7 @@ void app_main(void)
         runtime_status.wifi_ready,
         runtime_status.telegram_ready
     );
+    ESP_LOGI(TAG, "Operator surfaces started=%d", operator_surfaces_started);
     ESP_LOGI(TAG, "Admin UI asset size=%u", (unsigned)espclaw_admin_ui_length());
     ESP_LOGI(TAG, "Rendered default config bytes=%u", (unsigned)written);
     ESP_LOGI(TAG, "Rendered admin status bytes=%u", (unsigned)status_written);
